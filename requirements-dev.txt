@@ -1,0 +1,4 @@
+-r requirements.txt
+playwright==1.61.0
+pyinstaller==6.21.0
+pillow==12.1.1

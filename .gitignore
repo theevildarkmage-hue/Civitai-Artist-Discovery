@@ -1,0 +1,44 @@
+# Public-source allowlist
+#
+# This repository is developed beside large local archives and account-derived runtime
+# data. Ignore everything by default and explicitly admit only the files required to
+# understand, run, test, and reproduce the application. New source categories must be
+# reviewed and added deliberately.
+*
+
+# Repository entry points
+!.gitignore
+!README.md
+!CONTRIBUTING.md
+!LICENSE
+!requirements-dev.txt
+!requirements.txt
+!server.py
+
+# Application modules
+!discovery/
+discovery/*
+!discovery/*.py
+
+# Browser application (the build regenerates static/app.ico)
+!static/
+static/*
+!static/*.html
+!static/*.js
+!static/*.css
+
+# Reproducible launch/build utilities
+!scripts/
+scripts/*
+!scripts/*.py
+!scripts/*.ps1
+
+# Existing standalone validation suite
+!tests/
+tests/*
+!tests/*.py
+
+# Current behavioral documentation only. Historical audits and release notes remain local.
+!docs/
+docs/*
+!docs/content-controls.md

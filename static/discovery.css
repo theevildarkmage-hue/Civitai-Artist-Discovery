@@ -1,0 +1,111 @@
+/* Personal discovery dashboard. Statistics only: this view never renders artwork. */
+.view-tabs{display:flex;gap:6px;padding:10px max(18px,3vw) 0}
+.view-tabs button{border:1px solid var(--line);border-bottom:0;background:#1a1c20;color:var(--muted);padding:9px 18px;border-radius:10px 10px 0 0;cursor:pointer;font-weight:650}
+.view-tabs button:hover{color:var(--text)}
+.view-tabs button.active{background:var(--panel);color:var(--accent);border-color:#3f6f68;box-shadow:inset 0 2px 0 var(--accent)}
+
+.discovery{max-width:1400px;margin:auto;display:grid;gap:20px}
+.discovery-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap}
+.discovery-head h2{font-size:clamp(21px,3vw,29px)}
+.discovery-note{color:var(--muted);font-size:13px;margin-top:5px;max-width:62ch}
+/* States what Civitai's Content Controls do to the gallery and where to change them,
+   so filtering is never a silent behavior the user has to notice on their own. */
+.hidden-prefs-note{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;
+  margin-top:9px;padding:9px 13px;border:1px solid var(--line);border-radius:9px;
+  background:#17181b;font-size:12.5px;max-width:none}
+.hidden-prefs-note a{color:var(--accent);text-decoration:none;white-space:nowrap}
+.hidden-prefs-note a:hover{text-decoration:underline}
+.hidden-prefs-note button{border:0;background:none;padding:0;color:var(--muted);
+  font:inherit;font-size:inherit;text-decoration:underline;text-underline-offset:2px;
+  cursor:pointer;white-space:nowrap}
+.hidden-prefs-note button:hover:not(:disabled){color:var(--accent)}
+.hidden-prefs-note button:disabled{opacity:.5;cursor:not-allowed;text-decoration:none}
+.discovery-actions{display:flex;gap:8px;flex-wrap:wrap}
+.discovery-actions button{border:1px solid var(--line);background:#22242a;color:var(--text);padding:9px 14px;border-radius:8px;cursor:pointer}
+.discovery-actions .primary-button{border-color:#4a9f92;background:#1d5148;color:#eafffb;font-weight:750}
+.discovery-actions .primary-button:hover{background:#286b5f}
+.discovery-actions button:disabled{opacity:.45;cursor:not-allowed}
+.discovery-message{color:var(--muted);font-size:14px;min-height:20px}
+.discovery-message.error{color:#ffc5ca}
+
+/* Four headline cards plus the reaction donut share one row, so no short card leaves a
+   gap that pushes a later panel down the page. */
+.summary-row{display:grid;gap:14px;grid-template-columns:1fr;align-items:stretch}
+@media(min-width:760px){.summary-row{grid-template-columns:repeat(2,minmax(0,1fr))}.reaction-card{grid-column:span 2}}
+@media(min-width:1180px){.summary-row{grid-template-columns:repeat(4,minmax(0,1fr)) minmax(310px,1.45fr)}.reaction-card{grid-column:auto}}
+.metric-card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:18px 20px;display:grid;gap:4px;align-content:start}
+.metric-card .label{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:800}
+.metric-card .value{font-size:clamp(30px,4.4vw,42px);font-weight:800;line-height:1.05;color:var(--text)}
+.metric-card .hint{font-size:12px;color:var(--muted)}
+.metric-card.accent .value{color:var(--accent)}
+
+.reaction-card{gap:10px}
+.donut-body{display:flex;align-items:center;gap:16px;min-width:0}
+.donut-wrap{position:relative;flex:none;width:104px;height:104px;display:grid;place-items:center}
+.donut{width:104px;height:104px;display:block}
+.donut-centre{position:absolute;display:grid;justify-items:center;line-height:1.1;pointer-events:none}
+.donut-centre b{font-size:20px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums}
+.donut-centre small{font-size:9px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.donut-legend{min-width:0;flex:1;display:grid;gap:3px}
+.donut-legend-row{display:flex;align-items:center;gap:8px;min-width:0}
+.donut-legend-name{flex:1;min-width:0;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.donut-legend-value{font-size:12px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+/* A 2px surface ring separates each swatch and each arc from its neighbour. */
+.swatch{flex:none;width:11px;height:11px;border-radius:3px;background:#5a5d66;box-shadow:0 0 0 2px var(--panel)}
+.swatch[data-swatch="Like"]{background:#3987e5}
+.swatch[data-swatch="Heart"]{background:#d95926}
+.swatch[data-swatch="Laugh"]{background:#199e70}
+.swatch[data-swatch="Cry"]{background:#c98500}
+.swatch[data-swatch="Dislike"]{background:#9085e9}
+
+.panel-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:16px;align-items:start}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:18px 20px;min-width:0}
+.panel.wide{grid-column:1/-1}
+.panel h3{margin:0;font-size:16px}
+.panel-note{color:var(--muted);font-size:12px;margin:5px 0 14px;line-height:1.45}
+
+.bar-row{display:grid;grid-template-columns:minmax(84px,auto) 1fr minmax(64px,auto);align-items:center;gap:11px;padding:5px 0;min-width:0}
+.bar-row .bar-label{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar-row .bar-track{height:9px;border-radius:999px;background:#2b2d34;overflow:hidden}
+.bar-row .bar-fill{display:block;width:0;height:100%;border-radius:999px;background:linear-gradient(90deg,#42b8a4,#68e1cb)}
+.bar-row .bar-value{font-size:12px;color:var(--muted);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+
+.rank-list{display:grid;gap:2px}
+/* The lead panel is the most actionable list on the page, so it is packed into columns
+   instead of costing a full screen of scroll. */
+.rank-list.dense{grid-template-columns:repeat(auto-fill,minmax(min(100%,420px),1fr));gap:2px 14px}
+.rank-list.dense .rank-item:nth-child(odd){background:none}
+.panel.lead{border-color:#3f6f68;background:linear-gradient(180deg,#1b2a28,var(--panel) 190px)}
+.panel.lead .rank-item{background:#1e2025}
+.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.quiet-button{flex:none;border:1px solid var(--line);background:#22242a;color:var(--muted);padding:5px 11px;border-radius:8px;font-size:12px;cursor:pointer}
+.quiet-button:hover{color:var(--text)}
+.quiet-button:disabled{opacity:.45;cursor:not-allowed}
+.panel.is-off{background:var(--panel);border-color:var(--line)}
+/* Recommendation rows carry their reason inline, so the suggestion is never a bare name. */
+.reco-item{display:grid;grid-template-columns:minmax(120px,1.1fr) minmax(0,2fr) minmax(74px,auto) auto;gap:12px;align-items:center}
+.reco-why{min-width:0;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill.emerging{background:#3a2f1c;color:#e9c07a;border-color:#5f4d2c}
+@media(max-width:900px){.reco-item{grid-template-columns:1fr auto;grid-template-areas:"name follow" "why why" "value value";gap:4px 12px}
+  .reco-item .rank-name{grid-area:name}.reco-item .reco-why{grid-area:why;white-space:normal}
+  .reco-item .rank-value{grid-area:value}.reco-item .follow-button{grid-area:follow}}
+.rank-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 9px;border-radius:8px;min-width:0}
+.rank-item:nth-child(odd){background:#1e2025}
+.rank-item .rank-name{min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden;white-space:nowrap;font-size:13px}
+/* The name yields before the badges do: a clipped "EMERGIN" is worse than a clipped name. */
+.rank-item .rank-name a{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rank-item .rank-value{color:var(--muted);font-size:12px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.rank-item .follow-button{flex:none;padding:4px 9px;font-size:11px}
+.rank-item .follow-button.is-following{padding-right:0}
+.rank-item a{color:inherit;text-decoration:none}
+.rank-item a:hover{color:var(--accent);text-decoration:underline}
+.pill{flex:none;font-size:10px;font-weight:800;letter-spacing:.05em;padding:2px 7px;border-radius:999px;background:#24413c;color:#72dfca;border:1px solid #35635b}
+.pill.lift{background:#2c2a3f;color:#b7abf0;border-color:#4a4468}
+.empty-note{color:var(--muted);font-size:13px;padding:6px 0}
+
+@media(max-width:700px){
+  .view-tabs{padding:8px 8px 0}
+  .view-tabs button{flex:1;padding:9px 8px;font-size:13px}
+  .discovery-head{flex-direction:column}
+  .bar-row{grid-template-columns:minmax(70px,auto) 1fr auto;gap:8px}
+}
