@@ -171,7 +171,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-signout-", ignore_cleanup_error
                      '"oauthJob":{"state":"complete"}}'))
 
             page.click("#welcomeConnect")
-            page.wait_for_selector("#daySegment:not(.hidden)", timeout=20000)
+            page.wait_for_selector("#buildSetup:not(.hidden), #daySegment:visible", timeout=20000)
 
             # The heavy first-time treatment never appeared — "only happens once" would
             # have been a lie the second time.

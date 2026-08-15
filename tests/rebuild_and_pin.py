@@ -38,7 +38,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-rebuild-") as temporary:
     archive.build_artist_index(DAY)
 
     captured = []
-    def completed_request(params, minimum_interval=1.0, on_delay=None):
+    def completed_request(params, minimum_interval=1.0, on_delay=None, cancel_event=None, on_timing=None,
+                          on_transfer=None):
         captured.append(dict(params))
         return {"items": [image(2, "owner", "Soft"),
             image(3, "older", created="2026-07-31T04:59:59Z")], "metadata": {"nextCursor": "older"}}, 100
@@ -53,7 +54,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-rebuild-") as temporary:
 
     entered = threading.Event(); release = threading.Event()
     before = archive.day_summary(DAY)
-    def blocked_request(params, minimum_interval=1.0, on_delay=None):
+    def blocked_request(params, minimum_interval=1.0, on_delay=None, cancel_event=None, on_timing=None,
+                        on_transfer=None):
         entered.set(); release.wait(2)
         return {"items": [image(4, "cancelled-addition", "Soft")], "metadata": {"nextCursor": None}}, 100
     archive._request = blocked_request

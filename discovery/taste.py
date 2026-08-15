@@ -52,6 +52,7 @@ MAX_ATTEMPTS = 5
 ACCOUNT_SCOPED_TABLES = (
     "reacted_images", "reacted_reactions", "reacted_tags", "tag_baseline",
     "baseline_sample", "followed_creators", "creator_followers",
+    "recent_posts", "recent_post_tags", "recent_post_models", "recent_model_names",
 )
 
 
@@ -76,6 +77,7 @@ class TasteStore:
         self.db_path = root / "taste.sqlite3"
         self.lock = threading.RLock()
         self.cancel = threading.Event()
+        self.sync_thread: threading.Thread | None = None
         self.job: dict = {"running": False, "phase": "idle", "images": 0, "pages": 0,
                           "message": "", "error": None, "startedAt": None}
         self._initialize()
@@ -138,6 +140,23 @@ class TasteStore:
                     follower_count INTEGER, fetched_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS creator_followers_name ON creator_followers(username);
+                CREATE TABLE IF NOT EXISTS recent_posts (
+                    image_id INTEGER PRIMARY KEY, created_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS recent_post_tags (
+                    image_id INTEGER NOT NULL, tag_name TEXT NOT NULL,
+                    PRIMARY KEY(image_id, tag_name)
+                );
+                CREATE INDEX IF NOT EXISTS recent_post_tags_name ON recent_post_tags(tag_name);
+                CREATE TABLE IF NOT EXISTS recent_post_models (
+                    image_id INTEGER NOT NULL, model_version_id INTEGER NOT NULL,
+                    PRIMARY KEY(image_id, model_version_id)
+                );
+                CREATE INDEX IF NOT EXISTS recent_post_models_id ON recent_post_models(model_version_id);
+                CREATE TABLE IF NOT EXISTS recent_model_names (
+                    model_version_id INTEGER PRIMARY KEY, model_id INTEGER,
+                    model_name TEXT, version_name TEXT, fetched_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS archive_image_tags (
                     image_id INTEGER NOT NULL, tag_name TEXT NOT NULL,
                     PRIMARY KEY(image_id, tag_name)
@@ -254,6 +273,14 @@ class TasteStore:
     # ---------- synchronisation ----------
 
     def status(self) -> dict:
+        worker = self.sync_thread
+        if worker is not None and worker.is_alive():
+            with self.lock:
+                reported_running = bool(self.job.get("running"))
+            if not reported_running and worker is not threading.current_thread():
+                # Do not let a caller treat the final status write as proof that the
+                # worker has fully released its stack and shared cancellation event.
+                worker.join(timeout=5)
         self.ensure_current_account()
         with self.lock:
             job = dict(self.job)
@@ -263,6 +290,17 @@ class TasteStore:
         return job
 
     def start_sync(self) -> dict:
+        # `running` becomes false at the end of the worker's final status update, a few
+        # bytecodes before the thread itself exits. A fast second refresh (or account
+        # switch) must not clear shared cancellation state during that tiny window.
+        previous = self.sync_thread
+        if previous is not None and previous.is_alive():
+            with self.lock:
+                still_running = bool(self.job.get("running"))
+            if still_running:
+                with self.lock:
+                    return dict(self.job)
+            previous.join(timeout=5)
         with self.lock:
             if self.job.get("running"):
                 return dict(self.job)
@@ -271,7 +309,8 @@ class TasteStore:
                         "message": "Reading your reactions from Civitai…", "error": None,
                         "startedAt": _now()}
             job = dict(self.job)
-        threading.Thread(target=self._run_sync, daemon=True).start()
+        self.sync_thread = threading.Thread(target=self._run_sync, daemon=True)
+        self.sync_thread.start()
         return job
 
     def stop_sync(self) -> None:
@@ -307,7 +346,10 @@ class TasteStore:
         client = SocialClient()
         started = time.monotonic()
         try:
-            with self.connect() as db:
+            # status() also binds reads to the active account. Serialize the worker's
+            # account switch with that read-side guard so neither can clear the other's
+            # first page while both observe the old account id.
+            with self.lock, self.connect() as db:
                 account = self._require_account(db)
                 sync_id = int(self._state(db, "sync_id", 0) or 0) + 1
                 self._set_state(db, "sync_id", sync_id)
@@ -319,12 +361,14 @@ class TasteStore:
                 known = {row["image_id"] for row in db.execute("SELECT image_id FROM reacted_tags")}
             incremental = bool(known)
 
-            cursor, pages, total, fresh = None, 0, 0, []
+            cursor, pages, total, fresh, observed = None, 0, 0, [], set()
             while True:
                 page = self._page(client, cursor=cursor, limit=PAGE_SIZE,
                                   reactions=ALL_REACTIONS, with_tags=not incremental)
                 items = page["items"]
                 self._store_page(items, sync_id, account)
+                observed.update(item["id"] for item in items
+                                if isinstance(item, dict) and isinstance(item.get("id"), int))
                 if incremental:
                     fresh.extend(item["id"] for item in items
                                  if isinstance(item.get("id"), int) and item["id"] not in known)
@@ -340,6 +384,15 @@ class TasteStore:
             # Only a run that reached the final page may retire rows, otherwise a
             # cancelled sync would delete reactions that simply were not reached yet.
             with self.connect() as db:
+                # The observed ids are the authoritative completed snapshot. Refreshing
+                # their marker in one transaction also protects reconciliation from a
+                # status/read transaction landing precisely between two fast mock pages.
+                observed_ids = list(observed)
+                for start in range(0, len(observed_ids), 800):
+                    chunk = observed_ids[start:start + 800]
+                    holes = ",".join("?" for _ in chunk)
+                    db.execute(f"UPDATE reacted_images SET last_sync=? WHERE image_id IN ({holes})",
+                               (sync_id, *chunk))
                 db.execute("DELETE FROM reacted_reactions WHERE image_id IN "
                            "(SELECT image_id FROM reacted_images WHERE last_sync<>?)", (sync_id,))
                 db.execute("DELETE FROM reacted_tags WHERE image_id IN "
@@ -353,6 +406,16 @@ class TasteStore:
             self._progress(phase="following", message="Checking which creators you follow…")
             self._pause()
             self._sync_following(client)
+
+            self._progress(phase="fingerprint", message="Reading your recent creative fingerprint...")
+            try:
+                username = str(auth_status().get("username") or "").strip()
+                if username:
+                    self.refresh_recent_work(client, username)
+            except Exception:
+                # This is enrichment. A temporary failure must not discard a complete
+                # reaction sync or prevent the rest of the profile from loading.
+                pass
 
             self._progress(phase="baseline", message="Sampling Civitai to find your distinctive tags…")
             self._sync_baseline(client)
@@ -663,6 +726,197 @@ class TasteStore:
                 "WHERE username IS NOT NULL AND follower_count IS NOT NULL")
                 if row["username"].casefold() in keys}
 
+    def refresh_recent_work(self, client: SocialClient, username: str) -> int:
+        """Archive public uploads once, then stop each refresh at the first known page.
+
+        Every listing page already includes its tags and model ids, so this is one
+        paginated historical pass rather than a listing pass followed by per-image tag
+        requests. An interrupted first pass resumes safely; a completed profile normally
+        costs one page and stores only uploads that appeared since the previous refresh.
+        """
+        with self.connect() as db:
+            known = {row["image_id"] for row in db.execute("SELECT image_id FROM recent_posts")}
+            incremental = self._state(db, "recent_work_complete", "0") == "1"
+        cursor, added, reached_end, reached_known = None, 0, False, False
+        while True:
+            delay = 4.0
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                try:
+                    page = client.creator_images_page(username, cursor=cursor, limit=200)
+                    break
+                except CivitaiHTTPError as error:
+                    if (error.status != 429 and error.status < 500) or attempt == MAX_ATTEMPTS:
+                        raise
+                    if self.cancel.wait(delay):
+                        raise SyncCancelled()
+                    delay = min(delay * 2, 60.0)
+            items = page["items"]
+            page_ids = {item.get("id") for item in items if isinstance(item, dict)
+                        and isinstance(item.get("id"), int)}
+            reached_known = bool(known & page_ids)
+            posts, tags, models = [], [], []
+            for item in items:
+                image_id = item.get("id") if isinstance(item, dict) else None
+                if not isinstance(image_id, int) or image_id in known:
+                    continue
+                posts.append((image_id, item.get("createdAt") or item.get("publishedAt")))
+                for tag in item.get("tags") or []:
+                    name = str((tag or {}).get("name") or "").strip().casefold()
+                    if name:
+                        tags.append((image_id, name))
+                for value in item.get("modelVersionIds") or []:
+                    try:
+                        models.append((image_id, int(value)))
+                    except (TypeError, ValueError):
+                        continue
+            with self.lock, self.connect() as db:
+                db.executemany("INSERT OR IGNORE INTO recent_posts(image_id,created_at) VALUES(?,?)", posts)
+                db.executemany("INSERT OR IGNORE INTO recent_post_tags(image_id,tag_name) VALUES(?,?)", tags)
+                db.executemany("INSERT OR IGNORE INTO recent_post_models(image_id,model_version_id) VALUES(?,?)", models)
+            added += len(posts)
+            known.update(page_ids)
+            cursor = page["nextCursor"]
+            if incremental and reached_known:
+                break
+            if cursor is None:
+                reached_end = True
+                break
+            self._pause()
+        with self.lock, self.connect() as db:
+            self._set_state(db, "recent_work_username", username)
+            self._set_state(db, "recent_work_at", _now())
+            if reached_end or (incremental and reached_known):
+                self._set_state(db, "recent_work_complete", 1)
+        self.refresh_recent_model_names(client)
+        return added
+
+    def refresh_recent_model_names(self, client: SocialClient, limit: int = 8) -> int:
+        """Cache labels for only the model signals the profile actually displays."""
+        with self.connect() as db:
+            rows = db.execute("""SELECT p.model_version_id
+                FROM (SELECT model_version_id
+                      FROM recent_post_models
+                      GROUP BY model_version_id
+                      ORDER BY COUNT(DISTINCT image_id) DESC,model_version_id
+                      LIMIT ?) p
+                LEFT JOIN recent_model_names n
+                  ON n.model_version_id=p.model_version_id
+                WHERE n.model_version_id IS NULL
+                ORDER BY p.model_version_id""", (max(0, int(limit)),)).fetchall()
+        stored = 0
+        for row in rows:
+            if self.cancel.is_set():
+                raise SyncCancelled()
+            version_id = int(row["model_version_id"])
+            try:
+                value = client.public_model_version(version_id)
+            except Exception:  # Missing/deleted models must not fail the fingerprint sync.
+                continue
+            parent = value.get("model") if isinstance(value.get("model"), dict) else {}
+            model_name = str(parent.get("name") or "").strip() or None
+            version_name = str(value.get("name") or "").strip() or None
+            try:
+                model_id = int(value.get("modelId") or parent.get("id") or 0) or None
+            except (TypeError, ValueError):
+                model_id = None
+            if not model_name and not version_name:
+                continue
+            with self.lock, self.connect() as db:
+                db.execute("""INSERT INTO recent_model_names(
+                    model_version_id,model_id,model_name,version_name,fetched_at)
+                    VALUES(?,?,?,?,?) ON CONFLICT(model_version_id) DO UPDATE SET
+                    model_id=excluded.model_id,model_name=excluded.model_name,
+                    version_name=excluded.version_name,fetched_at=excluded.fetched_at""",
+                    (version_id, model_id, model_name, version_name, _now()))
+            stored += 1
+        return stored
+
+    def _recent_tag_stats(self) -> tuple[dict[str, float], dict[str, dict]]:
+        """Weights and evidence for recurring, distinctive recent-work tags.
+
+        Recurrence alone is not enough: ``solo`` can occur in nearly every post and
+        still say little about a creator match. A strong tag must recur and be more
+        prevalent here than in the comparison sample. Unknown-baseline tags need
+        substantial support before they are trusted.
+        """
+        with self.connect() as db:
+            total = db.execute("SELECT COUNT(*) AS n FROM recent_posts").fetchone()["n"]
+            sampled = int(self._state(db, "baseline_images", 0) or 0)
+            rows = db.execute("""SELECT t.tag_name AS name, COUNT(DISTINCT t.image_id) AS support,
+                COALESCE((SELECT b.image_count FROM tag_baseline b
+                          WHERE b.tag_name=t.tag_name),0) AS seen
+                FROM recent_post_tags t GROUP BY t.tag_name""").fetchall()
+        if not total:
+            return {}, {}
+        weights, evidence = {}, {}
+        for row in rows:
+            share = row["support"] / total
+            baseline_share = row["seen"] / sampled if sampled and row["seen"] else None
+            lift = share / baseline_share if baseline_share else None
+            recurrence_floor = max(3, math.ceil(total * .10))
+            strong = row["support"] >= recurrence_floor and (
+                (lift is not None and lift >= 1.50) or
+                (lift is None and share >= .10))
+            if not strong:
+                continue
+            boost = min(TAG_BOOST_CAP, 1.0 + math.log2(lift)) if lift and lift > 1 else 1.0
+            weights[row["name"]] = share * boost
+            evidence[row["name"]] = {
+                "images": row["support"], "percent": round(share * 100, 1),
+                "lift": round(lift, 1) if lift is not None else None,
+                "weight": weights[row["name"]],
+            }
+        return weights, evidence
+
+    def score_image_components(self, image_ids: list[int]) -> dict[int, dict[str, float]]:
+        """Separate reaction-taste and recent-work scores for archived card images."""
+        reaction = self.tag_weights()
+        recent = self._recent_tag_stats()[0]
+        wanted = sorted({int(value) for value in image_ids if value})
+        if not wanted or (not reaction and not recent):
+            return {}
+        scores: dict[int, dict[str, float]] = {}
+        with self.connect() as db:
+            for start in range(0, len(wanted), 800):
+                chunk = wanted[start:start + 800]
+                holes = ",".join("?" for _ in chunk)
+                for row in db.execute(
+                        f"SELECT image_id,tag_name FROM archive_image_tags WHERE image_id IN ({holes})",
+                        chunk):
+                    reaction_weight = reaction.get(row["tag_name"])
+                    recent_weight = recent.get(row["tag_name"])
+                    if reaction_weight or recent_weight:
+                        value = scores.setdefault(row["image_id"], {"reaction": 0.0, "recent": 0.0})
+                        value["reaction"] += reaction_weight or 0.0
+                        value["recent"] += recent_weight or 0.0
+        return scores
+
+    def recent_model_weights(self) -> dict[int, float]:
+        with self.connect() as db:
+            total = db.execute("SELECT COUNT(*) AS n FROM recent_posts").fetchone()["n"]
+            if not total:
+                return {}
+            return {row["model_version_id"]: row["n"] / total for row in db.execute(
+                "SELECT model_version_id,COUNT(DISTINCT image_id) AS n FROM recent_post_models "
+                "GROUP BY model_version_id")}
+
+    def explain_recent_scores(self, image_ids: list[int], limit: int = 4) -> dict[int, list[str]]:
+        wanted = sorted({int(value) for value in image_ids if value})
+        weights = self._recent_tag_stats()[0]
+        names: dict[int, list[str]] = {image_id: [] for image_id in wanted}
+        if not wanted or not weights:
+            return names
+        with self.connect() as db:
+            for start in range(0, len(wanted), 800):
+                chunk = wanted[start:start + 800]
+                holes = ",".join("?" for _ in chunk)
+                for row in db.execute(
+                        f"SELECT image_id,tag_name FROM archive_image_tags WHERE image_id IN ({holes})", chunk):
+                    if row["tag_name"] in weights:
+                        names[row["image_id"]].append(row["tag_name"])
+        return {image_id: sorted(image_names, key=lambda name: (-weights[name], name))[:limit]
+                for image_id, image_names in names.items()}
+
     def _tag_stats(self) -> tuple[dict[str, float], dict[str, float]]:
         """How much each tag counts toward a taste score.
 
@@ -673,22 +927,36 @@ class TasteStore:
         appearing thirty times more often than Civitai's average says far more about taste
         than `woman` does.
 
-        So weight = share x boost, where share is the tag's frequency in the user's
-        reactions and boost grows with lift but only logarithmically and is capped. A
+        So weight = share x boost, where share is the tag's reaction-weighted frequency
+        and boost grows with lift but only logarithmically and is capped. Hearts carry
+        more evidence than Likes, while Dislike-only images contribute nothing. A
         distinctive tag therefore outweighs a common one of equal frequency, while a tag
-        carried by nearly every reacted image still dominates by sheer share.
+        carried by nearly every positively reacted image still dominates by sheer share.
         """
+        strengths = """WITH strengths AS (
+            SELECT i.image_id, CASE
+                WHEN MAX(CASE WHEN r.reaction='Heart' THEN 1 ELSE 0 END)=1 THEN 1.5
+                WHEN MAX(CASE WHEN r.reaction='Like' THEN 1 ELSE 0 END)=1 THEN 1.0
+                WHEN MAX(CASE WHEN r.reaction IN ('Laugh','Cry') THEN 1 ELSE 0 END)=1 THEN 0.8
+                WHEN COUNT(r.reaction)=0 THEN 1.0
+                ELSE 0.0 END AS strength
+            FROM reacted_images i LEFT JOIN reacted_reactions r ON r.image_id=i.image_id
+            GROUP BY i.image_id)"""
         with self.connect() as db:
-            total = db.execute("SELECT COUNT(*) AS n FROM reacted_images").fetchone()["n"]
+            total = float(db.execute(
+                f"{strengths} SELECT COALESCE(SUM(strength),0) AS n FROM strengths"
+            ).fetchone()["n"])
             sampled = int(self._state(db, "baseline_images", 0) or 0)
             if not total:
                 return {}, {}
-            rows = db.execute("""
-                SELECT t.tag_name AS name, COUNT(DISTINCT t.image_id) AS mine,
+            rows = db.execute(f"""{strengths}
+                SELECT t.tag_name AS name, SUM(s.strength) AS mine,
+                       COUNT(DISTINCT t.image_id) AS support,
                        COALESCE((SELECT b.image_count FROM tag_baseline b
                                  WHERE b.tag_name = t.tag_name), 0) AS seen
-                FROM reacted_tags t GROUP BY t.tag_name
-                HAVING mine >= 3
+                FROM reacted_tags t JOIN strengths s ON s.image_id=t.image_id
+                WHERE s.strength>0 GROUP BY t.tag_name
+                HAVING support >= 3
             """).fetchall()
         weights: dict[str, float] = {}
         boosts: dict[str, float] = {}
@@ -763,18 +1031,8 @@ class TasteStore:
 
     def score_images(self, image_ids: list[int]) -> dict[int, float]:
         """Taste score per archived image, from cached tags and the weights above."""
-        weights = self.tag_weights()
-        wanted = {int(value) for value in image_ids if value}
-        if not weights or not wanted:
-            return {}
-        scores: dict[int, float] = {}
-        with self.connect() as db:
-            for row in db.execute("SELECT image_id, tag_name FROM archive_image_tags"):
-                if row["image_id"] in wanted:
-                    weight = weights.get(row["tag_name"])
-                    if weight:
-                        scores[row["image_id"]] = scores.get(row["image_id"], 0.0) + weight
-        return scores
+        return {image_id: values["reaction"] for image_id, values in
+                self.score_image_components(image_ids).items() if values["reaction"] > 0}
 
     def explain_score(self, image_id: int, limit: int = 4) -> list[str]:
         """Why this card placed here, ordered by what is *distinctive* about the match.
@@ -784,13 +1042,27 @@ class TasteStore:
         card identically and tells them nothing. Explaining by lift names the tags that
         actually separate this card from the rest.
         """
+        return self.explain_scores([image_id], limit).get(int(image_id), [])
+
+    def explain_scores(self, image_ids: list[int], limit: int = 4) -> dict[int, list[str]]:
+        """Explain a page of scores while calculating taste statistics only once."""
+        wanted = sorted({int(value) for value in image_ids if value})
+        if not wanted:
+            return {}
         boosts = self._tag_stats()[1]
+        names: dict[int, list[str]] = {image_id: [] for image_id in wanted}
         with self.connect() as db:
-            names = [row["tag_name"] for row in db.execute(
-                "SELECT tag_name FROM archive_image_tags WHERE image_id=?", (int(image_id),))]
-        matched = sorted(((boosts.get(name, 0.0), name) for name in names
-                          if name in boosts), reverse=True)
-        return [name for _, name in matched[:limit]]
+            for start in range(0, len(wanted), 800):
+                chunk = wanted[start:start + 800]
+                holes = ",".join("?" for _ in chunk)
+                for row in db.execute(
+                        f"SELECT image_id,tag_name FROM archive_image_tags WHERE image_id IN ({holes})",
+                        chunk):
+                    names[row["image_id"]].append(row["tag_name"])
+        return {image_id: [name for _, name in sorted(
+                    ((boosts.get(name, 0.0), name) for name in image_names if name in boosts),
+                    reverse=True)[:limit]]
+                for image_id, image_names in names.items()}
 
     def image_tags(self, image_id: int) -> dict:
         """The tags Civitai lists for one image, and whether the account hides any.
@@ -819,8 +1091,11 @@ class TasteStore:
                 "JOIN creator_followers c ON c.creator_id = f.creator_id "
                 "WHERE c.username IS NOT NULL")}
             reacted = {row["name"].casefold(): row["n"] for row in db.execute(
-                "SELECT creator_username AS name, COUNT(*) AS n FROM reacted_images "
-                "WHERE creator_username IS NOT NULL GROUP BY creator_username")}
+                "SELECT i.creator_username AS name, COUNT(*) AS n FROM reacted_images i "
+                "WHERE i.creator_username IS NOT NULL AND ("
+                "NOT EXISTS(SELECT 1 FROM reacted_reactions r WHERE r.image_id=i.image_id) OR "
+                "EXISTS(SELECT 1 FROM reacted_reactions r WHERE r.image_id=i.image_id "
+                "AND r.reaction IN ('Like','Heart','Laugh','Cry'))) GROUP BY i.creator_username")}
         return {"followed": followed, "reacted": reacted}
 
     def sweep_progress_token(self) -> tuple[int, int]:
@@ -956,6 +1231,38 @@ class TasteStore:
 
     # ---------- analysis ----------
 
+    def recent_work_summary(self, limit: int = 16) -> dict:
+        weights, evidence = self._recent_tag_stats()
+        with self.connect() as db:
+            posts = db.execute("SELECT COUNT(*) AS n,MIN(created_at) AS oldest,"
+                               "MAX(created_at) AS newest FROM recent_posts").fetchone()
+            tag_count = db.execute("SELECT COUNT(DISTINCT tag_name) AS n "
+                                   "FROM recent_post_tags").fetchone()["n"]
+            model_rows = db.execute("""SELECT p.model_version_id,
+                    COUNT(DISTINCT p.image_id) AS n, n.model_id,
+                    n.model_name,n.version_name
+                FROM recent_post_models p
+                LEFT JOIN recent_model_names n
+                  ON n.model_version_id=p.model_version_id
+                GROUP BY p.model_version_id
+                ORDER BY COUNT(DISTINCT p.image_id) DESC,p.model_version_id LIMIT ?""",
+                (limit,)).fetchall()
+            refreshed = self._state(db, "recent_work_at")
+            complete = self._state(db, "recent_work_complete", "0") == "1"
+        strong = [{"name": name, **{key: value for key, value in item.items() if key != "weight"}}
+                  for name, item in sorted(evidence.items(),
+                      key=lambda pair: (-pair[1]["weight"], -pair[1]["images"], pair[0]))[:limit]]
+        total = int(posts["n"] or 0)
+        return {"images": total, "complete": complete,
+                "oldestAt": posts["oldest"], "newestAt": posts["newest"],
+                "refreshedAt": refreshed, "distinctTags": tag_count,
+                "strongTagCount": len(weights), "strongTags": strong,
+                "models": [{"id": row["model_version_id"], "modelId": row["model_id"],
+                            "modelName": row["model_name"], "versionName": row["version_name"],
+                            "images": row["n"],
+                            "percent": round(100 * row["n"] / total, 1) if total else 0}
+                           for row in model_rows]}
+
     def summary(self, limit: int = 20) -> dict:
         self.ensure_current_account()
         with self.connect() as db:
@@ -1042,6 +1349,7 @@ class TasteStore:
             "baselineImages": baseline_images,
             "distinctTags": len(tags),
             "signalTags": [tag["name"] for tag in self.signal_tags()],
+            "recentWork": self.recent_work_summary(),
             "emergingThreshold": EMERGING_FOLLOWERS,
         }
 

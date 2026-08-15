@@ -34,7 +34,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-pg13-") as temporary:
     # The older crossing row causes the real collector to finish this day.
     rows.append({**image(6, 300, "None"), "createdAt": "2026-07-31T04:59:59.000Z"})
 
-    def request(params, minimum_interval=1.0, on_delay=None):
+    def request(params, minimum_interval=1.0, on_delay=None, cancel_event=None, on_timing=None,
+                on_transfer=None):
         captured_params.append(dict(params))
         return {"items": rows, "metadata": {"nextCursor": "older"}}, 1024
 

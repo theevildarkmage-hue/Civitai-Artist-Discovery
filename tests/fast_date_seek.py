@@ -20,7 +20,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
     offsets = []
     archive.jobs[value] = {"state": "loading", "phase": "locating", "pages": 0}
 
-    def request(params, minimum_interval=1.0, on_delay=None):
+    def request(params, minimum_interval=1.0, on_delay=None, cancel_event=None, on_timing=None,
+                on_transfer=None):
         offset = int(params["cursor"].split("|", 1)[0]); offsets.append(offset)
         page = offset // PAGE_SIZE
         newest = live_anchor - timedelta(minutes=page * 10)
@@ -28,7 +29,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
         return {"items": [{"createdAt": newest.isoformat()}, {"createdAt": oldest.isoformat()}]}, 100
 
     archive._request = request
-    cursor, pages, transferred = archive._seek_cursor(value, target_end, threading.Event(), lambda *_: None)
+    cursor, pages, transferred = archive._seek_cursor(
+        value, target_end, threading.Event(), archive.content_rating, lambda *_: None)
     selected = int(cursor.split("|", 1)[0])
 
     def oldest_at(offset):

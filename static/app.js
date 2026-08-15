@@ -1,12 +1,15 @@
 const $ = id => document.getElementById(id);
 let selectedModels = new Set();
 let contentRating = "Soft";
+let visibleBrowsingLevels = new Set([1, 2]);
+let buildSegment = "all", buildCoverageRating = "Soft", currentBlocks = null, estimateToken = 0;
 // How many creators this day's Civitai content controls removed, so the count on screen
 // can explain itself rather than looking like missing data.
 let hiddenCreators = 0;
 let selectedDate = null, selectedSegment = "evening", activeBuildSegment = null, selectedView = "foryou", newestDate = null, socialWrite = false, oauthConnected = false, artistTotal = 0, imageTotal = 0, loadedArtists = 0, loadingMore = false, loadCancelled = false, loadingPhaseIndex = -1, activeLoadToken = 0, dayBuilt = false, activeRebuild = false;
 const imageReactionState = new Map();
-const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="contentFilter" class="filter-button" aria-expanded="false" title="Choose the content levels to download">Content: PG + PG-13</button><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select the levels of content you want to see</p><div class="rating-pills"><button class="selected fixed" disabled>✓ PG</button><button class="selected fixed" disabled>✓ PG-13</button><button data-rating="Mature">R</button><button data-rating="X">X</button><button data-rating="X">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>X and XXX share Civitai Red’s explicit-content listing feed and are enabled together.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
+const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="contentFilter" class="filter-button" aria-expanded="false" title="Choose the content levels to display">Content: PG + PG-13</button><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
+segmentToolbar.insertAdjacentHTML("afterbegin", '<span id="completeDayPrompt" class="complete-day-prompt hidden"><span id="completeDayText"></span><button id="completeDay">Complete this day</button></span>');
 // Card size is a plain display preference, so it is saved locally rather than round-
 // tripping to the server, and applied immediately — before anything else on the page
 // runs — so there is no flash of the default size while a saved smaller one loads in.
@@ -26,22 +29,36 @@ const CARD_SCALE_KEY = "civitai-card-scale";
 })();
 async function api(url, options = {}) { const response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options }); const body = await response.json(); if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`); return body; }
 const contentLabels = { Soft: "PG + PG-13", Mature: "PG through R", X: "All ratings" };
+const browsingLevelLabels = new Map([[1, "PG"], [2, "PG-13"], [4, "R"], [8, "X"], [16, "XXX"]]);
+function contentButtonLabel() {
+  const selected = [...browsingLevelLabels].filter(([level]) => visibleBrowsingLevels.has(level)).map(([, label]) => label);
+  return selected.length === browsingLevelLabels.size ? "All ratings" : selected.join(" + ");
+}
 function showContentRating() {
-  $("contentFilter").textContent = `Content: ${contentLabels[contentRating] || contentLabels.Soft}`;
-  $("contentMenu").querySelectorAll("[data-rating=Mature]").forEach(button => button.classList.toggle("selected", contentRating !== "Soft"));
-  $("contentMenu").querySelectorAll("[data-rating=X]").forEach(button => button.classList.toggle("selected", contentRating === "X"));
-  $("contentMenu").querySelector(".content-warning").textContent = contentRating === "Soft"
+  $("contentFilter").textContent = `Content: ${contentButtonLabel()}`;
+  $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
+    const selected = visibleBrowsingLevels.has(Number(button.dataset.level));
+    button.classList.toggle("selected", selected);
+    button.textContent = `${selected ? "✓ " : ""}${browsingLevelLabels.get(Number(button.dataset.level))}`;
+  });
+  const mature = [...visibleBrowsingLevels].some(level => level >= 4);
+  $("contentMenu").querySelector(".content-warning").textContent = !mature
     ? "⚠ Mature content is off until you explicitly enable it."
     : "⚠ Mature content is enabled. Some images may be explicit.";
 }
-async function chooseContentRating(next) {
-  if (next !== "Soft" && next !== contentRating && !confirm(`${contentLabels[next]} may include adult artwork. Continue?`)) return;
+async function chooseContentRating(nextLevels) {
+  const previous = contentRating, buttons = [...$("contentMenu").querySelectorAll("[data-level]")];
+  $("contentFilter").disabled = true; buttons.forEach(button => button.disabled = true);
+  $("contentMenu").classList.add("hidden"); $("contentFilter").setAttribute("aria-expanded", "false");
   try {
-    const result = await api("/api/settings", { method: "POST", body: JSON.stringify({ contentRating: next }) });
-    contentRating = result.contentRating; showContentRating(); selectedModels.clear();
-    toast(`Content set to ${contentLabels[contentRating]}. Existing blocks may need upgrading.`);
-    if (selectedDate) await loadDay(selectedDate, false);
+    const result = await api("/api/settings", { method: "POST", body: JSON.stringify({ browsingLevels: nextLevels }) });
+    contentRating = result.contentRating; visibleBrowsingLevels = new Set(result.browsingLevels); showContentRating(); selectedModels.clear();
+    const lowering = ({ Soft: 0, Mature: 1, X: 2 }[contentRating] || 0) < ({ Soft: 0, Mature: 1, X: 2 }[previous] || 0);
+    toast(lowering ? `Showing ${contentButtonLabel()} from saved galleries. No download needed.`
+      : `Showing ${contentButtonLabel()}. Incomplete coverage will be marked for upgrade.`);
+    if (selectedDate) await loadDay(selectedDate, false, true);
   } catch (error) { toast(error.message); }
+  finally { $("contentFilter").disabled = false; buttons.forEach(button => button.disabled = false); }
 }
 function toast(text) { $("toast").textContent = text; $("toast").classList.remove("hidden"); setTimeout(() => $("toast").classList.add("hidden"), 3000); }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]); }
@@ -202,6 +219,18 @@ function card(a) {
   let images = [a.representative], index = 0, current = images[0], imagesLoaded = a.imageCount <= 1;
   const el = document.createElement("article"); el.className = a.seen ? "creator-card is-seen" : "creator-card"; el.dataset.id = current.id;
   el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.worthFollowing ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of their images but do not follow them" aria-label="You react to this creator often">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
+  [[".previous", "Previous image", "15 5 8 12 15 19"], [".next", "Next image", "9 5 16 12 9 19"]].forEach(([selector, label, points]) => {
+    const button = el.querySelector(selector);
+    button.setAttribute("aria-label", label);
+    button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="${points}"></polyline></svg>`;
+  });
+  if (a.recommendationLabel) {
+    const reason = document.createElement("span");
+    reason.className = "recommendation-badge";
+    reason.textContent = a.recommendationLabel;
+    reason.title = (a.recommendationReasons || []).join(" · ");
+    el.querySelector(".image-stage").appendChild(reason);
+  }
   const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"); wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
   function renderReactions() { reaction.innerHTML = reactionBar(current); wireReactions(); }
   function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!socialWrite) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
@@ -323,6 +352,7 @@ async function refreshBlockLabels(value) {
   try {
     const data = await api(`/api/history/blocks?date=${value}`);
     if (value !== selectedDate) return;
+    currentBlocks = data.blocks || null;
     Object.entries(segmentLabels).forEach(([segment, label]) => {
       const option = $("daySegment").querySelector(`option[value="${segment}"]`);
       const block = data.blocks?.[segment];
@@ -339,9 +369,93 @@ async function refreshBlockLabels(value) {
       else option.textContent = data.blocks?.all?.complete
         ? `${label} · already in All day` : `${label} · not built`;
     });
+    const morning = !!data.blocks?.morning?.complete, evening = !!data.blocks?.evening?.complete;
+    const oneHalf = morning !== evening;
+    $("completeDayPrompt").classList.toggle("hidden", !oneHalf || !dayBuilt);
+    if (oneHalf) $("completeDayText").textContent =
+      `${morning ? "Morning" : "Evening"} is ready. Build ${morning ? "Evening" : "Morning"} to complete the day.`;
+    return data;
   } catch (error) { console.warn("Block states could not be read", error); }
 }
 function setNavigationBusy(busy) { $("olderDay").disabled = busy; $("newerDay").disabled = busy || selectedDate >= newestDate; $("daySegment").disabled = busy; $("dayView").disabled = busy; $("rebuildDay").textContent = selectedSegment === "all" ? "Rebuild day" : "Rebuild block"; $("rebuildDay").disabled = busy || !dayBuilt; $("rebuildDay").title = dayBuilt ? (busy ? "Wait for the current operation to finish" : `Rescan this ${selectedSegment === "all" ? "day" : "12-hour block"} and merge updated listings`) : `Build this ${selectedSegment === "all" ? "day" : "block"} before rebuilding it`; }
+function showBuildSetup(visible) {
+  $("buildSetup").classList.toggle("hidden", !visible);
+  $("loading").classList.toggle("ready-to-build", visible);
+  if (visible) segmentToolbar.classList.add("hidden");
+}
+const coverageRank = { Soft: 0, Mature: 1, X: 2 };
+function blockReadyForBuild(segment) {
+  const block = currentBlocks?.[segment];
+  return !!block?.complete && coverageRank[block.contentRating || "Soft"] >= coverageRank[buildCoverageRating];
+}
+function buildStatus(segment) {
+  const block = currentBlocks?.[segment];
+  if (blockReadyForBuild(segment)) return `Ready through ${block.contentRating || "PG + PG-13"}`;
+  if (block?.complete) return `Ready through ${block.contentRating || "Soft"} · upgrade needed`;
+  if (safeCount(block?.itemCount)) return `${displayCount(block.itemCount)} saved · continue`;
+  return segment === "morning" ? "12 AM–12 PM" : "12 PM–12 AM";
+}
+async function refreshBuildEstimate() {
+  const token = ++estimateToken;
+  $("buildEstimate").textContent = "Calculating…";
+  try {
+    const estimate = await api(`/api/history/estimate?date=${selectedDate}&segment=${buildSegment}&contentRating=${buildCoverageRating}`);
+    if (token !== estimateToken) return;
+    $("buildEstimate").textContent = `${friendlyDuration(estimate.lowSeconds)}–${friendlyDuration(estimate.highSeconds)}`;
+    if (estimate.fixedBenchmark) {
+      $("buildEstimateSource").textContent = `Fixed benchmark: about ${displayCount(estimate.benchmarkImages)} images, ${displayCount(estimate.listingRequests)} listing requests + ${displayCount(estimate.seekRequests)} date-location requests, up to ${displayCount(estimate.pageSize)} listings each. Range compares ${estimate.cleanRequestSeconds}s clean cycles with the observed ${estimate.delayedRequestSeconds}s delayed cycles; connection speed is not the limiter.`;
+    } else if (estimate.measured) {
+      $("buildEstimateSource").textContent = "Based on a completed build on this computer";
+    } else {
+      $("buildEstimateSource").textContent = "Starting estimate until this computer has comparable completed-build measurements";
+    }
+  } catch (_) { if (token === estimateToken) $("buildEstimate").textContent = "Estimate unavailable"; }
+}
+function refreshBuildChoices() {
+  const morningReady = blockReadyForBuild("morning");
+  const eveningReady = blockReadyForBuild("evening");
+  const morningStored = !!currentBlocks?.morning?.complete;
+  const eveningStored = !!currentBlocks?.evening?.complete;
+  $("buildRange").querySelectorAll("[data-segment]").forEach(button => {
+    const segment = button.dataset.segment;
+    button.classList.toggle("selected", segment === buildSegment);
+    const small = button.querySelector("small");
+    if (segment !== "all") small.textContent = buildStatus(segment);
+    else if (morningReady !== eveningReady) small.textContent = `Build ${morningReady ? "Evening" : "Morning"} only`;
+    else if (morningStored || eveningStored) {
+      const tasks = [];
+      if (!morningReady) tasks.push(`${morningStored ? "Upgrade" : "Build"} Morning`);
+      if (!eveningReady) tasks.push(`${eveningStored ? "Upgrade" : "Build"} Evening`);
+      small.textContent = tasks.join(" + ");
+    }
+    else if (!morningReady && !eveningReady) small.textContent = "Recommended · two resumable halves";
+    else small.textContent = "Ready";
+  });
+  $("buildCoverage").querySelectorAll("[data-rating]").forEach(button =>
+    button.classList.toggle("selected", button.dataset.rating === buildCoverageRating));
+  const partial = buildSegment !== "all" && safeCount(currentBlocks?.[buildSegment]?.itemCount) > 0;
+  $("startLoading").textContent = partial ? "Continue building" :
+    buildSegment === "all" && morningReady !== eveningReady ? "Build missing half" : "Build gallery";
+  refreshBuildEstimate();
+}
+function showBuildReady(status) {
+  resetLoadingPhases();
+  const morningReady = blockReadyForBuild("morning");
+  const eveningReady = blockReadyForBuild("evening");
+  buildSegment = morningReady !== eveningReady ? "all" :
+    (selectedSegment !== "all" && safeCount(status.itemCount) ? selectedSegment : "all");
+  buildCoverageRating = "Soft";
+  $("loadingTitle").textContent = `Build ${displayDate(selectedDate)}`;
+  $("elapsedText").classList.add("hidden");
+  $("progressBar").classList.remove("indeterminate", "waiting");
+  $("progressBar").style.width = "0%";
+  $("startLoading").classList.remove("hidden");
+  $("startLoading").disabled = false;
+  $("stopLoading").classList.add("hidden");
+  showBuildSetup(true);
+  refreshBuildChoices();
+  setNavigationBusy(false);
+}
 function showReady(status) {
   resetLoadingPhases();
   // All day is a local union, not a third network collection. Building it directly would
@@ -375,11 +489,12 @@ function showReady(status) {
   setNavigationBusy(false);
 }
 function showStopped() { $("loadingTitle").textContent = "Loading stopped"; $("loadingMessage").textContent = "Everything collected so far has been saved. Press Continue building whenever you are ready."; $("progressText").textContent = "Safe to close the app"; $("progressBar").classList.remove("indeterminate"); $("stopLoading").classList.add("hidden"); $("startLoading").textContent = "Continue building"; $("startLoading").classList.remove("hidden"); $("startLoading").disabled = false; setNavigationBusy(false); }
-async function showCompletedDay(value, token) { const [day, auth] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), api("/api/auth-status")]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; applyAuth(auth); const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); $("loading").classList.add("hidden"); $("gallery").classList.remove("hidden"); setNavigationBusy(false); await loadMore(); await applyPendingRestore(); }
-async function beginSelectedDay(rebuild = false) { const value = selectedDate, token = ++activeLoadToken; activeBuildSegment = selectedSegment; activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases(); $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery(); $("startLoading").disabled = true; $("startLoading").classList.add("hidden"); $("stopLoading").classList.remove("hidden"); $("stopLoading").disabled = false; $("elapsedText").classList.remove("hidden"); $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} ${displayDate(value)}`; setNavigationBusy(true); updateProgress({ phase: "locating", elapsedSeconds: 0, itemCount: 0, creatorCount: 0 }); let status = await api(rebuild ? "/api/history/rebuild" : "/api/history/start", { method: "POST", body: JSON.stringify(dayRequest(value)) }); while (!status.complete) { if (token !== activeLoadToken) return; if (loadCancelled || status.state === "cancelled") return; if (status.state === "error") throw new Error(status.error || "Daily import failed"); updateProgress(status); await new Promise(resolve => setTimeout(resolve, 750)); if (loadCancelled || token !== activeLoadToken) return; status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`); } activeBuildSegment = null; setLoadingPhase("complete"); await showCompletedDay(value, token); refreshBlockLabels(value); }
+async function showCompletedDay(value, token) { const [day, auth] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), api("/api/auth-status")]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; applyAuth(auth); const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); $("gallery").classList.remove("hidden"); segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); }
+async function beginSelectedDay(rebuild = false) { const value = selectedDate, token = ++activeLoadToken; activeBuildSegment = selectedSegment; activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases(); showBuildSetup(false); $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery(); $("startLoading").disabled = true; $("startLoading").classList.add("hidden"); $("stopLoading").classList.remove("hidden"); $("stopLoading").disabled = false; $("elapsedText").classList.remove("hidden"); $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} ${displayDate(value)}`; setNavigationBusy(true); updateProgress({ phase: "locating", elapsedSeconds: 0, itemCount: 0, creatorCount: 0 }); const request = { ...dayRequest(value), contentRating: buildCoverageRating }; let status = await api(rebuild ? "/api/history/rebuild" : "/api/history/start", { method: "POST", body: JSON.stringify(request) }); while (!status.complete) { if (token !== activeLoadToken) return; if (loadCancelled || status.state === "cancelled") return; if (status.state === "error") throw new Error(status.error || "Daily import failed"); updateProgress(status); await new Promise(resolve => setTimeout(resolve, 750)); if (loadCancelled || token !== activeLoadToken) return; status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`); } activeBuildSegment = null; setLoadingPhase("complete"); await showCompletedDay(value, token); refreshBlockLabels(value); }
 async function beginFullDay(rebuild = false) {
   const value = selectedDate, token = ++activeLoadToken;
   activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases();
+  showBuildSetup(false);
   $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery();
   $("startLoading").disabled = true; $("startLoading").classList.add("hidden");
   $("stopLoading").classList.remove("hidden"); $("stopLoading").disabled = false;
@@ -391,7 +506,8 @@ async function beginFullDay(rebuild = false) {
     $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} full day · ${segment === "morning" ? "Morning" : "Evening"}`;
     if (rebuild || !status.complete) {
       const endpoint = rebuild && status.archiveComplete ? "/api/history/rebuild" : "/api/history/start";
-      status = await api(endpoint, { method: "POST", body: JSON.stringify(dayRequest(value, segment)) });
+      status = await api(endpoint, { method: "POST", body: JSON.stringify({
+        ...dayRequest(value, segment), contentRating: buildCoverageRating }) });
       while (!status.complete) {
         if (token !== activeLoadToken || loadCancelled || status.state === "cancelled") return;
         if (status.state === "error") throw new Error(status.error || "Daily import failed");
@@ -408,7 +524,38 @@ async function beginFullDay(rebuild = false) {
   activeBuildSegment = null; setLoadingPhase("complete");
   await showCompletedDay(value, token); refreshBlockLabels(value);
 }
-async function loadDay(value, preferAvailable = true) { const token = ++activeLoadToken; selectedDate = value; dayBuilt = false; activeRebuild = false; loadCancelled = false; $("selectedDate").textContent = displayDate(value); setNavigationBusy(false); refreshBlockLabels(value); $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery(); $("summary").textContent = ""; $("startLoading").classList.add("hidden"); $("stopLoading").classList.add("hidden"); let status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`); if (token !== activeLoadToken || selectedDate !== value) return; if (preferAvailable && !status.complete) { for (const candidate of ["all", "evening", "morning"]) { if (candidate === selectedSegment) continue; const available = await api(`/api/history/status?date=${value}&segment=${candidate}`); if (token !== activeLoadToken || selectedDate !== value) return; if (available.complete) { selectedSegment = candidate; $("daySegment").value = candidate; status = available; break; } } }  if (status.complete) { await showCompletedDay(value, token); return; } showReady(status); }
+async function loadDay(value, preferAvailable = true, preserveCurrent = false) {
+  const token = ++activeLoadToken; selectedDate = value; dayBuilt = false; activeRebuild = false; loadCancelled = false;
+  $("selectedDate").textContent = displayDate(value); setNavigationBusy(false); await refreshBlockLabels(value);
+  if (!preserveCurrent) {
+    $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery();
+    $("summary").textContent = ""; $("startLoading").classList.add("hidden"); $("stopLoading").classList.add("hidden");
+  }
+  let status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`);
+  if (token !== activeLoadToken || selectedDate !== value) return;
+  // A completed all-day union is the most useful representation of a date and is always
+  // the automatic default. Passing preferAvailable=false is the explicit user action of
+  // choosing a half from the selector, so that choice still remains available.
+  if (preferAvailable && selectedSegment !== "all") {
+    const allDay = await api(`/api/history/status?date=${value}&segment=all`);
+    if (token !== activeLoadToken || selectedDate !== value) return;
+    if (allDay.complete) {
+      selectedSegment = "all"; $("daySegment").value = "all"; status = allDay;
+    }
+  }
+  if (preferAvailable && !status.complete) {
+    for (const candidate of ["all", "evening", "morning"]) {
+      if (candidate === selectedSegment) continue;
+      const available = await api(`/api/history/status?date=${value}&segment=${candidate}`);
+      if (token !== activeLoadToken || selectedDate !== value) return;
+      if (available.complete) { selectedSegment = candidate; $("daySegment").value = candidate; status = available; break; }
+    }
+  }
+  clearGallery(); $("summary").textContent = "";
+  if (status.complete) { await showCompletedDay(value, token); return; }
+  $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden");
+  $("startLoading").classList.add("hidden"); $("stopLoading").classList.add("hidden"); showBuildReady(status);
+}
 // Tags explain both why an image ranked where it did and why one might be hidden, so
 // they are shown rather than kept as an internal signal. "Not read yet" is stated
 // plainly: it is a different thing from an image that genuinely carries no tags.
@@ -449,7 +596,33 @@ $("close").onclick = () => $("details").close(); $("details").onclick = event =>
   setNavigationBusy(false);
 }
 $("stopLoading").onclick = async () => { const wasRebuild = activeRebuild; loadCancelled = true; $("stopLoading").disabled = true; try { await api("/api/history/cancel", { method: "POST", body: JSON.stringify({ date: selectedDate, segment: activeBuildSegment || selectedSegment }) }); activeBuildSegment = null; if (wasRebuild) { toast("Rebuild stopped. Your previous gallery is unchanged."); await loadDay(selectedDate); } else showStopped(); } catch (error) { toast(error.message); } };
-$("startLoading").onclick = () => (selectedSegment === "all" ? beginFullDay(false) : beginSelectedDay(false)).catch(showLoadError);
+$("buildRange").querySelectorAll("[data-segment]").forEach(button => { button.onclick = () => {
+  buildSegment = button.dataset.segment; refreshBuildChoices();
+}; });
+$("buildCoverage").querySelectorAll("[data-rating]").forEach(button => { button.onclick = () => {
+  buildCoverageRating = button.dataset.rating; refreshBuildChoices();
+}; });
+$("completeDay").onclick = async () => {
+  const missing = currentBlocks?.morning?.complete ? "evening" : "morning";
+  selectedSegment = missing; buildSegment = missing; $("daySegment").value = missing;
+  await loadDay(selectedDate, false);
+};
+$("startLoading").onclick = async () => {
+  if ($("startLoading").disabled) return;
+  $("startLoading").disabled = true;
+  try {
+    // The first view should always be something the chosen collection coverage holds.
+    // Afterward the normal browsing selector remains completely independent and local.
+    const levels = { Soft: [1, 2], Mature: [1, 2, 4], X: [1, 2, 4, 8, 16] }[buildCoverageRating];
+    const settings = await api("/api/settings", { method: "POST",
+      body: JSON.stringify({ browsingLevels: levels }) });
+    contentRating = settings.contentRating;
+    visibleBrowsingLevels = new Set(settings.browsingLevels);
+    showContentRating();
+    selectedSegment = buildSegment; $("daySegment").value = buildSegment;
+    await (buildSegment === "all" ? beginFullDay(false) : beginSelectedDay(false));
+  } catch (error) { showLoadError(error); }
+};
 $("rebuildDay").onclick = () => { if (!dayBuilt || !confirm(`Rebuild ${displayDate(selectedDate)}? Your current gallery will remain safe if you stop.`)) return; (selectedSegment === "all" ? beginFullDay(true) : beginSelectedDay(true)).catch(showLoadError); };
 async function closeApplication() { loadCancelled = true; document.body.innerHTML = '<main id="loading"><div class="history-loading"><h2>App closed</h2><p>You can close this browser tab. Launch the executable again whenever you want to continue.</p></div></main>'; try { await api("/api/app/close", { method: "POST", body: "{}" }); } catch (_) {} }
 $("closeApp").onclick = closeApplication; $("closeLoading").onclick = closeApplication;
@@ -485,12 +658,12 @@ $("contentFilter").onclick = () => {
   $("contentFilter").setAttribute("aria-expanded", String(!opening));
   $("modelMenu").classList.add("hidden");
 };
-$("contentMenu").querySelectorAll("[data-rating]").forEach(button => {
+$("contentMenu").querySelectorAll("[data-level]").forEach(button => {
   button.onclick = () => {
-    const next = button.dataset.rating === "Mature"
-      ? (contentRating === "Soft" ? "Mature" : "Soft")
-      : (contentRating === "X" ? "Mature" : "X");
-    chooseContentRating(next);
+    const level = Number(button.dataset.level), next = new Set(visibleBrowsingLevels);
+    next.has(level) ? next.delete(level) : next.add(level);
+    if (!next.size) return toast("Select at least one browsing level.");
+    chooseContentRating([...next]);
   };
 });
 document.addEventListener("click", event => {
@@ -578,7 +751,7 @@ async function openDay() {
     $("daySegment").value = selectedSegment; $("dayView").value = selectedView;
     $("modelFilter").textContent = modelButtonLabel();
     const state = await api(`/api/history/status?date=${saved.date}&segment=${selectedSegment}`);
-    if (state.complete) { pendingRestore = saved; return loadDay(saved.date, false); }
+    if (state.complete) { pendingRestore = saved; return loadDay(saved.date, true); }
   }
   const status = await api(`/api/history/status?date=${newestDate}&segment=all`);
   if (status.complete) { selectedSegment = "all"; $("daySegment").value = "all"; }
@@ -587,7 +760,7 @@ async function openDay() {
 let pendingRestore = null;
 async function applyPendingRestore() {
   const saved = pendingRestore; pendingRestore = null;
-  if (!saved || saved.date !== selectedDate) return;
+  if (!saved || saved.date !== selectedDate || (saved.segment || "evening") !== selectedSegment) return;
   const target = Math.min(saved.loaded || 0, artistTotal || 0);
   let guard = 0;
   while (loadedArtists < target && guard++ < 40) { await loadMore(); }
@@ -606,7 +779,7 @@ async function runFirstAnalysis() {
   } catch (error) { $("welcomeStatus").textContent = `Skipping analysis: ${error.message}`; }
 }
 async function startup() {
-  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; showContentRating(); } catch (_) { showContentRating(); }
+  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); showContentRating(); } catch (_) { showContentRating(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
@@ -809,6 +982,30 @@ function renderDiscovery(data) {
     metricCard("Not yet followed", data.creatorsNotFollowed, "Reacted to 5+ times, but you do not follow them"),
     donut(data.reactionMix || [], data.reactionRecords),
   ].join("");
+  let fingerprintPanel = $("creativeFingerprint");
+  if (!fingerprintPanel) {
+    fingerprintPanel = document.createElement("section");
+    fingerprintPanel.id = "creativeFingerprint";
+    fingerprintPanel.className = "panel wide fingerprint-panel";
+    fingerprintPanel.innerHTML = `<div class="panel-head"><div><h3>Your creative fingerprint</h3><p id="fingerprintNote" class="panel-note"></p></div></div><div class="fingerprint-grid"><div><h4>Strong visual signals</h4><div id="fingerprintTags" class="fingerprint-tags"></div></div><div><h4>Model signals</h4><div id="fingerprintModels"></div></div></div>`;
+    document.querySelector(".panel-grid").prepend(fingerprintPanel);
+  }
+  const fingerprint = data.recentWork || {};
+  fingerprintPanel.classList.toggle("hidden", !safeCount(fingerprint.images));
+  if (safeCount(fingerprint.images)) {
+    const coverage = fingerprint.complete ? "your public upload history" : "the uploads collected so far";
+    $("fingerprintNote").textContent = `Built from ${displayCount(fingerprint.images)} images across ${coverage}. Future refreshes stop at the first known upload and add only new images. Strong tags appear in at least 10% of the archive and occur at least 50% more often here than in the Civitai comparison sample; generic and one-off tags are left out.`;
+    $("fingerprintTags").innerHTML = (fingerprint.strongTags || []).map(tag =>
+      `<span class="fingerprint-tag"><b>${escapeHtml(tag.name)}</b><small>${displayCount(tag.images)} of ${displayCount(fingerprint.images)}${tag.lift ? ` · ×${tag.lift} distinctive` : ""}</small></span>`).join("") || '<span class="empty-note">More comparison data is needed to identify strong tags.</span>';
+    $("fingerprintModels").innerHTML = rankList((fingerprint.models || []).slice(0, 8).map(model => {
+      const version = model.versionName && model.versionName !== model.modelName ? ` · ${model.versionName}` : "";
+      const label = model.modelName ? `${model.modelName}${version}` : (model.versionName || `Model version ${model.id}`);
+      const name = model.modelId
+        ? `<a href="https://civitai.red/models/${escapeHtml(model.modelId)}?modelVersionId=${escapeHtml(model.id)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`
+        : escapeHtml(label);
+      return `<div class="rank-item"><span class="rank-name">${name}</span><span class="rank-value">${displayCount(model.images)} images · ${model.percent}%</span></div>`;
+    }), "No model information was published with these images.");
+  }
   const topTagMax = Math.max(1, ...(data.topTags || []).map(tag => tag.images));
   $("topTags").innerHTML = (data.topTags || []).map(tag => barRow(tag.name, `${displayCount(tag.images)} · ${tag.percent}%`, tag.images / topTagMax)).join("");
   applyBarWidths($("topTags"));

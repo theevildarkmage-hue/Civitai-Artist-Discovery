@@ -10,53 +10,63 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def reload_paths(local_app_data, override=None):
+def reload_paths(local_app_data, override=None, app_root=None):
     os.environ["LOCALAPPDATA"] = str(local_app_data)
     if override is None:
         os.environ.pop("CIVITAI_HISTORY_DATA_DIR", None)
     else:
         os.environ["CIVITAI_HISTORY_DATA_DIR"] = str(override)
     import discovery.paths as paths
-    return importlib.reload(paths)
+    paths = importlib.reload(paths)
+    if app_root is not None:
+        paths.application_root = lambda: Path(app_root)
+    return paths
 
 
 original_local = os.environ.get("LOCALAPPDATA")
 original_override = os.environ.get("CIVITAI_HISTORY_DATA_DIR")
 try:
-    # A fresh machine simply uses the current folder name.
+    # A fresh machine uses data/ beside the application without touching LocalAppData.
     with tempfile.TemporaryDirectory(prefix="loc-fresh-") as base:
-        paths = reload_paths(base)
+        app = Path(base) / "portable-app"
+        app.mkdir()
+        paths = reload_paths(base, app_root=app)
         root = paths.data_root()
-        assert root == Path(base) / "CivitaiArtistDiscovery", root
+        assert root == app / "data", root
         assert not root.exists(), "resolving the path should not create it"
 
-    # A folder left by the previous name is moved, with its contents.
+    # An existing installation is moved into portable storage, with its contents.
     with tempfile.TemporaryDirectory(prefix="loc-legacy-") as base:
-        paths = reload_paths(base)
-        legacy = Path(base) / "CivitaiArtistHistory"
-        (legacy / "history").mkdir(parents=True)
-        (legacy / "history" / "history.sqlite3").write_bytes(b"archive")
-        (legacy / "oauth_tokens.dpapi").write_bytes(b"token")
+        app = Path(base) / "portable-app"
+        app.mkdir()
+        paths = reload_paths(base, app_root=app)
+        previous = Path(base) / "CivitaiArtistDiscovery"
+        (previous / "history").mkdir(parents=True)
+        (previous / "history" / "history.sqlite3").write_bytes(b"archive")
+        (previous / "oauth_tokens.dpapi").write_bytes(b"token")
         root = paths.data_root()
-        assert root == Path(base) / "CivitaiArtistDiscovery", root
-        assert not legacy.exists(), "the old folder was left behind"
+        assert root == app / "data", root
+        assert not previous.exists(), "the previous data folder was left behind"
         assert (root / "history" / "history.sqlite3").read_bytes() == b"archive"
         assert (root / "oauth_tokens.dpapi").read_bytes() == b"token"
 
-    # If both exist, the current folder wins and the old one is left untouched rather
-    # than merged, because merging could silently overwrite a live archive.
+    # Existing portable data wins and old data is not merged over it.
     with tempfile.TemporaryDirectory(prefix="loc-both-") as base:
-        paths = reload_paths(base)
-        legacy, current = Path(base) / "CivitaiArtistHistory", Path(base) / "CivitaiArtistDiscovery"
-        legacy.mkdir(); current.mkdir()
-        (legacy / "marker").write_bytes(b"old")
-        assert paths.data_root() == current
-        assert (legacy / "marker").exists()
+        app = Path(base) / "portable-app"
+        app.mkdir()
+        paths = reload_paths(base, app_root=app)
+        previous, portable = Path(base) / "CivitaiArtistDiscovery", app / "data"
+        previous.mkdir(); portable.mkdir(parents=True)
+        (previous / "marker").write_bytes(b"old")
+        assert paths.data_root() == portable
+        assert (previous / "marker").exists()
 
     # An explicit override always wins and never triggers a move.
     with tempfile.TemporaryDirectory(prefix="loc-override-") as base:
         chosen = Path(base) / "elsewhere"
-        paths = reload_paths(base, override=chosen)
+        app = Path(base) / "portable-app"
+        app.mkdir()
+        paths = reload_paths(base, override=chosen, app_root=app)
         legacy = Path(base) / "CivitaiArtistHistory"
         legacy.mkdir()
         assert paths.data_root() == chosen
@@ -65,10 +75,12 @@ try:
     # Every module that needs the folder asks the same resolver, which is what stops the
     # copies drifting the way the OAuth token path once did.
     with tempfile.TemporaryDirectory(prefix="loc-shared-") as base:
-        reload_paths(base)
+        app = Path(base) / "portable-app"
+        app.mkdir()
+        reload_paths(base, app_root=app)
         import discovery.oauth as oauth
         importlib.reload(oauth)
-        expected = Path(base) / "CivitaiArtistDiscovery"
+        expected = app / "data"
         assert oauth.APP_DATA == expected, oauth.APP_DATA
         assert oauth.TOKEN_PATH == expected / "oauth_tokens.dpapi", oauth.TOKEN_PATH
 finally:
@@ -79,5 +91,5 @@ finally:
     else:
         os.environ.pop("CIVITAI_HISTORY_DATA_DIR", None)
 
-print({"freshInstall": True, "legacyFolderMoved": True, "bothPresentPrefersCurrent": True,
-       "overrideWins": True, "oauthSharesResolver": True})
+print({"freshPortableInstall": True, "existingInstallMoved": True,
+       "portableFolderWins": True, "overrideWins": True, "oauthSharesResolver": True})

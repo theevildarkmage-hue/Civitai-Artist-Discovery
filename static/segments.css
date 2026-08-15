@@ -4,3 +4,20 @@
 .segment-toolbar{position:sticky;top:var(--header-h,74px);z-index:25;display:flex;justify-content:center;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:8px 12px;background:#17181bf7;backdrop-filter:blur(16px);border-bottom:1px solid #292b31;color:var(--muted);font-size:13px}
 .segment-toolbar select{border:1px solid var(--line);background:#22242a;color:var(--text);padding:7px 10px;border-radius:8px;max-width:100%}
 .segment-toolbar label{white-space:nowrap}
+.complete-day-prompt{display:flex;align-items:center;gap:10px;padding:5px 8px 5px 12px;border:1px solid #315c56;border-radius:9px;background:#18302d;color:#cce8e4}
+.complete-day-prompt button{padding:6px 10px;border-color:#4b8f85;background:#24534d;color:#fff}
+
+/* Collection choices live on the build screen. Gallery controls disappear there so
+   display filters cannot be mistaken for download settings. */
+.ready-to-build .loading-phases,.ready-to-build .loading-status,
+.ready-to-build .progress-track,.ready-to-build .loading-privacy{display:none}
+.ready-to-build{height:auto!important;min-height:calc(100vh - var(--header-h,74px));padding:36px 0}
+.ready-to-build .history-loading{width:min(1100px,96vw)}
+.build-setup{width:min(980px,calc(100vw - 40px));margin:12px auto 26px;display:grid;grid-template-columns:1fr 1fr;gap:16px;text-align:left}
+.build-choice,.build-estimate,.build-explainer{border:1px solid #34373e;border-radius:14px;background:#18191d;padding:18px}
+.build-choice>strong{font-size:18px}.build-choice>p{margin:5px 0 14px;color:#a5a8b2}
+.build-options{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.build-options button{display:flex;min-height:74px;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px;padding:12px;border:1px solid #3a3d45;background:#24262c;color:#e7e8ec;text-align:left}
+.build-options button small{color:#9da1ac}.build-options button.selected{border-color:#65d5c8;background:#1d3c38;box-shadow:inset 0 0 0 1px #65d5c8}.build-options button.selected small{color:#b9e8e2}
+.build-estimate{grid-column:1/-1;display:grid;grid-template-columns:1fr auto;align-items:center;gap:3px 20px}.build-estimate span,.build-estimate small{color:#a5a8b2}.build-estimate strong{grid-row:1/3;grid-column:2;font-size:28px;color:#65d5c8}.build-explainer{grid-column:1/-1;margin:0;color:#c7cad1;text-align:center;background:#142724;border-color:#315c56}
+@media(max-width:760px){.build-setup{grid-template-columns:1fr}.build-estimate,.build-explainer{grid-column:1}.build-options{grid-template-columns:1fr}.build-estimate{grid-template-columns:1fr}.build-estimate strong{grid-row:auto;grid-column:auto}}

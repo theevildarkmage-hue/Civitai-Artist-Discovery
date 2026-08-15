@@ -1,17 +1,16 @@
 """'For you' must score whichever image the card actually shows.
 
 Found while investigating why a card with no visible match still ranked above cards that
-had one: the archive picks a creator's cover pseudo-randomly, and separately, a cover the
+had one: the archive picks a creator's most-reacted image, and separately, a cover the
 account hides gets swapped for a visible image at display time. Scoring used the raw
 archive pick; the explanation used the swapped, displayed one. When those two images
 differ, a creator's real match can be sitting on a hidden image nobody ever scores, while
 the shown card silently scores as zero.
 
-This reproduces it directly: give a creator two images, hide whichever one the archive's
-own hash would pick as the representative, and put a real taste match on the other.
+This reproduces it directly: give a creator two images, hide the more-reacted image the
+archive picks as the representative, and put a real taste match on the other.
 """
 
-import hashlib
 from datetime import datetime, timedelta
 import json
 import os
@@ -27,12 +26,6 @@ sys.path.insert(0, str(ROOT))
 PORT = 8899
 
 
-def representative_index(day: str, username_key: str, count: int) -> int:
-    """Mirror HistoryArchive.build_artist_index's pseudo-random cover pick exactly."""
-    digest = hashlib.sha256(f"{day}:{username_key}".encode()).digest()
-    return int.from_bytes(digest[:4], "big") % count
-
-
 with tempfile.TemporaryDirectory(prefix="civitai-foryou-hidden-", ignore_cleanup_errors=True) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     import discovery.taste as taste
@@ -46,16 +39,15 @@ with tempfile.TemporaryDirectory(prefix="civitai-foryou-hidden-", ignore_cleanup
     # Newer first, matching the DESC query build_artist_index reads its items from.
     newer_id, older_id = 9601, 9602
     key = "hiddenmatch"
-    idx = representative_index(day, key, 2)
-    hidden_id, visible_id = (newer_id, older_id) if idx == 0 else (older_id, newer_id)
+    hidden_id, visible_id = newer_id, older_id
 
-    def image(image_id, minute):
+    def image(image_id, minute, reactions):
         return {"id": image_id, "postId": image_id, "username": "HiddenMatch",
                 "createdAt": f"{day}T13:{minute:02d}:00Z", "url": pixel, "width": 8, "height": 8,
-                "type": "image", "nsfwLevel": "None", "stats": {"reactionCount": 1}}
+                "type": "image", "nsfwLevel": "None", "stats": {"reactionCount": reactions}}
 
     history._upsert_normalized([
-        image(newer_id, 30), image(older_id, 20),
+        image(newer_id, 30, 2), image(older_id, 20, 1),
         # A plain, unhidden control creator: no match, must stay ranked behind HiddenMatch.
         {"id": 9603, "postId": 9603, "username": "PlainNoMatch", "createdAt": f"{day}T12:00:00Z",
          "url": pixel, "width": 8, "height": 8, "type": "image", "nsfwLevel": "None",
@@ -69,7 +61,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-foryou-hidden-", ignore_cleanup
     with history.connect() as db:
         stored = db.execute("SELECT representative_id FROM day_artists WHERE day=? AND username_key=?",
                             (day, key)).fetchone()[0]
-    assert stored == hidden_id, (stored, hidden_id, "test's hash replica drifted from production")
+    assert stored == hidden_id, (stored, hidden_id, "most-reacted cover was not selected")
 
     store = TasteStore(Path(temporary) / "discovery")
     # A weighted taste tag: >=3 reacted images carrying it, no baseline needed for a
@@ -116,6 +108,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-foryou-hidden-", ignore_cleanup
         # The score that earned its rank and the explanation shown must talk about the
         # same image: a real match must produce a real explanation.
         assert matched["matchedTags"] == ["distinctive-tag"], matched["matchedTags"]
+        assert matched["recommendationLabel"] == "New match", matched
+        assert "New to you" in matched["recommendationReasons"], matched
 
         # And that real match must actually outrank a creator with no match at all —
         # the exact symptom that exposed the bug (a no-match card ranking first).

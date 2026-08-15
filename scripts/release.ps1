@@ -1,8 +1,8 @@
-# Build a release, package it, then print the hash that lets testers verify it.
-# Folder build by default; -OneFile produces the single-executable form instead.
+# Build the portable folder release, package it, then print its verification hash.
 param([switch]$OneFile, [int]$KeepBackups = 3)
 
 $ErrorActionPreference = 'Stop'
+if ($OneFile) { throw 'Portable releases use the folder build; -OneFile is no longer supported.' }
 $root = Split-Path -Parent $PSScriptRoot
 
 # Identifies a build by its contents rather than by when it was written. A re-run after a

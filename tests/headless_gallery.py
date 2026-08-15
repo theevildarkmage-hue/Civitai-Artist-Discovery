@@ -90,8 +90,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
             assert page.locator("#daySegment").input_value() == "all"
             assert page.locator("#rebuildDay").is_enabled()
             page.locator("#rebuildDay").click()
-            page.locator("#loadingTitle", has_text="Rebuilding").wait_for()
             page.wait_for_selector(".creator-card")
+            deadline = time.monotonic() + 5
+            while len(rebuilds) < 2 and time.monotonic() < deadline:
+                page.wait_for_timeout(50)
             assert [request["segment"] for request in rebuilds] == ["morning", "evening"], rebuilds
             assert all(request["date"] == yesterday for request in rebuilds)
             initial = page.locator(".creator-card").count()

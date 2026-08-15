@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,19 +31,22 @@ from discovery.site import SITE_ORIGIN, profile_url
 from discovery.social import (CivitaiHTTPError, SocialClient, auth_status,
                               following_ids, reaction_names)
 from discovery.taste import EMERGING_FOLLOWERS, TasteStore, WORTH_FOLLOWING_MIN
+from discovery.tray import start_windows_tray, stop_windows_tray
 
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "0.2.0-alpha"
+APP_VERSION = "0.3.0-beta.1"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
 FOLLOW_CACHE = DATA_ROOT / "following.json"
 CREATOR_PROFILES = DATA_ROOT / "cache" / "creator_profiles.json"
 SETTINGS = AppSettings(DATA_ROOT / "settings.json")
-HISTORY = HistoryArchive(DATA_ROOT / "history", SETTINGS.load()["contentRating"])
+INITIAL_SETTINGS = SETTINGS.load()
+HISTORY = HistoryArchive(DATA_ROOT / "history", INITIAL_SETTINGS["contentRating"],
+                         INITIAL_SETTINGS["browsingLevels"])
 TASTE = TasteStore(DATA_ROOT / "discovery")
 WRITE_LOCK = threading.Lock()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
@@ -161,12 +164,13 @@ def visible_creator_keys(key: str, hidden_images: set) -> set:
     with WRITE_LOCK:
         if VISIBLE_CACHE["token"] != token:
             VISIBLE_CACHE.update({"token": token, "keys": {}})
-        cached = VISIBLE_CACHE["keys"].get(key)
+        cache_key = (key, tuple(HISTORY.visible_levels))
+        cached = VISIBLE_CACHE["keys"].get(cache_key)
     if cached is None:
         cached = HISTORY.creators_with_visible_images(key, hidden_images)
         with WRITE_LOCK:
             if VISIBLE_CACHE["token"] == token:
-                VISIBLE_CACHE["keys"][key] = cached
+                VISIBLE_CACHE["keys"][cache_key] = cached
     return cached
 
 
@@ -181,6 +185,7 @@ def hidden_preferences() -> tuple[set, set]:
 
 
 GALLERY_VIEWS = ("discovery", "followed", "new", "emerging", "foryou")
+RECENT_MODEL_MIN_SHARE = .10
 # Two personalised views need data the daily archive never collected: follower counts for
 # every creator, and tags for the image on each card. Both are fetched once per day in the
 # background and cached permanently.
@@ -292,7 +297,10 @@ def gallery_signals() -> dict:
 
 
 def day_view_order(key: str, view: str, pinned_username: str | None,
-                   signals: dict, hidden_images: set | None = None) -> tuple[list[str] | None, int | None]:
+                   signals: dict, hidden_images: set | None = None,
+                   hidden_creators: set | None = None,
+                   eligible_creators: set | None = None,
+                   seen: set | None = None) -> tuple[list[str] | None, int | None]:
     """Order (and for 'new', filter) a whole day's creators by personal signal.
 
     Returns None to mean "use the archive's own order", which keeps the default view on
@@ -302,21 +310,106 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
         return None, None
     followed, reacted = signals["followed"], signals["reacted"]
     rows = HISTORY.day_artist_keys(key)
+    hidden_creators = set(hidden_creators or ())
+    if hidden_creators or eligible_creators is not None:
+        rows = [row for row in rows if row["key"] not in hidden_creators and
+                (eligible_creators is None or row["key"] in eligible_creators)]
     pinned = (pinned_username or "").casefold()
     if view == "foryou":
         # Score whichever image will actually be the card's cover, not the raw archive
         # pick: a hidden cover can carry the score while a different image renders, and
         # scoring the wrong one produces a top-ranked card with no visible explanation.
         effective = HISTORY.effective_representative_ids(key, hidden_images)
-        scores = TASTE.score_images(list(effective.values()))
-        if not scores:
+        image_ids = [effective[row["key"]] for row in rows if row["key"] in effective]
+        if hasattr(TASTE, "score_image_components"):
+            components = TASTE.score_image_components(image_ids)
+        else:
+            components = {image_id: {"reaction": score, "recent": 0.0}
+                          for image_id, score in TASTE.score_images(image_ids).items()}
+        model_weights = TASTE.recent_model_weights() if hasattr(TASTE, "recent_model_weights") else {}
+        image_models = HISTORY.image_model_versions(image_ids)
+        if not components:
             return None, None
-        def score_for(row):
+        def component_for(row, name):
             image_id = effective.get(row["key"], row["representativeId"])
-            return scores.get(image_id, -1.0)
-        # Highest taste score first; creators whose shown image has no tags yet keep
-        # their archive order behind everyone scored.
-        ordered = sorted(rows, key=lambda row: (-score_for(row), row["rank"]))
+            return components.get(image_id, {}).get(name, 0.0)
+        def model_for(row):
+            image_id = effective.get(row["key"], row["representativeId"])
+            value = max((model_weights.get(value, 0.0)
+                         for value in image_models.get(image_id, set())), default=0.0)
+            return value if value >= RECENT_MODEL_MIN_SHARE else 0.0
+        scored = [row for row in rows if component_for(row, "reaction") > 0 or
+                  component_for(row, "recent") > 0]
+        if not scored:
+            return None, None
+        max_rank = max(1, max(row["rank"] for row in rows))
+        counts = TASTE.follower_counts([row["username"] for row in rows])
+
+        def normalized(name):
+            values = [component_for(row, name) for row in scored]
+            low, high = min(values), max(values)
+            return lambda row: (1.0 if high == low and high > 0 else
+                                (component_for(row, name) - low) / (high - low) if high > low else 0.0)
+        reaction_score, recent_score = normalized("reaction"), normalized("recent")
+
+        def engagement(row):
+            return 1.0 - min(1.0, row["rank"] / max_rank)
+
+        def affinity(row):
+            reacted_strength = math.log1p(min(20, int(reacted.get(row["key"], 0)))) / math.log(21)
+            return max(.65 if row["key"] in followed else 0.0, reacted_strength)
+
+        similar, familiar, emerging, new = [], [], [], []
+        for row in scored:
+            key_name = row["key"]
+            if key_name == pinned:
+                continue
+            if component_for(row, "recent") > 0 and model_for(row) > 0:
+                similar.append(row)
+            elif key_name in followed or key_name in reacted:
+                familiar.append(row)
+            elif counts.get(key_name) is not None and counts[key_name] < EMERGING_FOLLOWERS:
+                emerging.append(row)
+            else:
+                new.append(row)
+
+        discovery_score = lambda row: (.55 * reaction_score(row) + .30 * recent_score(row) +
+                                       .15 * engagement(row))
+        similar_score = lambda row: (.55 * recent_score(row) + .30 * model_for(row) +
+                                     .10 * reaction_score(row) + .05 * engagement(row))
+        familiar_score = lambda row: (.45 * reaction_score(row) + .20 * recent_score(row) +
+                                      .30 * affinity(row) + .05 * engagement(row))
+        similar.sort(key=lambda row: (-similar_score(row), row["rank"]))
+        new.sort(key=lambda row: (-discovery_score(row), row["rank"]))
+        emerging.sort(key=lambda row: (-discovery_score(row), row["rank"]))
+        familiar.sort(key=lambda row: (-familiar_score(row), row["rank"]))
+
+        # Two current-style matches, one proven favorite, then one emerging creator.
+        # A reaction-taste match fills a style slot when no model-backed match remains.
+        seen = set(seen or ())
+        def blend_group(is_seen: bool) -> list[dict]:
+            queues = {"similar": deque(row for row in similar if (row["key"] in seen) == is_seen),
+                      "new": deque(row for row in new if (row["key"] in seen) == is_seen),
+                      "familiar": deque(row for row in familiar if (row["key"] in seen) == is_seen),
+                      "emerging": deque(row for row in emerging if (row["key"] in seen) == is_seen)}
+            group = []
+            while any(queues.values()):
+                for lane in ("similar", "similar", "familiar", "emerging"):
+                    source = lane if queues[lane] else "new" if lane == "similar" and queues["new"] else None
+                    if source:
+                        group.append(queues[source].popleft())
+                if queues["new"] and not any(
+                        queues[name] for name in ("similar", "familiar", "emerging")):
+                    group.append(queues["new"].popleft())
+            return group
+        blended = blend_group(False) + blend_group(True)
+        chosen = {row["key"] for row in blended}
+        # Missing tag data is not evidence of a poor match. Keep unscored creators in the
+        # archive's engagement order after the personalized portion instead of dropping
+        # them or inventing a score; the user's own card also stays out of recommendations.
+        remainder = sorted((row for row in rows if row["key"] not in chosen),
+                           key=lambda row: row["key"] in seen)
+        ordered = blended + remainder
         return [row["key"] for row in ordered], len(ordered)
     if view == "emerging":
         # Emerging exists to surface creators the user has not found yet, so anyone they
@@ -406,18 +499,24 @@ def _seen_last(key: str, order: list[str] | None, total: int | None,
 
 
 def cached_day_view_order(key: str, view: str, pinned_username: str | None, signals: dict,
-                          hidden_images: set | None, session_token: str | None, seen: set
+                          hidden_images: set | None, session_token: str | None, seen: set,
+                          hidden_creators: set | None = None,
+                          eligible_creators: set | None = None
                           ) -> tuple[list[str] | None, int | None]:
     if not session_token:
-        order, total = day_view_order(key, view, pinned_username, signals, hidden_images)
-        return _seen_last(key, order, total, seen)
+        order, total = day_view_order(key, view, pinned_username, signals, hidden_images,
+                                      hidden_creators, eligible_creators, seen)
+        return ((order, total) if view == "foryou" and order is not None
+                else _seen_last(key, order, total, seen))
     cache_key = (key, view, pinned_username)
     with WRITE_LOCK:
         cached = ORDER_CACHE.get(cache_key)
         if cached is not None and cached[0] == session_token:
             return cached[1], cached[2]
-    order, total = day_view_order(key, view, pinned_username, signals, hidden_images)
-    order, total = _seen_last(key, order, total, seen)
+    order, total = day_view_order(key, view, pinned_username, signals, hidden_images,
+                                  hidden_creators, eligible_creators, seen)
+    if view != "foryou" or order is None:
+        order, total = _seen_last(key, order, total, seen)
     with WRITE_LOCK:
         ORDER_CACHE[cache_key] = (session_token, order, total)
     return order, total
@@ -631,6 +730,15 @@ def clear_instance_url(url: str) -> None:
         pass
 
 
+def request_app_shutdown(server: ThreadingHTTPServer) -> None:
+    """Stop background work and ask the local HTTP server to exit."""
+    HISTORY.cancel()
+    TASTE.stop_sync()
+    for event in SWEEP_CANCEL.values():
+        event.set()
+    threading.Thread(target=server.shutdown, daemon=True, name="app-shutdown").start()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "CivitaiDiscovery/1.0"
     timeout = 15
@@ -720,7 +828,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/settings":
             self.json_response({**SETTINGS.load(), "siteOrigin": SITE_ORIGIN,
-                "ratings": ["Soft", "Mature", "X"]})
+                "ratings": ["Soft", "Mature", "X"],
+                "browsingLevelOptions": [1, 2, 4, 8, 16]})
             return
         if parsed.path == "/api/history/status":
             try:
@@ -738,9 +847,10 @@ class Handler(BaseHTTPRequestHandler):
                 blocks = {}
                 for segment in ("morning", "evening", "all"):
                     state = HISTORY.status(HISTORY.archive_key(value, segment))
-                    blocks[segment] = {"complete": bool(state.get("complete")),
+                    blocks[segment] = {"complete": bool(state.get("archiveComplete")),
                         "itemCount": int(state.get("itemCount") or 0),
-                        "state": state.get("state")}
+                        "state": state.get("state"),
+                        "contentRating": state.get("archiveContentRating")}
                 self.json_response({"date": value, "blocks": blocks})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Day blocks", error)
@@ -752,6 +862,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"date": value, "models": HISTORY.day_models(key)})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Day models", error)
+            return
+        if parsed.path == "/api/history/estimate":
+            try:
+                segment = query.get("segment", ["all"])[0]
+                rating = query.get("contentRating", ["Soft"])[0]
+                value = query.get("date", [None])[0]
+                self.json_response(HISTORY.build_estimate(segment, rating, value))
+            except ValueError as error: self.json_response({"error": str(error)}, 400)
+            except Exception as error: self.internal_error("Build estimate", error)
             return
         if parsed.path == "/api/history/day":
             try:
@@ -787,10 +906,12 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception: pinned_username = None
                 signals = gallery_signals()
                 hidden_creators, hidden_images = hidden_preferences()
+                showable = visible_creator_keys(key, hidden_images) if hidden_images else None
                 session_token = query.get("session", [None])[0]
                 seen = TASTE.seen_creator_keys(value)
                 order, total = cached_day_view_order(key, view, pinned_username, signals,
-                                                     hidden_images, session_token, seen)
+                                                     hidden_images, session_token, seen,
+                                                     hidden_creators, showable)
                 models = [value for value in query.get("model", []) if value][:20]
                 representatives = None
                 if models:
@@ -801,7 +922,6 @@ class Handler(BaseHTTPRequestHandler):
                         HISTORY.day_artist_keys(key)]) if key_name in allowed]
                     total = len(order)
                 if hidden_creators or hidden_images:
-                    showable = visible_creator_keys(key, hidden_images) if hidden_images else None
                     order = [key_name for key_name in (order or [row["key"] for row in
                         HISTORY.day_artist_keys(key)])
                         if key_name not in hidden_creators
@@ -813,9 +933,53 @@ class Handler(BaseHTTPRequestHandler):
                 if view == "foryou":
                     # State why each card placed where it did, rather than presenting a
                     # personalised order the user cannot inspect.
+                    page_image_ids = [(artist.get("representative") or {}).get("id")
+                                      for artist in artists]
+                    explanations = TASTE.explain_scores(page_image_ids)
+                    recent_explanations = TASTE.explain_recent_scores(page_image_ids)
+                    model_weights = TASTE.recent_model_weights()
+                    page_models = HISTORY.image_model_versions(page_image_ids)
+                    follower_counts = TASTE.follower_counts([
+                        artist.get("username", "") for artist in artists])
                     for artist in artists:
                         image = (artist.get("representative") or {}).get("id")
-                        artist["matchedTags"] = TASTE.explain_score(image) if image else []
+                        artist["matchedTags"] = explanations.get(image, []) if image else []
+                        artist["matchedRecentTags"] = recent_explanations.get(image, []) if image else []
+                        model_strength = max((model_weights.get(value, 0.0)
+                            for value in page_models.get(image, set())), default=0.0)
+                        artist["recentModelMatch"] = round(model_strength * 100)
+                        reasons = []
+                        reacted_count = int(artist.get("reactedCount") or 0)
+                        follower_count = follower_counts.get(artist.get("username", "").casefold())
+                        if artist["matchedTags"]:
+                            reasons.append("Matches your taste: " + ", ".join(artist["matchedTags"][:3]))
+                        if artist["matchedRecentTags"] and model_strength >= RECENT_MODEL_MIN_SHARE:
+                            artist["recommendationLabel"] = "Similar to your work"
+                            reasons.insert(0, "Shared creative signals: " +
+                                           ", ".join(artist["matchedRecentTags"][:3]))
+                            reasons.append(f"Uses a model found in {round(model_strength * 100)}% "
+                                           "of your uploaded work")
+                            if artist.get("following") or reacted_count:
+                                reasons.append("You follow this artist" if artist.get("following") else
+                                               f"You reacted to {reacted_count} of their images")
+                            else:
+                                reasons.append("New to you")
+                        elif artist.get("following") or reacted_count:
+                            artist["recommendationLabel"] = "Familiar favorite"
+                            reasons.append("You follow this artist" if artist.get("following") else
+                                           f"You reacted to {reacted_count} of their images")
+                        elif (artist["matchedTags"] or artist["matchedRecentTags"]) and \
+                                follower_count is not None and follower_count < EMERGING_FOLLOWERS:
+                            artist["recommendationLabel"] = "Emerging match"
+                            if artist["matchedRecentTags"]:
+                                reasons.insert(0, "Shared creative signals: " +
+                                               ", ".join(artist["matchedRecentTags"][:3]))
+                            reasons.append(f"Emerging creator · {follower_count:,} followers")
+                            reasons.append("New to you")
+                        elif artist["matchedTags"]:
+                            artist["recommendationLabel"] = "New match"
+                            reasons.append("New to you")
+                        artist["recommendationReasons"] = reasons
                 self.json_response({"date": value, "offset": offset, "artists": artists,
                     "view": view, "total": total, "hasMore": offset + len(artists) < total
                         if total is not None else len(artists) == limit})
@@ -996,20 +1160,26 @@ class Handler(BaseHTTPRequestHandler):
                 with OAUTH_LOCK: OAUTH_JOB.update({"state": "idle", "error": None})
                 self.json_response({"connected": False}); return
             if parsed.path == "/api/settings":
-                previous = HISTORY.content_rating
-                value = SETTINGS.update(content_rating_value=body.get("contentRating"))
+                previous = SETTINGS.load()
+                value = SETTINGS.update(browsing_levels_value=body.get("browsingLevels"),
+                                        content_rating_value=body.get("contentRating"))
                 try:
-                    HISTORY.set_content_rating(value["contentRating"])
+                    HISTORY.set_content_filter(value["browsingLevels"])
                 except Exception:
-                    SETTINGS.update(content_rating_value=previous)
+                    SETTINGS.update(browsing_levels_value=previous["browsingLevels"])
                     raise
                 with WRITE_LOCK:
-                    ORDER_CACHE.clear(); VISIBLE_CACHE.clear()
+                    ORDER_CACHE.clear()
+                    # Visibility is cached separately for each exact level selection,
+                    # so switching away and back can reuse it. The account-data token
+                    # still invalidates every selection when Civitai controls change.
                 self.json_response({**value, "siteOrigin": SITE_ORIGIN})
                 return
             if parsed.path == "/api/history/start":
                 value = str(body.get("date") or previous_local_day())
-                self.json_response(HISTORY.start(value, str(body.get("startUtc") or ""), str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"), str(body.get("segment") or "all")), 202)
+                self.json_response(HISTORY.start(value, str(body.get("startUtc") or ""),
+                    str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"),
+                    str(body.get("segment") or "all"), body.get("contentRating")), 202)
                 return
             if parsed.path == "/api/history/rebuild":
                 value = str(body.get("date") or previous_local_day())
@@ -1073,11 +1243,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"reset": True})
                 return
             if parsed.path == "/api/app/close":
-                HISTORY.cancel()
-                TASTE.stop_sync()
-                for event in SWEEP_CANCEL.values(): event.set()
                 self.json_response({"closing": True})
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                request_app_shutdown(self.server)
                 return
             try:
                 can_write = bool(auth_status().get("socialWrite"))
@@ -1202,6 +1369,13 @@ def main() -> None:
     save_instance_url(url)
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
+    tray = None
+    if not args.no_browser:
+        try:
+            tray = start_windows_tray(url, STATIC / "app.ico",
+                                      lambda: request_app_shutdown(server))
+        except Exception as error:
+            log_internal_error("Windows tray startup", error)
     if not args.no_browser:
         webbrowser.open(url, new=1)
     try:
@@ -1209,6 +1383,8 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        try: stop_windows_tray(tray)
+        except Exception as error: log_internal_error("Windows tray shutdown", error)
         server.server_close()
         try: HISTORY.checkpoint()
         except Exception as error: log_internal_error("SQLite shutdown checkpoint", error)

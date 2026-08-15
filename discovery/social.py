@@ -26,6 +26,24 @@ class CivitaiHTTPError(RuntimeError):
 
 
 class SocialClient:
+    def public_model_version(self, model_version_id: int) -> dict:
+        """Resolve a public model-version id without sending the OAuth token."""
+        request = urllib.request.Request(
+            f"{BASE_URL}/api/v1/model-versions/{int(model_version_id)}",
+            headers={"Accept": "application/json",
+                     "User-Agent": "CivitaiArtistDiscovery/1.0 (local artist discovery app)"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                value = json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace")[:600]
+            raise CivitaiHTTPError(
+                error.code, f"Civitai returned HTTP {error.code}: {detail}") from error
+        if not isinstance(value, dict):
+            raise RuntimeError("Civitai returned an unexpected model-version response")
+        return value
+
     def _request(self, request: urllib.request.Request) -> object:
         request.add_header("Authorization", f"Bearer {get_access_token()}")
         request.add_header("Accept", "application/json")
@@ -112,6 +130,21 @@ class SocialClient:
         page = self.query("image.getInfinite", payload)
         if not isinstance(page, dict):
             raise RuntimeError("Civitai returned an unexpected image page")
+        return {"items": page.get("items") or [], "nextCursor": page.get("nextCursor")}
+
+    def creator_images_page(self, username: str, cursor: object = None,
+                            limit: int = 100) -> dict:
+        """One newest-first page of a creator's public images, including tags."""
+        clean = str(username or "").strip()
+        if not clean:
+            raise ValueError("Provide a creator username")
+        payload = {"limit": max(1, min(200, int(limit))), "period": "AllTime",
+                   "sort": "Newest", "username": clean, "include": ["tags"]}
+        if cursor is not None:
+            payload["cursor"] = cursor
+        page = self.query("image.getInfinite", payload)
+        if not isinstance(page, dict):
+            raise RuntimeError("Civitai returned an unexpected creator image page")
         return {"items": page.get("items") or [], "nextCursor": page.get("nextCursor")}
 
 

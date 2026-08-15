@@ -11,9 +11,13 @@
 !README.md
 !CONTRIBUTING.md
 !LICENSE
+!THIRD_PARTY_NOTICES.md
 !requirements-dev.txt
 !requirements.txt
 !server.py
+
+# Portable runtime data lives beside the executable/source checkout.
+data/
 
 # Application modules
 !discovery/
@@ -38,7 +42,9 @@ scripts/*
 tests/*
 !tests/*.py
 
-# Current behavioral documentation only. Historical audits and release notes remain local.
+# Current behavioral documentation and the active release notes only. Historical audits
+# and superseded release plans remain local.
 !docs/
 docs/*
 !docs/content-controls.md
+!docs/beta-release.md

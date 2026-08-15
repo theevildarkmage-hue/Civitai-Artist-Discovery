@@ -105,8 +105,11 @@ with tempfile.TemporaryDirectory(prefix="gallery-views-", ignore_cleanup_errors=
 
     class FakeScores:
         def score_images(self, ids):
-            wanted = {reps["mid"]: 2.4, reps["unknown_a"]: 3.1, reps["popular"]: 0.5}
+            wanted = {reps["unknown_a"]: 3.1, reps["popular"]: 2.8,
+                      reps["reacted_one"]: 2.6, reps["mid"]: 2.4}
             return {k: v for k, v in wanted.items() if k in set(ids)}
+        def follower_counts(self, names):
+            return {"unknown_a": 40000, "popular": 40000, "mid": 120}
     real_taste = server.TASTE
     server.TASTE = FakeScores()
     try:
@@ -114,8 +117,28 @@ with tempfile.TemporaryDirectory(prefix="gallery-views-", ignore_cleanup_errors=
     finally:
         server.TASTE = real_taste
     assert total == len(creators), total
-    assert order[:3] == ["unknown_a", "mid", "popular"], order
-    assert set(order[3:]) == {"me", "followed_one", "reacted_one", "followed_two"}, order
+    # Two new matches, one familiar favorite, then one emerging match.
+    assert order[:4] == ["unknown_a", "popular", "reacted_one", "mid"], order
+    assert set(order[4:]) == {"me", "followed_one", "followed_two"}, order
+
+    server.TASTE = FakeScores()
+    try:
+        seen_mix, _ = server.day_view_order(
+            day, "foryou", "Me", signals, seen={"reacted_one", "mid"})
+    finally:
+        server.TASTE = real_taste
+    assert seen_mix[:4] == ["unknown_a", "popular", "reacted_one", "mid"], seen_mix
+
+    # Content-Control exclusions are applied before lanes are blended. Removing a card
+    # after blending can collapse the intended lane mix into a run of only new matches.
+    eligible = {row["key"] for row in history.day_artist_keys(day)} - {"reacted_one"}
+    server.TASTE = FakeScores()
+    try:
+        filtered, filtered_total = server.day_view_order(
+            day, "foryou", "Me", signals, eligible_creators=eligible)
+    finally:
+        server.TASTE = real_taste
+    assert "reacted_one" not in filtered and filtered_total == len(creators) - 1, filtered
 
     # With nothing scored yet the view falls back to the archive order rather than
     # presenting an arbitrary one.
@@ -132,4 +155,5 @@ with tempfile.TemporaryDirectory(prefix="gallery-views-", ignore_cleanup_errors=
 
 print({"defaultUnchanged": True, "followedTiers": ["self", "followed", "reacted", "rest"],
        "newToYouExcludesKnownAndSelf": 3, "pagingFollowsView": True, "forYouScored": True, "forYouFallsBack": True,
+       "forYouBlend": ["new", "new", "familiar", "emerging"],
        "emergingExcludesFollowed": True})

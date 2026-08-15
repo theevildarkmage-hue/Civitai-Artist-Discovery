@@ -49,7 +49,7 @@ one hidden image keeps their card and loses that image.
 
 Tag filtering can only act on images whose tags the app has read. The archive's collection
 endpoint (`/api/v1/images`) does not return tags at all — confirmed against the live API,
-the per-item keys are id, url, dimensions, `nsfwLevel`, `baseModel`, `stats` and similar,
+the per-item keys are id, url, dimensions, `nsfwLevel`, `browsingLevel`, `baseModel`, `stats` and similar,
 with no tag field. Tags come from a separate sweep that fetches them for the image on each
 creator's card, which on the measured day covered **5,012 of 27,002 images (18.6%)**.
 

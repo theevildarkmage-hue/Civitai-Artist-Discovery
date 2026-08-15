@@ -106,6 +106,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
             with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}", timeout=30) as response:
                 return json.loads(response.read())
 
+        def post(path, body):
+            request = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}",
+                data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read())
+
         # Every view, including the plain default, leaves hidden creators out.
         for view in ("discovery", "foryou", "followed", "new", "emerging"):
             page = get(f"/api/history/artists?date={day}&segment=all&view={view}&offset=0&limit=50")
@@ -150,6 +156,15 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
         state = get("/api/discovery/hidden")
         assert state["creators"] == 2 and state["tags"] == 2, state
         assert state["importedAt"], state
+
+        # Changing exact browsing levels invalidates the visible-creator cache. The cache
+        # must retain its required shape or accounts with hidden images get a 500 and a
+        # completely blank gallery immediately after using the selector.
+        changed = post("/api/settings", {"browsingLevels": [1]})
+        assert changed["browsingLevels"] == [1], changed
+        after_filter = get(f"/api/history/day?date={day}&segment=all")
+        assert after_filter["artistCount"] == summary["artistCount"], after_filter
+        assert get(f"/api/history/artists?date={day}&segment=all&view=discovery&offset=0&limit=50")["artists"]
     finally:
         process.terminate()
         try:
@@ -160,4 +175,5 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
 print({"importedAndResolved": True, "notHiddenRowsIgnored": True, "reimportReplaces": True,
        "hiddenCreatorsExcludedEveryView": True, "blockedByExcluded": True,
        "fullyHiddenCreatorDropped": True, "coverFallsBackToVisible": True,
-       "carouselFiltered": True, "countMatchesWhatIsShown": True})
+       "carouselFiltered": True, "countMatchesWhatIsShown": True,
+       "filterChangePreservesVisibleCache": True})

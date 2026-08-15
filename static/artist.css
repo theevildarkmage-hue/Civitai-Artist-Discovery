@@ -68,11 +68,21 @@ body>header h1{line-height:1.15}
 .image-stage{height:clamp(calc(320px*var(--card-scale)),calc(52vh*var(--card-scale)),calc(560px*var(--card-scale)))}
 @media (min-height:1000px){.image-stage{height:clamp(calc(380px*var(--card-scale)),calc(56vh*var(--card-scale)),calc(640px*var(--card-scale)))}}
 @media (min-width:1500px){.gallery{grid-template-columns:repeat(auto-fill,minmax(min(100%,calc(360px*var(--card-scale))),1fr))}}
-.creator-strip{height:70px;padding:10px 13px}
-.creator-avatar{width:44px;height:44px}
-.creator-identity strong{font-size:16px}
-.creator-identity small{font-size:12.5px}
-.carousel-arrow{width:44px;height:44px;font-size:32px;line-height:32px}
+.creator-strip{height:calc(40px + 30px*var(--card-scale));padding:calc(4px + 6px*var(--card-scale)) calc(5px + 8px*var(--card-scale))}
+.creator-identity{gap:calc(3px + 10px*var(--card-scale))}
+.creator-identity>span:last-child{gap:calc(1px + 2px*var(--card-scale))}
+.creator-name-line{gap:calc(2px + 5px*var(--card-scale))}
+.creator-avatar{width:calc(19px + 25px*var(--card-scale));height:calc(19px + 25px*var(--card-scale))}
+.creator-identity strong{font-size:calc(8px + 8px*var(--card-scale))}
+.creator-identity small{font-size:calc(7px + 5.5px*var(--card-scale))}
+.creator-controls{gap:calc(1px + 3px*var(--card-scale))}
+.creator-strip .follow-button{padding:calc(3px + 4px*var(--card-scale)) calc(3px + 7px*var(--card-scale));font-size:calc(7px + 5px*var(--card-scale));border-radius:calc(5px + 4px*var(--card-scale))}
+.creator-strip .more-menu{padding:calc(2px + 6px*var(--card-scale));font-size:calc(15px + 15px*var(--card-scale))}
+.creator-strip .pill{font-size:calc(7px + 3px*var(--card-scale));padding:calc(1px + 1px*var(--card-scale)) calc(3px + 4px*var(--card-scale))}
+.carousel-arrow{width:44px;height:44px;display:grid;place-items:center;padding:0;line-height:1}
+.carousel-arrow[hidden]{display:none}
+.carousel-arrow svg{display:block;width:54%;height:54%;fill:none;stroke:currentColor;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+.recommendation-badge{position:absolute;z-index:5;top:10px;left:10px;max-width:calc(100% - 20px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 9px;border:1px solid #4d8178;border-radius:999px;background:#132b28e8;color:#79dfce;font-size:11px;font-weight:800;letter-spacing:.03em;box-shadow:0 3px 12px #0007;pointer-events:none}
 .creator-footer{height:38px;font-size:12px}
 
 /* Scroll to top. Appears once the page is deep enough that returning is a chore. */

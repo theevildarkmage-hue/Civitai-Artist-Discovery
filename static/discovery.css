@@ -63,6 +63,14 @@
 .panel.wide{grid-column:1/-1}
 .panel h3{margin:0;font-size:16px}
 .panel-note{color:var(--muted);font-size:12px;margin:5px 0 14px;line-height:1.45}
+.fingerprint-panel{border-color:#3f6f68;background:linear-gradient(135deg,#192725,var(--panel) 58%)}
+.fingerprint-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);gap:24px}
+.fingerprint-grid h4{margin:0 0 10px;font-size:12px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+.fingerprint-tags{display:flex;flex-wrap:wrap;gap:8px}
+.fingerprint-tag{display:grid;gap:1px;padding:7px 10px;border:1px solid #3f6f68;border-radius:9px;background:#17302c}
+.fingerprint-tag b{font-size:12px;color:#8aead8}
+.fingerprint-tag small{font-size:10px;color:var(--muted)}
+@media(max-width:800px){.fingerprint-grid{grid-template-columns:1fr}}
 
 .bar-row{display:grid;grid-template-columns:minmax(84px,auto) 1fr minmax(64px,auto);align-items:center;gap:11px;padding:5px 0;min-width:0}
 .bar-row .bar-label{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

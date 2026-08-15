@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date, datetime, time as day_time, timedelta, timezone, tzinfo
 import gzip
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -20,11 +19,36 @@ import urllib.request
 from typing import Callable
 
 from .civitai import API_URL, USER_AGENT, normalize, utcnow
-from .site import DEFAULT_CONTENT_RATING, RATING_RANK, content_rating, image_url
+from .site import (DEFAULT_CONTENT_RATING, RATING_RANK,
+                   browsing_levels, content_rating, image_url, levels_for_rating,
+                   rating_for_levels)
 
 
 PAGE_SIZE = 200
 RATE_LIMIT_RETRIES = 8
+
+# Fixed planning benchmarks from the preserved completed runs. These are intentionally
+# not updated from runtime rows: later rows can represent partial/resumed work and caused
+# implausibly low estimates. The safe benchmark is the corrected 2026-07-24 run; the
+# explicit benchmark is the trusted 82,050-image, hour-long full-day run documented in
+# README. Listing-page counts account for pages containing non-image records.
+BUILD_BENCHMARK = {
+    "Soft": {"images": 27_136, "listing_requests": 140},
+    "Mature": {"images": 39_712, "listing_requests": 212},
+    "X": {"images": 82_050, "listing_requests": 458},
+}
+BENCHMARK_SEEK_REQUESTS_PER_HALF = 17
+# Even a perfect pull observes the known five-second API request cadence. The delayed
+# value reproduces the trusted hour-long all-ratings run across its 492 total requests.
+BENCHMARK_CLEAN_REQUEST_SECONDS = 5.0
+BENCHMARK_DELAYED_REQUEST_SECONDS = 3600 / 492
+POPULAR_INDEX_VERSION = 2
+
+
+class CollectionCancelled(RuntimeError):
+    """Internal control flow used to leave a retry wait when the user stops a build."""
+
+
 class AdaptivePacer:
     """Conservative request pacing that responds to live service conditions."""
 
@@ -131,13 +155,12 @@ def _model_clause(models: list[str] | None) -> tuple[str, tuple]:
     return (f" AND COALESCE(NULLIF(i.base_model,''),'Unknown') IN ({holes})", tuple(names))
 
 
-def _rating_levels(rating: str) -> tuple[str, ...]:
-    return ("None", "Soft") if rating == "Soft" else (("None", "Soft", "Mature") if rating == "Mature" else ("None", "Soft", "Mature", "X"))
+BROWSING_LEVEL_SQL = """COALESCE(i.browsing_level, CASE COALESCE(i.nsfw_level,'None')
+    WHEN 'None' THEN 1 WHEN 'Soft' THEN 2 WHEN 'Mature' THEN 4 WHEN 'X' THEN 8 END)"""
 
 
-def _rating_clause(rating: str) -> tuple[str, tuple[str, ...]]:
-    levels = _rating_levels(rating)
-    return f" AND COALESCE(i.nsfw_level,'None') IN ({','.join('?' for _ in levels)})", levels
+def _rating_clause(levels: tuple[int, ...]) -> tuple[str, tuple[int, ...]]:
+    return (f" AND {BROWSING_LEVEL_SQL} IN ({','.join('?' for _ in levels)})", levels)
 
 
 def preview_url(url: str, width: int = 768) -> str:
@@ -156,16 +179,22 @@ class HistoryArchive:
             raise ValueError("Invalid day segment")
         return value if segment == "all" else f"{value}#{segment}"
 
-    def __init__(self, root: Path, selected_content_rating: str = DEFAULT_CONTENT_RATING):
+    def __init__(self, root: Path, selected_content_rating: str = DEFAULT_CONTENT_RATING,
+                 selected_browsing_levels: object = None):
         self.root = root
         self.db_path = root / "history.sqlite3"
         self.jobs: dict[str, dict] = {}
         self.cancel_events: dict[str, threading.Event] = {}
         self.lock = threading.RLock()
+        self.index_lock = threading.RLock()
+        self._active_index_levels: dict[str, str] = {}
         self.api_lock = threading.Lock()
         self.last_api_request = 0.0
         self.api_pacer = AdaptivePacer()
         self.content_rating = content_rating(selected_content_rating)
+        self.visible_levels = browsing_levels(selected_browsing_levels) \
+            if selected_browsing_levels is not None else levels_for_rating(self.content_rating)
+        self.content_rating = rating_for_levels(self.visible_levels)
         # Optional hook the host sets to prepare a finished block for personalised views.
         self.on_block_complete = None
         self._initialize()
@@ -213,6 +242,19 @@ class HistoryArchive:
                     PRIMARY KEY(day, username_key)
                 );
                 CREATE INDEX IF NOT EXISTS day_artists_rank ON day_artists(day, rank_order);
+                CREATE TABLE IF NOT EXISTS day_artist_cache (
+                    day TEXT NOT NULL, levels_key TEXT NOT NULL,
+                    username_key TEXT NOT NULL, username TEXT NOT NULL,
+                    image_count INTEGER NOT NULL, representative_id INTEGER NOT NULL,
+                    newest_at TEXT NOT NULL, rank_order INTEGER NOT NULL,
+                    PRIMARY KEY(day, levels_key, username_key)
+                );
+                CREATE INDEX IF NOT EXISTS day_artist_cache_rank
+                    ON day_artist_cache(day, levels_key, rank_order);
+                CREATE TABLE IF NOT EXISTS day_artist_cache_state (
+                    day TEXT NOT NULL, levels_key TEXT NOT NULL,
+                    PRIMARY KEY(day, levels_key)
+                );
                 CREATE TABLE IF NOT EXISTS block_images (
                     block_key TEXT NOT NULL, image_id INTEGER NOT NULL,
                     PRIMARY KEY(block_key,image_id), FOREIGN KEY(image_id) REFERENCES images(id)
@@ -220,7 +262,8 @@ class HistoryArchive:
                 CREATE INDEX IF NOT EXISTS block_images_image ON block_images(image_id);
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(days)")}
-            for name in ("timezone", "start_utc", "end_utc", "top_cursor", "content_rating"):
+            for name in ("timezone", "start_utc", "end_utc", "top_cursor", "content_rating",
+                         "artist_levels"):
                 if name not in columns: db.execute(f"ALTER TABLE days ADD COLUMN {name} TEXT")
             numeric_metrics = {
                 "seek_pages": "INTEGER NOT NULL DEFAULT 0", "seek_bytes": "INTEGER NOT NULL DEFAULT 0",
@@ -228,11 +271,28 @@ class HistoryArchive:
                 "api_seconds": "REAL NOT NULL DEFAULT 0", "retry_seconds": "REAL NOT NULL DEFAULT 0",
                 "retry_count": "INTEGER NOT NULL DEFAULT 0", "elapsed_seconds": "REAL NOT NULL DEFAULT 0",
                 "seek_seconds": "REAL NOT NULL DEFAULT 0", "organize_seconds": "REAL NOT NULL DEFAULT 0",
+                "pace_seconds": "REAL NOT NULL DEFAULT 0", "response_seconds": "REAL NOT NULL DEFAULT 0",
+                "rate_limit_count": "INTEGER NOT NULL DEFAULT 0",
+                "service_retry_count": "INTEGER NOT NULL DEFAULT 0",
+                "network_retry_count": "INTEGER NOT NULL DEFAULT 0",
+                "final_pacer_interval": "REAL NOT NULL DEFAULT 0",
+                "wire_bytes": "INTEGER NOT NULL DEFAULT 0",
+                "decoded_bytes": "INTEGER NOT NULL DEFAULT 0",
             }
             columns = {row[1] for row in db.execute("PRAGMA table_info(days)")}
             for name, declaration in numeric_metrics.items():
                 if name not in columns: db.execute(f"ALTER TABLE days ADD COLUMN {name} {declaration}")
             db.execute("INSERT OR IGNORE INTO block_images(block_key,image_id) SELECT local_date,id FROM images")
+            # Popular v2 ranks by total daily reactions and uses the most-reacted image.
+            # Cached indexes are derived data, so invalidate the old hash-ranked version
+            # once and rebuild each saved day locally when it is next opened.
+            index_version = db.execute("PRAGMA user_version").fetchone()[0]
+            if index_version < POPULAR_INDEX_VERSION:
+                db.execute("DELETE FROM day_artists")
+                db.execute("DELETE FROM day_artist_cache")
+                db.execute("DELETE FROM day_artist_cache_state")
+                db.execute("UPDATE days SET artist_levels=NULL")
+                db.execute(f"PRAGMA user_version={POPULAR_INDEX_VERSION}")
 
     def _migrate_json_once(self) -> None:
         marker = self.root / ".json_migrated"
@@ -299,10 +359,10 @@ class HistoryArchive:
             item.update({"prompt": row["prompt"], "negativePrompt": row["negative_prompt"], "resources": json.loads(row["resources"]), "detailsLoaded": bool(row["details_loaded"]), "detailImageUrl": preview_url(row["url"], 1280)})
         return item
 
-    def status(self, value: str) -> dict:
+    def status(self, value: str, required_content_rating: str | None = None) -> dict:
         with self.connect() as db:
             day = db.execute("SELECT * FROM days WHERE day=?", (value,)).fetchone()
-            rating_clause, rating_params = _rating_clause(self.content_rating)
+            rating_clause, rating_params = _rating_clause(self.visible_levels)
             count = db.execute("SELECT COUNT(*) FROM block_images b JOIN images i ON i.id=b.image_id "
                 f"WHERE b.block_key=?{rating_clause}", (value, *rating_params)).fetchone()[0]
             creators = db.execute("SELECT COUNT(DISTINCT i.username_key) FROM block_images b JOIN images i ON i.id=b.image_id "
@@ -310,14 +370,16 @@ class HistoryArchive:
         with self.lock:
             job = dict(self.jobs.get(value, {}))
         coverage = (day["content_rating"] if day and day["content_rating"] else DEFAULT_CONTENT_RATING)
-        needs_upgrade = bool(day and day["complete"] and RATING_RANK[coverage] < RATING_RANK[self.content_rating])
+        required = content_rating(required_content_rating or job.get("contentRating") or self.content_rating)
+        needs_upgrade = bool(day and day["complete"] and RATING_RANK[coverage] < RATING_RANK[required])
         archive_complete = bool(day and day["complete"])
         complete = archive_complete and not needs_upgrade and job.get("state") not in {"loading", "error"}
         started = job.get("startedMonotonic")
         # Freeze completed durations at the persisted database value. Keeping the live
         # monotonic clock running after completion made yesterday's 32-minute block look
         # eighteen hours long when status was read the following morning.
-        elapsed = (round(max(0.0, time.monotonic() - started))
+        prior_elapsed = float(job.get("priorElapsedSeconds") or 0)
+        elapsed = (round(max(0.0, prior_elapsed + time.monotonic() - started))
                    if job.get("state") == "loading" and isinstance(started, (int, float)) else None)
         deadline = job.get("retryUntilMonotonic")
         retry_in = (max(0, round(deadline - time.monotonic()))
@@ -333,7 +395,18 @@ class HistoryArchive:
             "elapsedSeconds": elapsed_metric,
             "seekSeconds": round(float(day["seek_seconds"] or 0), 2) if day else 0,
             "organizeSeconds": round(float(day["organize_seconds"] or 0), 2) if day else 0}
+        metrics.update({"paceSeconds": round(float(day["pace_seconds"] or 0), 2) if day else 0,
+            "responseSeconds": round(float(day["response_seconds"] or 0), 2) if day else 0,
+            "rateLimitCount": int(day["rate_limit_count"] or 0) if day else 0,
+            "serviceRetryCount": int(day["service_retry_count"] or 0) if day else 0,
+            "networkRetryCount": int(day["network_retry_count"] or 0) if day else 0,
+            "finalPacerInterval": round(float(day["final_pacer_interval"] or 0), 2) if day else 0})
+        metrics.update({"wireBytes": int(day["wire_bytes"] or 0) if day else 0,
+                        "decodedBytes": int(day["decoded_bytes"] or 0) if day else 0})
         metrics["collectSeconds"] = round(max(0, metrics["elapsedSeconds"] - metrics["seekSeconds"] - metrics["organizeSeconds"]), 2)
+        metrics["localProcessingSeconds"] = round(max(0, metrics["elapsedSeconds"]
+            - metrics["paceSeconds"] - metrics["responseSeconds"] - metrics["retrySeconds"]
+            - metrics["organizeSeconds"]), 2)
         return {"date": value, "state": job.get("state") or ("complete" if complete else "not_started"),
             "progress": job.get("progress", 100 if complete else 0), "pages": job.get("pages", 0),
             "phase": job.get("phase", "complete" if complete else "waiting"), "itemCount": count,
@@ -346,41 +419,138 @@ class HistoryArchive:
             "searchReachedAt": job.get("searchReachedAt"),
             "error": job.get("error"), "complete": complete, "archiveComplete": archive_complete,
             "rebuilding": bool(job.get("rebuilding")), "contentRating": self.content_rating,
+            "browsingLevels": list(self.visible_levels),
             "metrics": metrics,
             "archiveContentRating": coverage if day else None, "needsUpgrade": needs_upgrade}
 
-    def set_content_rating(self, value: str) -> None:
-        """Change the listing ceiling; completed indexes are rebuilt to hide higher rows."""
-        rating = content_rating(value)
+    def set_content_filter(self, levels: object) -> None:
+        """Change exact visible levels and derive the grouped collection ceiling."""
+        selected = browsing_levels(levels)
+        rating = rating_for_levels(selected)
         with self.lock:
             if any(job.get("state") == "loading" for job in self.jobs.values()):
                 raise ValueError("Stop the current history build before changing content ratings")
             self.content_rating = rating
-        with self.connect() as db:
-            days = [row[0] for row in db.execute("SELECT day FROM days WHERE complete=1")]
-        for day in days:
-            self.build_artist_index(day)
+            self.visible_levels = selected
 
-    def start(self, value: str, start_utc: str, end_utc: str, timezone_name: str, segment: str = "all") -> dict:
+    @staticmethod
+    def _levels_key(levels: tuple[int, ...]) -> str:
+        return ",".join(str(level) for level in levels)
+
+    def _invalidate_artist_cache(self, value: str) -> None:
+        """Discard indexes after a block's membership may have changed."""
+        with self.index_lock, self.connect() as db:
+            db.execute("DELETE FROM day_artist_cache WHERE day=?", (value,))
+            db.execute("DELETE FROM day_artist_cache_state WHERE day=?", (value,))
+            db.execute("UPDATE days SET artist_levels=NULL WHERE day=?", (value,))
+            self._active_index_levels.pop(value, None)
+
+    def _ensure_artist_index(self, value: str) -> None:
+        """Activate the selected filter's cached index, building it only once."""
+        levels = self.visible_levels
+        levels_key = self._levels_key(levels)
+        with self.index_lock:
+            if self._active_index_levels.get(value) == levels_key:
+                return
+            with self.connect() as db:
+                day = db.execute("SELECT artist_levels FROM days WHERE day=?", (value,)).fetchone()
+                if day and day["artist_levels"] == levels_key:
+                    self._active_index_levels[value] = levels_key
+                    return
+                cached = db.execute(
+                    "SELECT 1 FROM day_artist_cache_state WHERE day=? AND levels_key=?",
+                    (value, levels_key)).fetchone()
+                if cached:
+                    db.execute("DELETE FROM day_artists WHERE day=?", (value,))
+                    db.execute("""INSERT INTO day_artists(day,username_key,username,image_count,
+                                  representative_id,newest_at,rank_order)
+                                  SELECT day,username_key,username,image_count,representative_id,
+                                         newest_at,rank_order FROM day_artist_cache
+                                  WHERE day=? AND levels_key=?""", (value, levels_key))
+                    db.execute("UPDATE days SET artist_levels=? WHERE day=?", (levels_key, value))
+                    self._active_index_levels[value] = levels_key
+                    return
+            self.build_artist_index(value, levels)
+
+    def set_content_rating(self, value: str) -> None:
+        """Compatibility wrapper for callers using the former cumulative selector."""
+        self.set_content_filter(levels_for_rating(value))
+
+    def start(self, value: str, start_utc: str, end_utc: str, timezone_name: str,
+              segment: str = "all", requested_content_rating: str | None = None) -> dict:
         key = self.archive_key(value, segment)
         start, end = parse_bounds(value, start_utc, end_utc)
-        current = self.status(key)
+        requested_rating = content_rating(requested_content_rating or self.content_rating)
+        current = self.status(key, requested_rating)
         if current["complete"] or current["state"] == "loading":
             return current
+        with self.connect() as db:
+            existing = db.execute(
+                "SELECT scan_cursor,elapsed_seconds FROM days WHERE day=?", (key,)).fetchone()
+        resuming = bool(existing and existing["scan_cursor"])
+        prior_elapsed = float(existing["elapsed_seconds"] or 0) if resuming else 0.0
         with self.lock:
             self.jobs[key] = {"state": "loading", "phase": "locating", "progress": 0, "pages": 0,
                 "startedMonotonic": time.monotonic(), "etaLowSeconds": None, "etaHighSeconds": None,
-                "delayReason": None}
+                "delayReason": None, "contentRating": requested_rating,
+                "priorElapsedSeconds": prior_elapsed}
             self.cancel_events[key] = threading.Event()
         with self.connect() as db:
             db.execute("""INSERT INTO days(day,complete,timezone,start_utc,end_utc,content_rating,updated_at) VALUES(?,0,?,?,?,?,?)
                 ON CONFLICT(day) DO UPDATE SET complete=0,timezone=excluded.timezone,start_utc=excluded.start_utc,
-                end_utc=excluded.end_utc,content_rating=excluded.content_rating,seek_pages=0,seek_bytes=0,
-                collect_pages=0,collect_bytes=0,api_seconds=0,retry_seconds=0,retry_count=0,
-                elapsed_seconds=0,seek_seconds=0,organize_seconds=0,updated_at=excluded.updated_at""",
-                (key, timezone_name[:100], start.isoformat(), end.isoformat(), self.content_rating, utcnow()))
+                end_utc=excluded.end_utc,content_rating=CASE WHEN days.scan_cursor IS NOT NULL
+                    THEN days.content_rating ELSE excluded.content_rating END,updated_at=excluded.updated_at""",
+                (key, timezone_name[:100], start.isoformat(), end.isoformat(), requested_rating, utcnow()))
+            if not resuming:
+                db.execute("""UPDATE days SET seek_pages=0,seek_bytes=0,collect_pages=0,collect_bytes=0,
+                    api_seconds=0,retry_seconds=0,retry_count=0,pace_seconds=0,response_seconds=0,
+                    rate_limit_count=0,service_retry_count=0,network_retry_count=0,
+                    final_pacer_interval=0,wire_bytes=0,decoded_bytes=0,elapsed_seconds=0,
+                    seek_seconds=0,organize_seconds=0 WHERE day=?""", (key,))
         threading.Thread(target=self._collect, args=(key, value, start, end), daemon=True, name=f"history-{key}").start()
         return self.status(key)
+
+    def build_estimate(self, segment: str, requested_content_rating: str,
+                       value: str | None = None) -> dict:
+        """Return a fixed request-capacity estimate from the known clean benchmark."""
+        if segment not in {"morning", "evening", "all"}:
+            raise ValueError("Invalid day segment")
+        rating = content_rating(requested_content_rating)
+
+        parts = list(("morning", "evening") if segment == "all" else (segment,))
+        if value and segment == "all":
+            parse_day(value)
+            with self.connect() as db:
+                ready = set()
+                for part in parts:
+                    row = db.execute("SELECT complete,content_rating FROM days WHERE day=?",
+                                     (f"{value}#{part}",)).fetchone()
+                    coverage = content_rating(row[1] or DEFAULT_CONTENT_RATING) if row else None
+                    if row and row[0] and RATING_RANK[coverage] >= RATING_RANK[rating]:
+                        ready.add(part)
+            parts = [part for part in parts if part not in ready]
+        benchmark = BUILD_BENCHMARK[rating]
+        half_count = len(parts)
+        if half_count == 2:
+            images = benchmark["images"]
+            listing_requests = benchmark["listing_requests"]
+        elif half_count == 1:
+            images = math.ceil(benchmark["images"] / 2)
+            listing_requests = math.ceil(benchmark["listing_requests"] / 2)
+        else:
+            images = listing_requests = 0
+        seek_requests = BENCHMARK_SEEK_REQUESTS_PER_HALF * half_count
+        requests = listing_requests + seek_requests
+        low = requests * BENCHMARK_CLEAN_REQUEST_SECONDS
+        high = requests * BENCHMARK_DELAYED_REQUEST_SECONDS
+        return {"segment": segment, "contentRating": rating,
+                "seconds": round((low + high) / 2), "lowSeconds": round(low),
+                "highSeconds": round(high), "benchmarkImages": images,
+                "listingRequests": listing_requests, "seekRequests": seek_requests,
+                "pageSize": PAGE_SIZE,
+                "cleanRequestSeconds": round(BENCHMARK_CLEAN_REQUEST_SECONDS, 2),
+                "delayedRequestSeconds": round(BENCHMARK_DELAYED_REQUEST_SECONDS, 2),
+                "measured": True, "fixedBenchmark": True}
 
     def rebuild(self, value: str, start_utc: str, end_utc: str, timezone_name: str, segment: str = "all") -> dict:
         key = self.archive_key(value, segment)
@@ -398,8 +568,11 @@ class HistoryArchive:
         with self.connect() as db:
             db.execute("UPDATE days SET timezone=?,start_utc=?,end_utc=?,seek_pages=0,seek_bytes=0,"
                 "collect_pages=0,collect_bytes=0,api_seconds=0,retry_seconds=0,retry_count=0,elapsed_seconds=0,"
-                "seek_seconds=0,organize_seconds=0,updated_at=? WHERE day=?",
+                "seek_seconds=0,organize_seconds=0,pace_seconds=0,response_seconds=0,rate_limit_count=0,"
+                "service_retry_count=0,network_retry_count=0,final_pacer_interval=0,wire_bytes=0,"
+                "decoded_bytes=0,updated_at=? WHERE day=?",
                 (timezone_name[:100], start.isoformat(), end.isoformat(), utcnow(), key))
+        self._invalidate_artist_cache(key)
         threading.Thread(target=self._collect, args=(key, value, start, end, True), daemon=True, name=f"rebuild-{key}").start()
         return self.status(key)
 
@@ -444,14 +617,20 @@ class HistoryArchive:
             own = db.execute("SELECT top_cursor FROM days WHERE day=?", (key,)).fetchone()
             return own[0] if own and own[0] else None
 
-    def _wait_api_lane(self, minimum_interval: float | None = None) -> None:
+    def _wait_api_lane(self, minimum_interval: float | None = None) -> float:
         interval = max(self.api_pacer.interval, minimum_interval or 0.0)
         remaining = interval - (time.monotonic() - self.last_api_request)
         if remaining > 0:
+            started = time.monotonic()
             time.sleep(remaining)
+            return time.monotonic() - started
+        return 0.0
 
     def _request(self, params: dict, minimum_interval: float | None = None,
-                 on_delay: Callable[[str, float, int, int], None] | None = None) -> tuple[dict, int]:
+                 on_delay: Callable[[str, float, int, int], None] | None = None,
+                 cancel_event: threading.Event | None = None,
+                 on_timing: Callable[[str, float], None] | None = None,
+                 on_transfer: Callable[[int, int], None] | None = None) -> tuple[dict, int]:
         """Fetch one page, retrying transient failures.
 
         ``on_delay`` receives the attempt number so callers can tell a single
@@ -460,40 +639,65 @@ class HistoryArchive:
         request = urllib.request.Request(f"{API_URL}?{urllib.parse.urlencode(params)}",
             headers={"Accept": "application/json", "Accept-Encoding": "gzip", "User-Agent": USER_AGENT})
         with self.api_lock:
-            for attempt in range(RATE_LIMIT_RETRIES):
+            attempt = 0
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    raise CollectionCancelled()
                 try:
-                    self._wait_api_lane(minimum_interval)
+                    paced = self._wait_api_lane(minimum_interval)
+                    if on_timing and paced:
+                        on_timing("pace", paced)
                     self.last_api_request = time.monotonic()
                     started = time.monotonic()
                     with urllib.request.urlopen(request, timeout=60) as response:
                         raw = response.read()
+                        wire_size = len(raw)
                         if response.headers.get("Content-Encoding") == "gzip":
                             raw = gzip.decompress(raw)
-                    self.api_pacer.success(time.monotonic() - started)
+                    if on_transfer:
+                        on_transfer(wire_size, len(raw))
+                    response_seconds = time.monotonic() - started
+                    if on_timing:
+                        on_timing("response", response_seconds)
+                    self.api_pacer.success(response_seconds)
                     return json.loads(raw), len(raw)
                 except urllib.error.HTTPError as error:
+                    if on_timing:
+                        on_timing("response", time.monotonic() - started)
                     if error.code != 429 and error.code < 500:
                         raise
-                    self.api_pacer.failure("rate_limited" if error.code == 429 else "service_retry")
+                    reason = "rate_limited" if error.code == 429 else "service_retry"
+                    self.api_pacer.failure(reason)
                     retry = error.headers.get("Retry-After")
                     if error.code == 429:
                         try: wait = max(60.0, float(retry)) if retry else min(600.0, 60.0 * (2**attempt))
                         except ValueError: wait = min(600.0, 60.0 * (2**attempt))
                     else: wait = min(60.0, 2.0**attempt)
-                    if on_delay:
-                        on_delay("rate_limited" if error.code == 429 else "service_retry",
-                                 wait, attempt + 1, RATE_LIMIT_RETRIES)
-                    time.sleep(wait + random.uniform(0, 2))
+                    delay = wait + random.uniform(0, 2)
                 except (TimeoutError, urllib.error.URLError):
+                    if on_timing:
+                        on_timing("response", time.monotonic() - started)
                     self.api_pacer.failure("network_retry")
-                    if attempt == RATE_LIMIT_RETRIES - 1: raise
+                    reason = "network_retry"
                     wait = min(60, 2**attempt)
-                    if on_delay:
-                        on_delay("network_retry", wait, attempt + 1, RATE_LIMIT_RETRIES)
-                    time.sleep(wait + random.uniform(0, 1))
-        raise RuntimeError("Civitai request exhausted its retry budget")
+                    delay = wait + random.uniform(0, 1)
+                if on_delay:
+                    on_delay(reason, delay, attempt + 1, RATE_LIMIT_RETRIES)
+                if cancel_event:
+                    if cancel_event.wait(delay):
+                        raise CollectionCancelled()
+                    # A long, checkpointed build should survive a prolonged transient
+                    # outage. After one visible retry cycle, start another instead of
+                    # making the user manually press Continue building.
+                    attempt = (attempt + 1) % RATE_LIMIT_RETRIES
+                else:
+                    attempt += 1
+                    if attempt >= RATE_LIMIT_RETRIES:
+                        raise RuntimeError("Civitai request exhausted its retry budget")
+                    time.sleep(delay)
 
     def _seek_cursor(self, value: str, end: datetime, cancel_event: threading.Event,
+                     request_rating: str,
                      report_delay: Callable[[str, float, int, int], None]) -> tuple[str | None, int, int]:
         """Jump close to a day boundary using Civitai's offset cursor.
 
@@ -511,15 +715,26 @@ class HistoryArchive:
             if cancel_event.is_set():
                 return None, None
             params = {"limit": PAGE_SIZE, "sort": "Newest", "period": "AllTime",
-                "nsfw": self.content_rating, "withMeta": "false",
+                "nsfw": request_rating, "withMeta": "false",
                 "cursor": f"{offset}|{timestamp_ms}"}
+            timing = {"pace": 0.0, "response": 0.0, "wire": 0, "decoded": 0}
+            def record_timing(kind: str, seconds: float) -> None:
+                timing[kind] += seconds
+            def record_transfer(wire: int, decoded: int) -> None:
+                timing["wire"] += wire; timing["decoded"] += decoded
             request_started = time.monotonic()
-            payload, size = self._request(params, on_delay=report_delay)
+            payload, size = self._request(params, on_delay=report_delay,
+                                          cancel_event=cancel_event, on_timing=record_timing,
+                                          on_transfer=record_transfer)
             request_seconds = time.monotonic() - request_started
             pages += 1; transferred += size
             with self.connect() as db:
-                db.execute("UPDATE days SET seek_pages=?,seek_bytes=?,api_seconds=api_seconds+? WHERE day=?",
-                    (pages, transferred, request_seconds, value))
+                db.execute("""UPDATE days SET seek_pages=?,seek_bytes=?,api_seconds=api_seconds+?,
+                           pace_seconds=pace_seconds+?,response_seconds=response_seconds+?,
+                           wire_bytes=wire_bytes+?,decoded_bytes=decoded_bytes+?,
+                           final_pacer_interval=? WHERE day=?""",
+                    (pages, transferred, request_seconds, timing["pace"], timing["response"],
+                     timing["wire"], timing["decoded"], self.api_pacer.interval, value))
             timestamps = [parse_timestamp(row["createdAt"]) for row in payload.get("items", []) if row.get("createdAt")]
             oldest = min(timestamps) if timestamps else None
             newest = max(timestamps) if timestamps else None
@@ -553,6 +768,14 @@ class HistoryArchive:
 
     def _collect(self, key: str, value: str, start: datetime, end: datetime, rebuilding: bool = False) -> None:
         target = parse_day(value); cursor = self._rebuild_cursor_for_key(key) if rebuilding else self._cursor_for_key(key)
+        with self.connect() as db:
+            stored = db.execute("SELECT content_rating,elapsed_seconds FROM days WHERE day=?", (key,)).fetchone()
+        prior_elapsed = float(stored["elapsed_seconds"] or 0) if stored else 0.0
+        # A cursor belongs to the listing feed that produced it. A user may lower the
+        # visible level while a block is partial; continue that original feed and filter
+        # its saved rows locally rather than applying its cursor to a different feed.
+        request_rating = self.content_rating if rebuilding else content_rating(
+            stored[0] if stored and stored[0] else self.content_rating)
         top_cursor = cursor
         cancel_event = self.cancel_events[key]
         pages = transferred = 0
@@ -571,14 +794,18 @@ class HistoryArchive:
                     "retryAttempt": attempt, "retryAttempts": attempts,
                     "etaLowSeconds": None, "etaHighSeconds": None})
             with self.connect() as db:
-                db.execute("UPDATE days SET retry_seconds=retry_seconds+?,retry_count=retry_count+1 WHERE day=?",
-                    (wait, key))
+                db.execute("""UPDATE days SET retry_seconds=retry_seconds+?,retry_count=retry_count+1,
+                           rate_limit_count=rate_limit_count+?,service_retry_count=service_retry_count+?,
+                           network_retry_count=network_retry_count+? WHERE day=?""",
+                    (wait, int(reason == "rate_limited"), int(reason == "service_retry"),
+                     int(reason == "network_retry"), key))
         try:
             if cursor is None:
                 seek_started = time.monotonic()
-                cursor, seek_pages, seek_bytes = self._seek_cursor(key, end, cancel_event, report_delay)
+                cursor, seek_pages, seek_bytes = self._seek_cursor(
+                    key, end, cancel_event, request_rating, report_delay)
                 with self.connect() as db:
-                    db.execute("UPDATE days SET seek_seconds=? WHERE day=?", (time.monotonic() - seek_started, key))
+                    db.execute("UPDATE days SET seek_seconds=seek_seconds+? WHERE day=?", (time.monotonic() - seek_started, key))
                 pages += seek_pages; transferred += seek_bytes
                 top_cursor = cursor
                 if cancel_event.is_set():
@@ -586,10 +813,17 @@ class HistoryArchive:
             while True:
                 if cancel_event.is_set():
                     return
-                params = {"limit": PAGE_SIZE, "sort": "Newest", "period": "AllTime", "nsfw": self.content_rating, "withMeta": "false"}
+                params = {"limit": PAGE_SIZE, "sort": "Newest", "period": "AllTime", "nsfw": request_rating, "withMeta": "false"}
                 if cursor: params["cursor"] = cursor
+                timing = {"pace": 0.0, "response": 0.0, "wire": 0, "decoded": 0}
+                def record_timing(kind: str, seconds: float) -> None:
+                    timing[kind] += seconds
+                def record_transfer(wire: int, decoded: int) -> None:
+                    timing["wire"] += wire; timing["decoded"] += decoded
                 request_started = time.monotonic()
-                payload, size = self._request(params, on_delay=report_delay)
+                payload, size = self._request(params, on_delay=report_delay,
+                                              cancel_event=cancel_event, on_timing=record_timing,
+                                              on_transfer=record_transfer)
                 request_seconds = time.monotonic() - request_started
                 if cancel_event.is_set():
                     return
@@ -601,12 +835,19 @@ class HistoryArchive:
                     db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)", [(key, image_id) for image_id in image_ids])
                 pages += 1; transferred += size
                 with self.connect() as db:
-                    db.execute("""INSERT INTO days(day,complete,scan_cursor,pages,metadata_bytes,collect_pages,collect_bytes,api_seconds,elapsed_seconds,updated_at) VALUES(?,0,?,?,?,?,?,?,?,?)
+                    db.execute("""INSERT INTO days(day,complete,scan_cursor,pages,metadata_bytes,collect_pages,collect_bytes,api_seconds,pace_seconds,response_seconds,wire_bytes,decoded_bytes,final_pacer_interval,elapsed_seconds,updated_at) VALUES(?,0,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(day) DO UPDATE SET scan_cursor=excluded.scan_cursor,pages=days.pages+1,
                         metadata_bytes=days.metadata_bytes+excluded.metadata_bytes,collect_pages=days.collect_pages+1,
                         collect_bytes=days.collect_bytes+excluded.collect_bytes,api_seconds=days.api_seconds+excluded.api_seconds,
+                        pace_seconds=days.pace_seconds+excluded.pace_seconds,
+                        response_seconds=days.response_seconds+excluded.response_seconds,
+                        wire_bytes=days.wire_bytes+excluded.wire_bytes,
+                        decoded_bytes=days.decoded_bytes+excluded.decoded_bytes,
+                        final_pacer_interval=excluded.final_pacer_interval,
                         elapsed_seconds=excluded.elapsed_seconds,updated_at=excluded.updated_at""",
-                        (key, next_cursor, 1, size, 1, size, request_seconds, time.monotonic() - scan_started, utcnow()))
+                        (key, next_cursor, 1, size, 1, size, request_seconds, timing["pace"],
+                         timing["response"], timing["wire"], timing["decoded"], self.api_pacer.interval,
+                         prior_elapsed + time.monotonic() - scan_started, utcnow()))
                 timestamps = [parse_timestamp(row["createdAt"]) for row in rows if row.get("createdAt")]
                 oldest = min(timestamps) if timestamps else start
                 newest = max(timestamps) if timestamps else oldest
@@ -638,7 +879,7 @@ class HistoryArchive:
                     with self.connect() as db:
                         # Re-fetch the crossing page for the next older day so
                         # records on both sides of a timezone boundary are kept.
-                        db.execute("UPDATE days SET complete=1,scan_cursor=NULL,older_cursor=?,top_cursor=?,content_rating=?,elapsed_seconds=?,updated_at=? WHERE day=?", (cursor, top_cursor, self.content_rating, time.monotonic() - scan_started, utcnow(), key))
+                        db.execute("UPDATE days SET complete=1,scan_cursor=NULL,older_cursor=?,top_cursor=?,content_rating=?,elapsed_seconds=?,updated_at=? WHERE day=?", (cursor, top_cursor, request_rating, prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
                     with self.lock: self.jobs[key].update({"phase": "organizing", "progress": 100,
                         "etaSeconds": None, "etaLowSeconds": None, "etaHighSeconds": None})
                     organize_started = time.monotonic()
@@ -648,15 +889,18 @@ class HistoryArchive:
                         try: self.on_block_complete(key, merged)
                         except Exception: pass  # Preparation is optional; the day is built.
                     with self.connect() as db:
-                        db.execute("UPDATE days SET organize_seconds=?,elapsed_seconds=? WHERE day=?",
-                            (time.monotonic() - organize_started, time.monotonic() - scan_started, key))
+                        db.execute("UPDATE days SET organize_seconds=organize_seconds+?,elapsed_seconds=? WHERE day=?",
+                            (time.monotonic() - organize_started,
+                             prior_elapsed + time.monotonic() - scan_started, key))
                     with self.lock: self.jobs[key].update({"state": "complete", "phase": "complete", "progress": 100, "etaSeconds": 0})
                     return
                 cursor = next_cursor
+        except CollectionCancelled:
+            return
         except Exception as error:
             with self.connect() as db:
                 db.execute("UPDATE days SET elapsed_seconds=?,updated_at=? WHERE day=?",
-                    (time.monotonic() - scan_started, utcnow(), key))
+                    (prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
             try:
                 with (self.root.parent / "error.log").open("a", encoding="utf-8") as output:
                     output.write(f"\n[{utcnow()}] Daily history collection: {type(error).__name__}\n{traceback.format_exc()}")
@@ -707,51 +951,77 @@ class HistoryArchive:
             totals = db.execute("""SELECT COALESCE(SUM(seek_pages),0),COALESCE(SUM(seek_bytes),0),
                 COALESCE(SUM(collect_pages),0),COALESCE(SUM(collect_bytes),0),COALESCE(SUM(api_seconds),0),
                 COALESCE(SUM(retry_seconds),0),COALESCE(SUM(retry_count),0),COALESCE(SUM(elapsed_seconds),0)
-                ,COALESCE(SUM(seek_seconds),0),COALESCE(SUM(organize_seconds),0)
+                ,COALESCE(SUM(seek_seconds),0),COALESCE(SUM(organize_seconds),0),
+                COALESCE(SUM(pace_seconds),0),COALESCE(SUM(response_seconds),0),
+                COALESCE(SUM(rate_limit_count),0),COALESCE(SUM(service_retry_count),0),
+                COALESCE(SUM(network_retry_count),0),COALESCE(MAX(final_pacer_interval),0),
+                COALESCE(SUM(wire_bytes),0),COALESCE(SUM(decoded_bytes),0)
                 FROM days WHERE day IN (?,?)""", (f"{day}#morning", f"{day}#evening")).fetchone()
             db.execute("""INSERT INTO days(day,complete,content_rating,seek_pages,seek_bytes,collect_pages,
                           collect_bytes,api_seconds,retry_seconds,retry_count,elapsed_seconds,seek_seconds,
-                          organize_seconds,updated_at)
-                          VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(day) DO UPDATE SET complete=1,
+                          organize_seconds,pace_seconds,response_seconds,rate_limit_count,
+                          service_retry_count,network_retry_count,final_pacer_interval,wire_bytes,
+                          decoded_bytes,updated_at)
+                          VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(day) DO UPDATE SET complete=1,
                           content_rating=excluded.content_rating,seek_pages=excluded.seek_pages,seek_bytes=excluded.seek_bytes,
                           collect_pages=excluded.collect_pages,collect_bytes=excluded.collect_bytes,
                           api_seconds=excluded.api_seconds,retry_seconds=excluded.retry_seconds,
                           retry_count=excluded.retry_count,elapsed_seconds=excluded.elapsed_seconds,
-                          seek_seconds=excluded.seek_seconds,organize_seconds=excluded.organize_seconds,updated_at=excluded.updated_at""",
+                          seek_seconds=excluded.seek_seconds,organize_seconds=excluded.organize_seconds,
+                          pace_seconds=excluded.pace_seconds,response_seconds=excluded.response_seconds,
+                          rate_limit_count=excluded.rate_limit_count,
+                          service_retry_count=excluded.service_retry_count,
+                          network_retry_count=excluded.network_retry_count,
+                          final_pacer_interval=excluded.final_pacer_interval,
+                          wire_bytes=excluded.wire_bytes,decoded_bytes=excluded.decoded_bytes,
+                          updated_at=excluded.updated_at""",
                        (day, coverage, *totals, utcnow()))
+        self._invalidate_artist_cache(day)
         self.build_artist_index(day)
         return day
 
-    def build_artist_index(self, value: str) -> None:
-        with self.connect() as db:
-            levels = _rating_levels(self.content_rating)
+    def build_artist_index(self, value: str, levels: tuple[int, ...] | None = None) -> None:
+        with self.index_lock, self.connect() as db:
+            levels = levels or self.visible_levels
+            levels_key = self._levels_key(levels)
             holes = ",".join("?" for _ in levels)
-            rows = db.execute(f"SELECT i.id,i.username,i.username_key,i.created_at,i.stats FROM block_images b JOIN images i ON i.id=b.image_id WHERE b.block_key=? AND COALESCE(i.nsfw_level,'None') IN ({holes}) ORDER BY i.created_at DESC", (value, *levels)).fetchall()
+            rows = db.execute(f"SELECT i.id,i.username,i.username_key,i.created_at,i.stats FROM block_images b JOIN images i ON i.id=b.image_id WHERE b.block_key=? AND {BROWSING_LEVEL_SQL} IN ({holes}) ORDER BY i.created_at DESC", (value, *levels)).fetchall()
             groups: dict[str, list[sqlite3.Row]] = {}
             for row in rows: groups.setdefault(row["username_key"], []).append(row)
             ranked = []
             for key, items in groups.items():
-                digest = hashlib.sha256(f"{value}:{key}".encode()).digest()
-                representative = items[int.from_bytes(digest[:4], "big") % len(items)]
+                def reactions(item) -> int:
+                    return max(0, int(json.loads(item["stats"]).get("reactionCount", 0)))
+                representative = max(items, key=lambda item: (
+                    reactions(item), item["created_at"], item["id"]))
                 newest = items[0]["created_at"]
-                reactions = max((int(json.loads(item["stats"]).get("reactionCount", 0)) for item in items), default=0)
-                variety = int.from_bytes(digest[4:12], "big") / (2**64 - 1)
-                score = reactions ** .35 + variety
-                ranked.append((score, key, items[0]["username"], len(items), representative["id"], newest))
-            ranked.sort(key=lambda row: row[0], reverse=True)
+                total_reactions = sum(reactions(item) for item in items)
+                ranked.append((total_reactions, key, items[0]["username"], len(items),
+                               representative["id"], newest))
+            ranked.sort(key=lambda row: (-row[0], -parse_timestamp(row[5]).timestamp(), row[1]))
             db.execute("DELETE FROM day_artists WHERE day=?", (value,))
             db.executemany("""INSERT INTO day_artists(day, username_key, username,
                     image_count, representative_id, newest_at, rank_order)
                 VALUES(?,?,?,?,?,?,?)""",
                 [(value, key, username, count, rep, newest, order) for order, (_, key, username, count, rep, newest) in enumerate(ranked)])
+            db.execute("DELETE FROM day_artist_cache WHERE day=? AND levels_key=?",
+                       (value, levels_key))
+            db.executemany("""INSERT INTO day_artist_cache(day,levels_key,username_key,username,
+                    image_count,representative_id,newest_at,rank_order) VALUES(?,?,?,?,?,?,?,?)""",
+                [(value, levels_key, key, username, count, rep, newest, order)
+                 for order, (_, key, username, count, rep, newest) in enumerate(ranked)])
+            db.execute("INSERT OR REPLACE INTO day_artist_cache_state(day,levels_key) VALUES(?,?)",
+                       (value, levels_key))
+            db.execute("UPDATE days SET artist_levels=? WHERE day=?", (levels_key, value))
+            self._active_index_levels[value] = levels_key
 
     def day_summary(self, value: str) -> dict:
+        self._ensure_artist_index(value)
         with self.connect() as db:
             day = db.execute("SELECT complete,updated_at FROM days WHERE day=?", (value,)).fetchone()
-            rating_clause, rating_params = _rating_clause(self.content_rating)
-            images = db.execute("SELECT COUNT(*) FROM block_images b JOIN images i ON i.id=b.image_id "
-                f"WHERE b.block_key=?{rating_clause}", (value, *rating_params)).fetchone()[0]
-            artists = db.execute("SELECT COUNT(*) FROM day_artists WHERE day=?", (value,)).fetchone()[0]
+            counts = db.execute("SELECT COALESCE(SUM(image_count),0),COUNT(*) FROM day_artists "
+                                "WHERE day=?", (value,)).fetchone()
+            images, artists = counts[0], counts[1]
         return {"date": value, "complete": bool(day and day["complete"]), "imageCount": images, "artistCount": artists, "updatedAt": day["updated_at"] if day else None}
 
     def day_artist_keys(self, value: str) -> list[dict]:
@@ -759,6 +1029,7 @@ class HistoryArchive:
 
         Cheap enough to sort in full for a view change: a large day is a few thousand rows.
         """
+        self._ensure_artist_index(value)
         with self.connect() as db:
             return [{"key": row["username_key"], "username": row["username"],
                      "imageCount": row["image_count"], "rank": row["rank_order"],
@@ -773,13 +1044,14 @@ class HistoryArchive:
         A creator whose every image is hidden has no card, so they must also leave the
         count. Otherwise the gallery advertises a total that cannot be scrolled to.
         """
+        self._ensure_artist_index(value)
         hidden = set(excluded_images or ())
         if not hidden:
             with self.connect() as db:
                 return {row["username_key"] for row in db.execute(
                     "SELECT DISTINCT username_key FROM day_artists WHERE day=?", (value,))}
         with self.connect() as db:
-            rating_clause, rating_params = _rating_clause(self.content_rating)
+            rating_clause, rating_params = _rating_clause(self.visible_levels)
             rows = db.execute("SELECT i.username_key AS key, i.id AS id FROM block_images b "
                               f"JOIN images i ON i.id=b.image_id WHERE b.block_key=?{rating_clause}", (value, *rating_params))
             return {row["key"] for row in rows if row["id"] not in hidden}
@@ -794,6 +1066,7 @@ class HistoryArchive:
         Creators left with no visible image at all are simply absent, matching
         ``artists_page``'s own fallback.
         """
+        self._ensure_artist_index(value)
         hidden = set(excluded_images or ())
         with self.connect() as db:
             rows = db.execute("SELECT username_key, representative_id FROM day_artists WHERE day=?",
@@ -805,18 +1078,39 @@ class HistoryArchive:
                      if row["username_key"] not in affected}
             if affected:
                 holes = ",".join("?" for _ in affected)
-                rating_clause, rating_params = _rating_clause(self.content_rating)
+                rating_clause, rating_params = _rating_clause(self.visible_levels)
                 for row in db.execute(
                         f"SELECT i.username_key AS key, i.id AS id FROM block_images b "
                         f"JOIN images i ON i.id=b.image_id WHERE b.block_key=? AND i.username_key IN ({holes}) "
-                        f"{rating_clause} ORDER BY i.created_at DESC,i.id DESC", (value, *affected, *rating_params)):
+                        f"{rating_clause} ORDER BY CAST(COALESCE(json_extract(i.stats,'$.reactionCount'),0) "
+                        "AS INTEGER) DESC,i.created_at DESC,i.id DESC", (value, *affected, *rating_params)):
                     if row["key"] not in result and row["id"] not in hidden:
                         result[row["key"]] = row["id"]
             return result
 
+    def image_model_versions(self, image_ids) -> dict[int, set[int]]:
+        """Generation model-version ids for a bounded set of archived images."""
+        wanted = sorted({int(value) for value in image_ids if value})
+        result: dict[int, set[int]] = {image_id: set() for image_id in wanted}
+        if not wanted:
+            return result
+        with self.connect() as db:
+            for start in range(0, len(wanted), 800):
+                chunk = wanted[start:start + 800]
+                holes = ",".join("?" for _ in chunk)
+                for row in db.execute(
+                        f"SELECT id,model_version_ids FROM images WHERE id IN ({holes})", chunk):
+                    try:
+                        result[row["id"]] = {int(value) for value in
+                                             json.loads(row["model_version_ids"] or "[]")}
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        result[row["id"]] = set()
+        return result
+
     def artists_page(self, value: str, offset: int, limit: int, pinned_username: str | None = None,
                      order: list[str] | None = None, representatives: dict[str, int] | None = None,
                      excluded_images=None) -> list[dict]:
+        self._ensure_artist_index(value)
         with self.connect() as db:
             pinned_key = (pinned_username or "").casefold()
             if order is not None:
@@ -840,16 +1134,17 @@ class HistoryArchive:
                 if image is not None and image["id"] in hidden:
                     # The usual cover is one the account hides, so open on their newest
                     # image that is not hidden instead of dropping the creator entirely.
-                    rating_clause, rating_params = _rating_clause(self.content_rating)
+                    rating_clause, rating_params = _rating_clause(self.visible_levels)
                     image = next((row for row in db.execute(
                         "SELECT i.* FROM block_images b JOIN images i ON i.id=b.image_id "
                         f"WHERE b.block_key=? AND i.username_key=?{rating_clause} "
-                        "ORDER BY i.created_at DESC,i.id DESC",
+                        "ORDER BY CAST(COALESCE(json_extract(i.stats,'$.reactionCount'),0) "
+                        "AS INTEGER) DESC,i.created_at DESC,i.id DESC",
                         (value, summary["username_key"], *rating_params)) if row["id"] not in hidden), None)
                     # Every image this creator posted is hidden, so there is no card to show.
                     if image is None:
                         continue
-                rating_clause, rating_params = _rating_clause(self.content_rating)
+                rating_clause, rating_params = _rating_clause(self.visible_levels)
                 representative_index = db.execute("SELECT COUNT(*) FROM images i WHERE local_date=? AND username_key=? "
                     "AND id IN (SELECT image_id FROM block_images WHERE block_key=?) "
                     f"AND (created_at>? OR (created_at=? AND id>?)){rating_clause}",
@@ -867,7 +1162,7 @@ class HistoryArchive:
         sensible to bind as query parameters, while a single creator's day is tiny.
         """
         clause, params = _model_clause(models)
-        rating_clause, rating_params = _rating_clause(self.content_rating)
+        rating_clause, rating_params = _rating_clause(self.visible_levels)
         hidden = set(excluded_images or ())
         with self.connect() as db:
             rows = db.execute("SELECT i.* FROM block_images b JOIN images i ON i.id=b.image_id "
@@ -879,7 +1174,7 @@ class HistoryArchive:
     def day_models(self, value: str) -> list[dict]:
         """Which generation models produced this day's artwork, commonest first."""
         with self.connect() as db:
-            rating_clause, rating_params = _rating_clause(self.content_rating)
+            rating_clause, rating_params = _rating_clause(self.visible_levels)
             return [{"model": row["base_model"] or "Unknown", "images": row["n"]}
                     for row in db.execute(
                         "SELECT COALESCE(NULLIF(i.base_model,''),'Unknown') AS base_model, "
@@ -889,14 +1184,16 @@ class HistoryArchive:
     def creators_using_models(self, value: str, models: list[str]) -> dict[str, int]:
         """Creator keys with at least one image from the chosen models, and a matching image."""
         clause, params = _model_clause(models)
-        rating_clause, rating_params = _rating_clause(self.content_rating)
+        rating_clause, rating_params = _rating_clause(self.visible_levels)
         if not clause:
             return {}
         with self.connect() as db:
             picks: dict[str, int] = {}
             for row in db.execute("SELECT i.username_key AS k, i.id AS id FROM block_images b "
                                   f"JOIN images i ON i.id=b.image_id WHERE b.block_key=?{clause}{rating_clause} "
-                                  "ORDER BY i.created_at DESC,i.id DESC", (value, *params, *rating_params)):
+                                  "ORDER BY CAST(COALESCE(json_extract(i.stats,'$.reactionCount'),0) "
+                                  "AS INTEGER) DESC,i.created_at DESC,i.id DESC",
+                                  (value, *params, *rating_params)):
                 picks.setdefault(row["k"], row["id"])
             return picks
 

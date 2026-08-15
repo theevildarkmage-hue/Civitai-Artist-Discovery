@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Civitai Artist Discovery. The project is an active alpha, so
+Thanks for helping improve Civitai Artist Discovery. The project is an active beta, so
 small, focused changes are easier to review and less likely to disrupt working behavior.
 
 ## Before submitting a change

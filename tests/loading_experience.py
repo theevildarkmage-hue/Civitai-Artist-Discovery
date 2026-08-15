@@ -69,7 +69,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                 page.wait_for_selector("#startLoading:not(.hidden)")
                 assert starts["count"] == 0
                 assert page.locator("#stopLoading").is_hidden()
-                assert "Most blocks take about 6 to 8 minutes" in page.locator("#progressText").inner_text()
+                assert page.locator("#buildSetup").is_visible()
+                assert page.locator(".segment-toolbar").is_hidden(), "gallery filters leaked into build setup"
+                safe_estimate = page.locator("#buildEstimate").inner_text()
+                page.locator('#buildCoverage [data-rating="X"]').click()
+                page.wait_for_function("previous => document.getElementById('buildEstimate').textContent !== previous",
+                                       arg=safe_estimate)
+                assert page.locator("#buildEstimate").inner_text() != safe_estimate
+                page.locator('#buildCoverage [data-rating="Soft"]').click()
                 page.screenshot(path=str(SCREENSHOTS / f"ready-{label}.png"), full_page=True)
                 page.locator("#startLoading").click()
                 page.wait_for_selector("#phaseFinding.active")

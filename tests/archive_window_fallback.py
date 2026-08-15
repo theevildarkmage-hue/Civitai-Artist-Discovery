@@ -61,28 +61,31 @@ with tempfile.TemporaryDirectory(prefix="civitai-window-fallback-", ignore_clean
 
             # All day queues the two halves; it is still published locally rather than
             # collected as a duplicate third network job.
-            page.locator("#daySegment").select_option("all")
-            deadline = time.monotonic() + 10
-            while "automatically" not in page.locator("#loadingMessage").inner_text():
-                if time.monotonic() > deadline:
-                    raise AssertionError(page.locator("#loadingMessage").inner_text())
-                page.wait_for_timeout(50)
+            assert page.locator('#buildRange [data-segment="all"]').get_attribute("class") == "selected"
             assert page.locator("#startLoading").is_visible()
-            assert page.locator("#startLoading").inner_text() == "Build full day"
-            assert "automatically" in page.locator("#loadingMessage").inner_text()
-            page.locator("#daySegment").select_option("evening")
-            page.wait_for_selector("#startLoading:not(.hidden)")
+            assert page.locator("#startLoading").inner_text() == "Build gallery"
+            assert "two resumable halves" in page.locator('#buildRange [data-segment="all"]').inner_text()
 
             page.locator("#olderDay").click()
             page.wait_for_selector(".creator-card")
             assert page.locator("#daySegment").input_value() == "all"
             assert "ArchivedArtist" in page.locator(".creator-card").inner_text()
 
+            # A remembered half-day is browsing position, not the preferred window on
+            # the next launch. If the completed all-day union exists, it wins.
+            page.evaluate("""value => sessionStorage.setItem('civitai-feed-state', JSON.stringify({
+                date:value, segment:'evening', view:'foryou', models:[], loaded:50, scrollY:200
+            }))""", value)
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_selector(".creator-card")
+            assert page.locator("#daySegment").input_value() == "all"
+
             # An explicit user selection remains explicit; it may be built separately.
             page.locator("#daySegment").select_option("evening")
             page.wait_for_selector("#startLoading:not(.hidden)")
-            assert page.locator("#daySegment").input_value() == "evening"
-            assert "Build this" in page.locator("#startLoading").inner_text()
+            page.locator('#buildRange [data-segment="evening"]').click()
+            assert page.locator('#buildRange [data-segment="evening"]').get_attribute("class") == "selected"
+            assert page.locator("#startLoading").inner_text() == "Build gallery"
             browser.close()
     finally:
         try:
@@ -91,5 +94,6 @@ with tempfile.TemporaryDirectory(prefix="civitai-window-fallback-", ignore_clean
             pass
         process.wait(timeout=10)
 
-print(json.dumps({"legacyAllDayOpenedOnNavigation": True, "explicitSegmentPreserved": True,
+print(json.dumps({"legacyAllDayOpenedOnNavigation": True, "readyAllDayOverridesSavedHalf": True,
+                  "explicitSegmentPreserved": True,
                   "allDayBuiltFromHalvesOnly": True}))
