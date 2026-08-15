@@ -1,8 +1,13 @@
-# First beta release
+# Beta releases
 
-Version **0.3.0-beta.1** is the first public beta of Civitai Artist Discovery. It keeps
+Version **0.3.0-beta.2** is the current public beta of Civitai Artist Discovery. It keeps
 the existing local Python/SQLite architecture while incorporating the fixes and features
 validated during alpha testing.
+
+Beta 2 fixes the full-day progress handoff: Evening now visibly restarts its Find,
+Collect, and Organize phases after Morning completes, while the overall bar continues
+from 50% to 100%. Collection in Beta 1 continued in the background, but its phase guard
+incorrectly hid those Evening updates.
 
 ## Release highlights
 

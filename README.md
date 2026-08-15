@@ -14,7 +14,7 @@ sponsored by Civitai.
 
 ## Project status
 
-Version `0.3.0-beta.1` is the first public beta and remains under active development. Data formats, UI
+Version `0.3.0-beta.2` is the current public beta and remains under active development. Data formats, UI
 behavior, and Civitai integration details may still change. Windows is the primary and
 only routinely tested platform.
 

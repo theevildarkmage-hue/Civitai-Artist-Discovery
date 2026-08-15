@@ -283,13 +283,16 @@ function updateProgress(status) {
   const progress = Math.max(0, Math.min(100, Number(status.progress) || 0)), found = safeCount(status.itemCount),
     creators = safeCount(status.creatorCount), checked = safeCount(status.listingsChecked),
     delay = status.delayReason, estimate = etaRange(status.etaLowSeconds, status.etaHighSeconds);
+  const overallBase = Number.isFinite(Number(status.overallBase)) ? Number(status.overallBase) : 0,
+    overallSpan = Number.isFinite(Number(status.overallSpan)) ? Number(status.overallSpan) : 100,
+    barWidth = localPercent => Math.max(0, Math.min(100, overallBase + overallSpan * localPercent / 100));
   setLoadingPhase(phase);
   $("elapsedText").textContent = `Elapsed: ${friendlyDuration(status.elapsedSeconds)}`;
   // The bar keeps animating through a retry: work is paused, not abandoned.
   $("progressBar").classList.toggle("indeterminate", phase === "finding");
   $("progressBar").classList.toggle("waiting", Boolean(delay));
   if (phase === "finding") {
-    $("progressBar").style.width = "28%";
+    $("progressBar").style.width = `${barWidth(28)}%`;
     const reached = status.searchReachedAt ? new Date(status.searchReachedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
     $("loadingMessage").textContent = delay ? retryMessage(status) : "Searching backward through newer artwork to reach this day.";
     const found_so_far = `${displayCount(checked)} artwork listings checked${reached ? ` · Reached ${reached}` : ""}`;
@@ -298,13 +301,13 @@ function updateProgress(status) {
   }
   if (phase === "organizing") {
     $("progressBar").classList.remove("indeterminate", "waiting");
-    $("progressBar").style.width = "97%";
+    $("progressBar").style.width = `${barWidth(97)}%`;
     $("loadingMessage").textContent = `Organizing ${displayCount(found)} images into ${displayCount(creators)} creator galleries.`;
     $("progressText").textContent = "Almost ready";
     return;
   }
   $("progressBar").classList.remove("indeterminate");
-  $("progressBar").style.width = `${25 + progress * .7}%`;
+  $("progressBar").style.width = `${barWidth(25 + progress * .7)}%`;
   $("loadingMessage").textContent = delay ? retryMessage(status) : "Collecting this day’s artwork listings.";
   $("progressText").textContent = `${displayCount(found)} image${found === 1 ? "" : "s"} found from ${displayCount(creators)} creator${creators === 1 ? "" : "s"} · ${delay ? retryNote(status) : estimate || "Measuring collection speed…"}`;
 }
@@ -501,9 +504,17 @@ async function beginFullDay(rebuild = false) {
   $("elapsedText").classList.remove("hidden"); setNavigationBusy(true);
   let completedItems = 0, completedCreators = 0, completedElapsed = 0;
   for (let index = 0; index < 2; index++) {
-    const segment = ["morning", "evening"][index]; activeBuildSegment = segment;
+    const segment = ["morning", "evening"][index], sectionLabel = segment === "morning" ? "Morning" : "Evening";
+    activeBuildSegment = segment;
+    // Each half has its own Find/Collect/Organize sequence. Reset the monotonic phase
+    // guard before Evening or its first two phases are discarded after Morning reaches
+    // Organize, making a healthy full-day build appear frozen for most of its second half.
+    resetLoadingPhases();
+    $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} full day · ${sectionLabel}`;
+    updateProgress({ phase: "locating", progress: 0, itemCount: completedItems,
+      creatorCount: completedCreators, elapsedSeconds: completedElapsed,
+      overallBase: index * 50, overallSpan: 50 });
     let status = await api(`/api/history/status?date=${value}&segment=${segment}`);
-    $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} full day · ${segment === "morning" ? "Morning" : "Evening"}`;
     if (rebuild || !status.complete) {
       const endpoint = rebuild && status.archiveComplete ? "/api/history/rebuild" : "/api/history/start";
       status = await api(endpoint, { method: "POST", body: JSON.stringify({
@@ -511,7 +522,7 @@ async function beginFullDay(rebuild = false) {
       while (!status.complete) {
         if (token !== activeLoadToken || loadCancelled || status.state === "cancelled") return;
         if (status.state === "error") throw new Error(status.error || "Daily import failed");
-        updateProgress({ ...status, progress: (index * 50) + (Number(status.progress) || 0) / 2,
+        updateProgress({ ...status, overallBase: index * 50, overallSpan: 50,
           itemCount: completedItems + safeCount(status.itemCount), creatorCount: completedCreators + safeCount(status.creatorCount),
           elapsedSeconds: completedElapsed + safeCount(status.elapsedSeconds) });
         await new Promise(resolve => setTimeout(resolve, 750));
