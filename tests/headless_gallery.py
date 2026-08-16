@@ -24,13 +24,16 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
     history = HistoryArchive(Path(temporary) / "history")
     yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
     pixel = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='768' height='900'%3E%3Crect width='100%25' height='100%25' fill='%232b5360'/%3E%3C/svg%3E"
+    fallback_original = f"http://127.0.0.1:{port}/original=true/fallback-test.svg"
     items = []
     for creator in range(120):
         for variant in range(3 if creator == 0 else 1):
             image_id = creator * 10 + variant + 1
             items.append({"id": image_id, "postId": image_id, "username": f"Artist_{creator:03d}",
-                "createdAt": f"{yesterday}T12:{creator % 60:02d}:00Z", "url": pixel, "width": 768, "height": 900,
-                "type": "image", "nsfwLevel": "None", "baseModel": "Test", "stats": {"reactionCount": creator % 9}})
+                "createdAt": f"{yesterday}T12:{creator % 60:02d}:00Z",
+                "url": fallback_original if image_id == 1 else pixel, "width": 768, "height": 900,
+                "type": "image", "nsfwLevel": "None", "baseModel": "Test",
+                "stats": {"reactionCount": 999 if image_id == 1 else creator % 9}})
     history._upsert_normalized(items, forced_date=yesterday)
     with history.connect() as db:
         db.execute("INSERT OR REPLACE INTO days(day,complete,updated_at) VALUES(?,1,?)", (yesterday, datetime.now().isoformat()))
@@ -69,6 +72,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
                 content_type="application/json", body='{"hasData":true}'))
             page.route("**/api/reaction", lambda route: route.fulfill(status=200, content_type="application/json", body='{"reactions":["Like"],"stats":{"likeCount":1,"reactionCount":1}}'))
             page.route("**/api/follow", lambda route: route.fulfill(status=200, content_type="application/json", body='{"userId":123,"following":true}'))
+            # A generated Civitai-size preview can be absent while its original remains
+            # healthy. The card must retry the original instead of staying black.
+            page.route("**/width=768/fallback-test.svg", lambda route: route.fulfill(status=404))
+            page.route("**/original=true/fallback-test.svg", lambda route: route.fulfill(
+                status=200, content_type="image/svg+xml",
+                body="<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='teal'/></svg>"))
             rebuilds = []
             def rebuild(route):
                 rebuilds.append(json.loads(route.request.post_data))
@@ -88,6 +97,15 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
                     "segment": page.locator("#daySegment").input_value(),
                     "consoleErrors": errors, "requests": requests[-20:]}) from error
             assert page.locator("#daySegment").input_value() == "all"
+            page.locator("#dayView").select_option("discovery")
+            fallback_image = page.locator('.creator-card[data-id="1"] .image-button img')
+            fallback_image.wait_for()
+            fallback_deadline = time.monotonic() + 5
+            while fallback_image.evaluate("image => image.naturalWidth") == 0:
+                if time.monotonic() > fallback_deadline:
+                    raise AssertionError("the missing preview never fell back to its original")
+                page.wait_for_timeout(50)
+            assert "/original=true/fallback-test.svg" in fallback_image.get_attribute("src")
             assert page.locator("#rebuildDay").is_enabled()
             page.locator("#rebuildDay").click()
             page.wait_for_selector(".creator-card")
@@ -125,7 +143,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
         assert initial == 50 and after_scroll > initial and after_reload >= 50
         assert not errors, errors
         assert not any("buzz" in url.casefold() for url in requests)
-        print({"readOnlyStartup": True, "initialCards": initial, "afterScroll": after_scroll, "afterReload": after_reload, "errors": errors})
+        print({"readOnlyStartup": True, "missingPreviewFallsBack": True,
+               "initialCards": initial, "afterScroll": after_scroll,
+               "afterReload": after_reload, "errors": errors})
     finally:
         process.terminate()
         try: process.wait(timeout=10)

@@ -187,7 +187,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
                 content_type="application/json",
                 body='{"connected":true,"socialWrite":false,"username":"tester"}'))
             page.route("**/api/discovery/summary", lambda route: route.fulfill(status=200,
-                content_type="application/json", body='{"hasData":true}'))
+                content_type="application/json",
+                body='{"hasData":true,"lastSyncAt":"2099-01-01T00:00:00Z"}'))
             page.route("**/api/creator-metadata**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"creators":{}}'))
             page.route("**/api/reaction-status**", lambda route: route.fulfill(status=200,
@@ -259,6 +260,17 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
             page.wait_for_timeout(1200)
             scrolled = cards()
             assert next(c["seen"] for c in scrolled if c["username"] == subject) is True, scrolled
+            assert float(page.eval_on_selector(selector,
+                "n => getComputedStyle(n).opacity")) < 1
+
+            # The display preference suppresses only the shadow. It must not clear the
+            # seen class or history that moves this creator later on the next fresh load.
+            page.locator("#seenDimming").click()
+            page.locator("html.disable-seen-dimming").wait_for(state="attached")
+            page.wait_for_timeout(250)
+            assert page.locator("#seenDimming").inner_text() == "Dim viewed: Off"
+            assert page.eval_on_selector(selector, "n => getComputedStyle(n).opacity") == "1"
+            assert get("/api/settings")["dimSeenCards"] is False
 
             # The batched write must reach the server on its own, with no further action.
             page.wait_for_timeout(3200)
@@ -271,6 +283,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
             # the now-seen card out of the lead position rather than showing it again first.
             page.reload(wait_until="networkidle")
             page.wait_for_selector(".creator-card")
+            assert page.locator("#seenDimming").inner_text() == "Dim viewed: Off"
+            assert page.evaluate(
+                "document.documentElement.classList.contains('disable-seen-dimming')") is True
             reloaded = cards()
             assert reloaded[0]["username"] != subject, reloaded
             assert not any(c["username"] == subject and not c["seen"] for c in reloaded), reloaded

@@ -37,7 +37,7 @@ from discovery.tray import start_windows_tray, stop_windows_tray
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "0.3.0-beta.2"
+APP_VERSION = "0.3.1-beta.1"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
@@ -1161,18 +1161,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"connected": False}); return
             if parsed.path == "/api/settings":
                 previous = SETTINGS.load()
+                content_change = ("browsingLevels" in body or "contentRating" in body)
                 value = SETTINGS.update(browsing_levels_value=body.get("browsingLevels"),
-                                        content_rating_value=body.get("contentRating"))
-                try:
-                    HISTORY.set_content_filter(value["browsingLevels"])
-                except Exception:
-                    SETTINGS.update(browsing_levels_value=previous["browsingLevels"])
-                    raise
-                with WRITE_LOCK:
-                    ORDER_CACHE.clear()
-                    # Visibility is cached separately for each exact level selection,
-                    # so switching away and back can reuse it. The account-data token
-                    # still invalidates every selection when Civitai controls change.
+                                        content_rating_value=body.get("contentRating"),
+                                        dim_seen_cards_value=body.get("dimSeenCards"))
+                if content_change:
+                    try:
+                        HISTORY.set_content_filter(value["browsingLevels"])
+                    except Exception:
+                        SETTINGS.update(browsing_levels_value=previous["browsingLevels"],
+                                        dim_seen_cards_value=previous["dimSeenCards"])
+                        raise
+                    with WRITE_LOCK:
+                        ORDER_CACHE.clear()
+                        # Visibility is cached separately for each exact level selection,
+                        # so switching away and back can reuse it. The account-data token
+                        # still invalidates every selection when Civitai controls change.
                 self.json_response({**value, "siteOrigin": SITE_ORIGIN})
                 return
             if parsed.path == "/api/history/start":

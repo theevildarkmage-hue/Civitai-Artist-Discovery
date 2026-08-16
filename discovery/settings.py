@@ -27,15 +27,30 @@ class AppSettings:
                 levels = browsing_levels(raw.get("browsingLevels"))
             except ValueError:
                 levels = levels_for_rating(rating)
+            dim_seen_cards = raw.get("dimSeenCards", True)
+            if not isinstance(dim_seen_cards, bool):
+                dim_seen_cards = True
             return {"contentRating": rating_for_levels(levels),
-                    "browsingLevels": list(levels)}
+                    "browsingLevels": list(levels),
+                    "dimSeenCards": dim_seen_cards}
 
     def update(self, *, browsing_levels_value: object = None,
-               content_rating_value: object = None) -> dict:
-        levels = (levels_for_rating(content_rating_value) if browsing_levels_value is None
-                  else browsing_levels(browsing_levels_value))
+               content_rating_value: object = None,
+               dim_seen_cards_value: object = None) -> dict:
+        current = self.load()
+        if browsing_levels_value is not None:
+            levels = browsing_levels(browsing_levels_value)
+        elif content_rating_value is not None:
+            levels = levels_for_rating(content_rating_value)
+        else:
+            levels = tuple(current["browsingLevels"])
+        dim_seen_cards = (current["dimSeenCards"] if dim_seen_cards_value is None
+                          else dim_seen_cards_value)
+        if not isinstance(dim_seen_cards, bool):
+            raise ValueError("dimSeenCards must be true or false")
         value = {"contentRating": rating_for_levels(levels),
-                 "browsingLevels": list(levels)}
+                 "browsingLevels": list(levels),
+                 "dimSeenCards": dim_seen_cards}
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")

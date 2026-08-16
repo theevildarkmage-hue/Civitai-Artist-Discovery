@@ -15,14 +15,24 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
     path = Path(temporary) / "settings.json"
     settings = AppSettings(path)
 
-    assert settings.load() == {"contentRating": "Soft", "browsingLevels": [1, 2]}
+    assert settings.load() == {"contentRating": "Soft", "browsingLevels": [1, 2],
+                               "dimSeenCards": True}
 
     path.write_text(json.dumps({"contentRating": "X"}), encoding="utf-8")
-    assert settings.load() == {"contentRating": "X", "browsingLevels": [1, 2, 4, 8, 16]}
+    assert settings.load() == {"contentRating": "X", "browsingLevels": [1, 2, 4, 8, 16],
+                               "dimSeenCards": True}
 
     saved = settings.update(browsing_levels_value=[16, 4])
-    assert saved == {"contentRating": "X", "browsingLevels": [4, 16]}
+    assert saved == {"contentRating": "X", "browsingLevels": [4, 16],
+                     "dimSeenCards": True}
     assert settings.load() == saved
+
+    saved = settings.update(dim_seen_cards_value=False)
+    assert saved == {"contentRating": "X", "browsingLevels": [4, 16],
+                     "dimSeenCards": False}
+    saved = settings.update(content_rating_value="Soft")
+    assert saved == {"contentRating": "Soft", "browsingLevels": [1, 2],
+                     "dimSeenCards": False}
 
     try:
         settings.update(browsing_levels_value=[])
@@ -31,4 +41,5 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
         assert "at least one" in str(error), error
 
 print({"safeDefault": [1, 2], "legacySettingMigrates": True,
-       "independentLevelsPersist": True, "emptySelectionRejected": True})
+       "independentLevelsPersist": True, "dimmingPreferencePersists": True,
+       "emptySelectionRejected": True})

@@ -148,8 +148,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-signout-", ignore_cleanup_error
         status = get("/api/auth-status")
         assert status.get("connected") is not True, status
 
-        # ---------- Part 3: signing back in with data already present skips the full
-        # "getting to know your taste" screen and refreshes quietly instead. ----------
+        # ---------- Part 3: signing back in with recently refreshed data skips both the
+        # full "getting to know your taste" screen and a redundant API refresh. ----------
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1280, "height": 900})
@@ -177,7 +177,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-signout-", ignore_cleanup_error
             # have been a lie the second time.
             assert page.inner_text("#welcomeTitle") != "Getting to know your taste", \
                 "returning sign-in showed the first-time onboarding screen"
-            assert sync_calls, "returning sign-in never refreshed the existing analysis"
+            page.wait_for_timeout(500)
+            assert not sync_calls, "returning sign-in refreshed a profile less than 24 hours old"
             assert not errors, errors
             browser.close()
     finally:
@@ -189,4 +190,4 @@ with tempfile.TemporaryDirectory(prefix="civitai-signout-", ignore_cleanup_error
 
 print({"sameAccountResyncIsIncremental": True, "disconnectPreservesAnalysis": True,
        "disconnectStillEndsTheSession": True, "reconnectSkipsFullOnboarding": True,
-       "reconnectRefreshesQuietly": True, "differentAccountIsolatedBeforeSync": True})
+       "recentReconnectSkipsRefresh": True, "differentAccountIsolatedBeforeSync": True})

@@ -52,6 +52,7 @@ body>header h1{line-height:1.15}
    opacity on hover, so a dimmed card is still just as easy to actually look at again. */
 .creator-card.is-seen{opacity:.4;transition:opacity .15s ease}
 .creator-card.is-seen:hover,.creator-card.is-seen:focus-within{opacity:1}
+.disable-seen-dimming .creator-card.is-seen{opacity:1}
 @media (prefers-reduced-motion:reduce){.creator-card.is-seen{transition:none}}
 .creator-identity small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .loading-actions{display:flex;justify-content:center;gap:10px;margin-top:8px}.loading-actions button{border:1px solid var(--line);background:#22242a;color:var(--text);padding:9px 14px;border-radius:8px;cursor:pointer}.danger-button{border-color:#75434a!important;color:#ffc5ca!important}.danger-button:hover{background:#4a252b!important}.loading-actions button:disabled{opacity:.45;cursor:not-allowed}

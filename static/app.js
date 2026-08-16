@@ -2,14 +2,19 @@ const $ = id => document.getElementById(id);
 let selectedModels = new Set();
 let contentRating = "Soft";
 let visibleBrowsingLevels = new Set([1, 2]);
+let dimSeenCards = true;
 let buildSegment = "all", buildCoverageRating = "Soft", currentBlocks = null, estimateToken = 0;
 // How many creators this day's Civitai content controls removed, so the count on screen
 // can explain itself rather than looking like missing data.
 let hiddenCreators = 0;
 let selectedDate = null, selectedSegment = "evening", activeBuildSegment = null, selectedView = "foryou", newestDate = null, socialWrite = false, oauthConnected = false, artistTotal = 0, imageTotal = 0, loadedArtists = 0, loadingMore = false, loadCancelled = false, loadingPhaseIndex = -1, activeLoadToken = 0, dayBuilt = false, activeRebuild = false;
+const PROFILE_REFRESH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+let automaticProfileRefreshTimer = 0, automaticProfileRefreshPending = false;
+let recommendationsNeedRefresh = false, refreshRecommendationsAfterSync = false;
 const imageReactionState = new Map();
 const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="contentFilter" class="filter-button" aria-expanded="false" title="Choose the content levels to display">Content: PG + PG-13</button><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
 segmentToolbar.insertAdjacentHTML("afterbegin", '<span id="completeDayPrompt" class="complete-day-prompt hidden"><span id="completeDayText"></span><button id="completeDay">Complete this day</button></span>');
+$("modelFilter").insertAdjacentHTML("afterend", '<button id="seenDimming" class="filter-button" aria-pressed="true" title="Previously viewed creators still move later; this changes only card brightness">Dim viewed: On</button>');
 // Card size is a plain display preference, so it is saved locally rather than round-
 // tripping to the server, and applied immediately — before anything else on the page
 // runs — so there is no flash of the default size while a saved smaller one loads in.
@@ -45,6 +50,11 @@ function showContentRating() {
   $("contentMenu").querySelector(".content-warning").textContent = !mature
     ? "⚠ Mature content is off until you explicitly enable it."
     : "⚠ Mature content is enabled. Some images may be explicit.";
+}
+function showSeenDimming() {
+  document.documentElement.classList.toggle("disable-seen-dimming", !dimSeenCards);
+  $("seenDimming").textContent = `Dim viewed: ${dimSeenCards ? "On" : "Off"}`;
+  $("seenDimming").setAttribute("aria-pressed", String(dimSeenCards));
 }
 async function chooseContentRating(nextLevels) {
   const previous = contentRating, buttons = [...$("contentMenu").querySelectorAll("[data-level]")];
@@ -215,6 +225,33 @@ function clearGallery() {
 }
 function avatar(a) { return a.avatarUrl ? `<img class="creator-avatar" src="${escapeHtml(a.avatarUrl)}" alt="">` : `<span class="creator-avatar fallback">${escapeHtml(initials(a.username))}</span>`; }
 function wireAvatarFallback(image, username) { if (!image) return; image.addEventListener("error", () => { const fallback = document.createElement("span"); fallback.className = "creator-avatar fallback"; fallback.textContent = initials(username); image.replaceWith(fallback); }, { once: true }); }
+// Civitai's generated preview can occasionally be missing even while the original is
+// still available. Retry the original once, then retain the normal broken-image state;
+// the one-shot marker prevents a bad original from creating an error loop.
+function wireArtworkFallback(image) {
+  if (!image || image.dataset.fallbackWired) return;
+  image.dataset.fallbackWired = "1";
+  image.addEventListener("load", () => image.classList.remove("image-error"));
+  image.addEventListener("error", () => {
+    const fallback = image.dataset.fallbackUrl;
+    if (fallback && image.dataset.fallbackPending === "1") {
+      image.dataset.fallbackPending = "0";
+      image.src = fallback;
+      return;
+    }
+    image.classList.add("image-error");
+  });
+}
+function showArtwork(image, previewUrl, originalUrl) {
+  wireArtworkFallback(image);
+  const preview = previewUrl || originalUrl || "";
+  const fallback = originalUrl && originalUrl !== preview ? originalUrl : "";
+  image.classList.remove("image-error");
+  image.dataset.fallbackUrl = fallback;
+  image.dataset.fallbackPending = fallback ? "1" : "0";
+  if (preview) image.src = preview;
+  else { image.removeAttribute("src"); image.classList.add("image-error"); }
+}
 function card(a) {
   let images = [a.representative], index = 0, current = images[0], imagesLoaded = a.imageCount <= 1;
   const el = document.createElement("article"); el.className = a.seen ? "creator-card is-seen" : "creator-card"; el.dataset.id = current.id;
@@ -234,10 +271,10 @@ function card(a) {
   const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"); wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
   function renderReactions() { reaction.innerHTML = reactionBar(current); wireReactions(); }
   function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!socialWrite) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
-  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) main.src = current.thumbnailUrl; age.textContent = ago(current.createdAt); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => { index = Number(button.dataset.index); paint(); }); }
+  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showArtwork(main, current.thumbnailUrl, current.url); age.textContent = ago(current.createdAt); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => { index = Number(button.dataset.index); paint(); }); }
   async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${modelQuery()}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
   async function move(delta) { try { await ensureImages(); index = (index + delta + images.length) % images.length; paint(); } catch (error) { toast(error.message); } }
-  main.addEventListener("error", () => { main.classList.add("image-error"); }); el.querySelector(".previous").onclick = () => move(-1); el.querySelector(".next").onclick = () => move(1); el.querySelector(".image-button").onclick = () => showDetails(current, a); el.querySelector(".info-button").onclick = () => showDetails(current, a); el.querySelector(".more-menu").onclick = () => showDetails(current, a);
+  wireArtworkFallback(main); el.querySelector(".previous").onclick = () => move(-1); el.querySelector(".next").onclick = () => move(1); el.querySelector(".image-button").onclick = () => showDetails(current, a); el.querySelector(".info-button").onclick = () => showDetails(current, a); el.querySelector(".more-menu").onclick = () => showDetails(current, a);
   applyCreatorFollowers(el, a);
   // Setting src while the card is still detached defeats loading="lazy" — the browser
   // fetches immediately — so a whole page of cards requested every preview at once and
@@ -584,7 +621,7 @@ function renderDetailTags(detail) {
     `<span class="tag-chip${tag.hidden ? " is-hidden" : ""}"${tag.hidden
       ? ' title="You hide this tag on Civitai"' : ""}>${escapeHtml(tag.name)}</span>`).join("")}`;
 }
-async function showDetails(image, artist) { $("detailImage").src = image.thumbnailUrl; $("detailTags").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; $("detailPrompt").textContent = "Loading generation details…"; $("details").showModal(); try { const detail = await api(`/api/history/image?id=${image.id}`); $("detailImage").src = detail.detailImageUrl || detail.thumbnailUrl; $("detailMeta").innerHTML = `<div><dt>Image</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
+async function showDetails(image, artist) { showArtwork($("detailImage"), image.thumbnailUrl, image.url); $("detailTags").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; $("detailPrompt").textContent = "Loading generation details…"; $("details").showModal(); try { const detail = await api(`/api/history/image?id=${image.id}`); showArtwork($("detailImage"), detail.detailImageUrl || detail.thumbnailUrl, detail.url); $("detailMeta").innerHTML = `<div><dt>Image</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
     $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url; } catch (error) { $("detailPrompt").textContent = error.message; } }
 const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) loadMore().catch(error => toast(error.message)); }, { rootMargin: "800px" });
 new MutationObserver(() => { const sentinel = $("loadSentinel"); if (sentinel) observer.observe(sentinel); }).observe($("gallery"), { childList: true });
@@ -669,6 +706,19 @@ $("contentFilter").onclick = () => {
   $("contentFilter").setAttribute("aria-expanded", String(!opening));
   $("modelMenu").classList.add("hidden");
 };
+$("seenDimming").onclick = async () => {
+  const button = $("seenDimming"), previous = dimSeenCards;
+  button.disabled = true;
+  try {
+    const settings = await api("/api/settings", { method: "POST",
+      body: JSON.stringify({ dimSeenCards: !dimSeenCards }) });
+    dimSeenCards = settings.dimSeenCards !== false;
+    showSeenDimming();
+    toast(dimSeenCards ? "Viewed cards will be dimmed." : "Viewed cards will stay at full brightness.");
+  } catch (error) {
+    dimSeenCards = previous; showSeenDimming(); toast(error.message);
+  } finally { button.disabled = false; }
+};
 $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
   button.onclick = () => {
     const level = Number(button.dataset.level), next = new Set(visibleBrowsingLevels);
@@ -739,6 +789,7 @@ $("dayView").onchange = async () => {
   const needs = { emerging: "followers", foryou: "tags" }[selectedView];
   if (needs) ensureViewData(needs); else { sweepWatch++; $("followerSweep").classList.add("hidden"); }
   await reloadView();
+  if (selectedView === "foryou") recommendationsNeedRefresh = false;
 };
 const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1); newestDate = localDateString(yesterday);
 // First launch runs connect, then read the account's own history, then the day. The
@@ -789,8 +840,43 @@ async function runFirstAnalysis() {
     }
   } catch (error) { $("welcomeStatus").textContent = `Skipping analysis: ${error.message}`; }
 }
+function profileRefreshDue(summary, now = Date.now()) {
+  if (!summary?.hasData) return false;
+  const refreshed = Date.parse(summary.lastSyncAt || "");
+  return !Number.isFinite(refreshed) || now - refreshed >= PROFILE_REFRESH_MAX_AGE_MS;
+}
+function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
+  if (!oauthConnected || !profileRefreshDue(summary)) return;
+  automaticProfileRefreshPending = true;
+  clearTimeout(automaticProfileRefreshTimer);
+  automaticProfileRefreshTimer = setTimeout(async () => {
+    if (!automaticProfileRefreshPending || !oauthConnected) return;
+    // A daily build is both more visible and much more API-intensive. Let it finish
+    // before this quiet maintenance read so the two jobs never compete for Civitai.
+    if (!dayBuilt || activeBuildSegment || activeRebuild) {
+      scheduleAutomaticProfileRefresh(summary, 60000);
+      return;
+    }
+    try {
+      const state = await api("/api/discovery/status");
+      if (state.running) {
+        automaticProfileRefreshPending = false;
+        pollDiscovery();
+        return;
+      }
+      automaticProfileRefreshPending = false;
+      toast("Refreshing My Profile in the background…");
+      refreshRecommendationsAfterSync = true;
+      applyDiscoverySync(await api("/api/discovery/sync", { method: "POST", body: "{}" }));
+      pollDiscovery();
+    } catch (error) {
+      automaticProfileRefreshPending = false;
+      console.warn("Automatic profile refresh could not start", error);
+    }
+  }, delay);
+}
 async function startup() {
-  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); showContentRating(); } catch (_) { showContentRating(); }
+  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; showContentRating(); showSeenDimming(); } catch (_) { showContentRating(); showSeenDimming(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
@@ -813,7 +899,8 @@ async function startup() {
     $("welcomeConnect").classList.add("hidden");
     await runFirstAnalysis();
   }
-  return openDay();
+  await openDay();
+  scheduleAutomaticProfileRefresh(summary);
 }
 $("welcomeConnect").onclick = async () => {
   $("welcomeConnect").disabled = true;
@@ -826,13 +913,14 @@ $("welcomeConnect").onclick = async () => {
     // takes about a minute and only happens once" would be a lie the second time.
     const existing = await api("/api/discovery/summary").catch(() => ({ hasData: false }));
     if (existing.hasData) {
-      api("/api/discovery/sync", { method: "POST", body: "{}" }).catch(() => {});
+      scheduleAutomaticProfileRefresh(existing);
     } else {
       $("welcomeTitle").textContent = "Getting to know your taste";
       $("welcomeConnect").classList.add("hidden");
       await runFirstAnalysis();
     }
     await openDay();
+    scheduleAutomaticProfileRefresh(existing);
   } catch (error) { $("welcomeStatus").textContent = error.message; $("welcomeConnect").disabled = false; }
 };
 // Using the built-in registration is a convenience, not a requirement. Anyone who would
@@ -1084,7 +1172,21 @@ async function pollDiscovery() {
       observedRunning = true;
       await new Promise(resolve => setTimeout(resolve, 900));
     }
-    if (observedRunning) await refreshDiscovery();
+    if (observedRunning || refreshRecommendationsAfterSync) {
+      await refreshDiscovery();
+      if (refreshRecommendationsAfterSync) {
+        refreshRecommendationsAfterSync = false;
+        recommendationsNeedRefresh = true;
+        const galleryVisible = !$("gallery").classList.contains("hidden");
+        if (dayBuilt && selectedView === "foryou" && galleryVisible && window.scrollY < 300) {
+          recommendationsNeedRefresh = false;
+          await reloadView();
+          toast("My Profile and For You are up to date.");
+        } else {
+          toast("My Profile refreshed. For You will update when you open it again.");
+        }
+      }
+    }
   }
   catch (error) { toast(error.message); }
   finally { discoveryPolling = false; }
@@ -1099,7 +1201,14 @@ function showView(name) {
   $("discovery").classList.toggle("hidden", !discovery);
   $("loading").classList.toggle("hidden", discovery || dayBuilt);
   $("gallery").classList.toggle("hidden", discovery || !dayBuilt);
-  if (!discovery) { resumeSeenTracking(); return; }
+  if (!discovery) {
+    resumeSeenTracking();
+    if (recommendationsNeedRefresh && dayBuilt && selectedView === "foryou") {
+      recommendationsNeedRefresh = false;
+      reloadView().catch(error => toast(error.message));
+    }
+    return;
+  }
   // Connection state is otherwise only applied once a completed day loads, so opening
   // this tab on an unbuilt day would leave the sync button believing it is disconnected.
   refreshAuth().catch(error => console.warn("Connection state could not be refreshed", error));
@@ -1113,7 +1222,7 @@ $("tabDiscovery").onclick = () => showView("discovery");
 $("syncDiscovery").onclick = async () => {
   if (!oauthConnected) return toast("Connect Civitai to analyse your reactions.");
   $("syncDiscovery").disabled = true;
-  try { applyDiscoverySync(await api("/api/discovery/sync", { method: "POST", body: "{}" })); pollDiscovery(); }
+  try { refreshRecommendationsAfterSync = true; applyDiscoverySync(await api("/api/discovery/sync", { method: "POST", body: "{}" })); pollDiscovery(); }
   catch (error) { $("syncDiscovery").disabled = false; toast(error.message); }
 };
 $("stopDiscovery").onclick = async () => { $("stopDiscovery").disabled = true; try { await api("/api/discovery/sync/stop", { method: "POST", body: "{}" }); } catch (error) { toast(error.message); } finally { $("stopDiscovery").disabled = false; } };

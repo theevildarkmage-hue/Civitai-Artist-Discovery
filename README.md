@@ -14,11 +14,11 @@ sponsored by Civitai.
 
 ## Project status
 
-Version `0.3.0-beta.2` is the current public beta and remains under active development. Data formats, UI
+Version `0.3.1-beta.1` is the current public beta and remains under active development. Data formats, UI
 behavior, and Civitai integration details may still change. Windows is the primary and
 only routinely tested platform.
 
-See the [first beta release notes](docs/beta-release.md) for the release highlights.
+See the [beta release notes](docs/beta-release.md) for the release highlights.
 
 The underlying application is Python, SQLite, HTML, CSS, and JavaScript. Running from
 source on desktop Linux is experimental: secure OAuth storage is implemented through the
@@ -55,14 +55,19 @@ Windows-only.
   mature levels are explicit opt-ins.
 - Filters galleries and carousels by generation model.
 - Remembers seen creators and moves previously viewed cards later on a fresh visit without
-  reshuffling the active page.
+  reshuffling the active page. The visual dimming can be disabled independently without
+  clearing or weakening that discovery history.
 - Restores the selected day, day segment, view, model filter, card size, loaded depth, and
   scroll position within the browser session.
 - Stops and resumes long collections from SQLite checkpoints.
 - Collects lightweight listing data first; full prompts and generation resources are read
   only when an image's detail view is opened.
+- Retries the original artwork when a generated Civitai CDN preview is unavailable.
 - Includes a local **My Profile** dashboard for the creative fingerprint, dominant model
   signals, reaction mix, distinctive tags, favorite creators, and creators worth following.
+- Refreshes My Profile automatically when its last successful Civitai read is more than
+  24 hours old, deferring while a daily gallery is being built. Known tags and upload
+  fingerprint pages are reused; the reacted-image listing is still reconciled for accuracy.
 - Keeps application-managed databases, configuration, caches, credentials, and logs in
   a portable `data/` folder beside the executable.
 - Shows a Windows notification-area icon with **Open** and **Exit** while the local server

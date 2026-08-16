@@ -1,13 +1,18 @@
 # Beta releases
 
-Version **0.3.0-beta.2** is the current public beta of Civitai Artist Discovery. It keeps
+Version **0.3.1-beta.1** is the current public beta of Civitai Artist Discovery. It keeps
 the existing local Python/SQLite architecture while incorporating the fixes and features
 validated during alpha testing.
 
-Beta 2 fixes the full-day progress handoff: Evening now visibly restarts its Find,
-Collect, and Organize phases after Morning completes, while the overall bar continues
-from 50% to 100%. Collection in Beta 1 continued in the background, but its phase guard
-incorrectly hid those Evening updates.
+The 0.3.1 beta refreshes My Profile automatically when its last successful update is more
+than 24 hours old, while deferring during gallery collection. It also adds a persistent
+option to disable the visual dimming of viewed cards without clearing seen history or
+changing discovery order. If a generated Civitai CDN preview is missing, gallery cards
+and the detail dialog now retry the original artwork once instead of remaining black.
+
+The full-day progress handoff fix from 0.3.0 Beta 2 remains included: Evening visibly
+restarts its Find, Collect, and Organize phases after Morning completes, while the overall
+bar continues from 50% to 100%.
 
 ## Release highlights
 
@@ -20,6 +25,9 @@ incorrectly hid those Evening updates.
 - Popular ranking based on total daily reactions, with the most-reacted image first.
 - Personalized For You discovery using reaction history and a cached fingerprint of the
   connected account's public uploads.
+- Automatic profile refresh after 24 hours, with incremental upload-fingerprint reads.
+- Persistent control over viewed-card dimming while preserving seen-history ranking.
+- Automatic fallback to original artwork when a generated CDN preview is unavailable.
 - A My Profile dashboard for distinctive tags, model signals, reaction preferences, and
   creator recommendations.
 - Secure OAuth token storage through Windows DPAPI or Linux Secret Service.
