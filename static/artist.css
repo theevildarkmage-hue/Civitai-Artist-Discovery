@@ -11,6 +11,19 @@
 .creator-badge:empty{display:none}
 .segment-toolbar label{margin-left:14px}
 .sweep-note{color:var(--accent);font-size:12px;white-space:nowrap}
+.sweep-note button{margin-left:4px;padding:3px 7px;border-color:#4b8f85;background:#24534d;color:#fff;font-size:11px}
+.sweep-note.personalization-note{order:30;flex:1 0 100%;max-width:1100px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 18px;padding:10px 14px;border:1px solid #396b63;border-radius:10px;background:#142825;color:#cce8e4;white-space:normal;box-shadow:0 5px 18px #0003}
+.sweep-note.personalization-note.preliminary{border-color:#896a2d;background:#2c2518;color:#f3dfb4}
+.sweep-note.personalization-note.ready{border-color:#3b7d72;background:#17342f;color:#d8fff8}
+.sweep-copy{display:grid;gap:2px}
+.sweep-copy strong{color:var(--text);font-size:13px}
+.sweep-copy span{color:inherit;font-size:12px}
+.sweep-count{font-variant-numeric:tabular-nums;font-size:12px;font-weight:750}
+.sweep-progress{grid-column:1/-1;width:100%;height:5px;overflow:hidden;border:0;border-radius:999px;appearance:none;background:#090a0c88}
+.sweep-progress::-webkit-progress-bar{background:#090a0c88;border-radius:999px}
+.sweep-progress::-webkit-progress-value{background:#d6a94f;border-radius:999px}
+.sweep-progress::-moz-progress-bar{background:#d6a94f;border-radius:999px}
+@media(max-width:700px){.sweep-note.personalization-note{grid-template-columns:1fr}.sweep-count{grid-row:2}.sweep-progress{grid-row:3}}
 #welcome{min-height:70vh;display:flex;align-items:center;justify-content:center}
 .welcome-body{color:var(--muted);font-size:15px;line-height:1.6;text-align:center;max-width:62ch;margin:0 auto}
 .welcome-points{list-style:none;margin:4px auto 0;padding:0;display:grid;gap:8px;max-width:62ch}
@@ -40,10 +53,8 @@ body>header h1{line-height:1.15}
 .match-badge{flex:none;display:inline-flex;align-items:center;justify-content:center;
   width:19px;height:19px;border-radius:50%;background:#2a2340;color:#c3b1f5;
   border:1px solid #4a3d6e;font-size:11px;line-height:1;cursor:default}
-/* A creator the account already reacts to a lot but does not follow — the same signal
-   the dashboard's "Worth following" panel surfaces, now visible without leaving the
-   feed. A distinct color from the match badge: two different reasons a card earned
-   attention should not read as the same badge. */
+/* A compact signal for unfollowed creators whose work the account repeatedly reacts to.
+   It is intentionally broader than the dashboard's stronger "Worth following" bar. */
 .worth-badge{flex:none;display:inline-flex;align-items:center;justify-content:center;
   width:19px;height:19px;border-radius:50%;background:#3a1f28;color:#f0a2b6;
   border:1px solid #6b3346;font-size:11px;line-height:1;cursor:default}
@@ -84,6 +95,7 @@ body>header h1{line-height:1.15}
 .carousel-arrow[hidden]{display:none}
 .carousel-arrow svg{display:block;width:54%;height:54%;fill:none;stroke:currentColor;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
 .recommendation-badge{position:absolute;z-index:5;top:10px;left:10px;max-width:calc(100% - 20px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 9px;border:1px solid #4d8178;border-radius:999px;background:#132b28e8;color:#79dfce;font-size:11px;font-weight:800;letter-spacing:.03em;box-shadow:0 3px 12px #0007;pointer-events:none}
+.tag-check-failed .image-stage::after{content:'Could not verify this image against your Civitai Content Controls.';position:absolute;z-index:6;inset:50% 18px auto;transform:translateY(-50%);padding:12px;border:1px solid #7f4a4d;border-radius:9px;background:#2b181bdd;color:#f0c9cb;text-align:center;font-size:12px}
 .creator-footer{height:38px;font-size:12px}
 
 /* Scroll to top. Appears once the page is deep enough that returning is a chore. */
@@ -164,4 +176,35 @@ body>header h1{line-height:1.15}
 @media(min-width:701px){
   dialog[open]{grid-template-rows:minmax(0,1fr)}
   dialog[open]>img{min-height:0;height:100%}
+}
+
+/* GitHub updates stay unobtrusive until one exists, then use the same accent as other
+   safe primary actions. Release Markdown is rendered as plain text in the dialog. */
+.toolbar .update-available{border-color:#478d82;background:#173b35;color:#82e8d7;font-weight:800}
+.toolbar .update-available:hover{background:#205249}
+.update-preference{margin-top:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:#17181b}
+.update-preference>div{display:grid;gap:3px;flex:1;min-width:230px}
+.update-preference small{color:var(--muted);line-height:1.35}
+.update-preference label{display:flex;align-items:center;gap:7px;color:var(--muted);white-space:nowrap}
+.update-preference button{border:1px solid var(--line);background:#22242a;color:var(--text);padding:7px 10px;border-radius:8px;cursor:pointer}
+dialog.update-dialog{width:min(720px,92vw);height:auto;max-height:88vh;grid-template-columns:1fr}
+dialog.update-dialog[open]{display:block}
+.update-dialog-copy{padding:28px;display:grid;gap:14px;max-height:88vh;overflow:auto}
+.update-dialog-copy h2{font-size:26px}
+.update-dialog-copy>p{color:var(--muted);line-height:1.5}
+#updateNotes{margin:0;max-height:300px;overflow:auto;padding:16px;border:1px solid var(--line);border-radius:10px;background:#141519;color:#d6d8de;font:13px/1.55 Inter,system-ui,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere}
+.update-release-link{color:#8edfd2;text-decoration:none;width:max-content}
+.update-release-link:hover{text-decoration:underline}
+.update-progress{display:grid;gap:8px}
+.update-progress>div{display:flex;justify-content:space-between;gap:10px;color:var(--muted)}
+.update-progress progress{width:100%;height:13px;accent-color:var(--accent)}
+.update-error{padding:10px 12px;border:1px solid #75434a;border-radius:8px;background:#3a2126;color:#ffc5ca!important}
+.update-actions{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
+.update-actions button{border:1px solid var(--line);background:#22242a;color:var(--text);padding:10px 14px;border-radius:9px;cursor:pointer}
+.update-actions .primary-button{border-color:#4a9f92;background:#1d5148;color:#eafffb;font-weight:800}
+.update-actions button:disabled{opacity:.45;cursor:not-allowed}
+@media(max-width:700px){
+  .update-preference{align-items:stretch}.update-preference button{width:100%}
+  .update-actions{justify-content:stretch}.update-actions button{flex:1}
+  .update-dialog-copy{padding:22px 17px}
 }

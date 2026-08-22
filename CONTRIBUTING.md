@@ -28,3 +28,11 @@ small, focused changes are easier to review and less likely to disrupt working b
 Please describe what you tested and call out any behavior you could not verify. By
 contributing, you agree that your contribution is provided under the repository's MIT
 license.
+
+## Release compatibility
+
+The portable updater relies on the version in `server.py`, the Git tag, and the ZIP name
+matching exactly: `CivitaiArtistDiscovery-<version>.zip`. Always package releases with
+`scripts/release.ps1`, upload the resulting ZIP as a GitHub release asset, and retain its
+GitHub-provided SHA-256 digest. Do not publish an updater-compatible asset from another
+repository or substitute an installer for the portable folder ZIP.

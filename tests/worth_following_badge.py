@@ -1,7 +1,4 @@
-"""A creator you react to a lot but do not follow should be visible in the feed itself,
-not only on the dashboard — the same 5-reaction bar gates both surfaces from one
-constant, so they can never disagree about who qualifies.
-"""
+"""Dashboard suggestions and gallery familiarity hearts use separate thresholds."""
 
 from datetime import datetime, timedelta
 import json
@@ -25,9 +22,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-worth-following-", ignore_clean
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     import discovery.taste as taste
     from discovery.history import HistoryArchive
-    from discovery.taste import TasteStore, WORTH_FOLLOWING_MIN
+    from discovery.taste import GALLERY_HEART_MIN, TasteStore, WORTH_FOLLOWING_MIN
 
-    assert WORTH_FOLLOWING_MIN == 5, WORTH_FOLLOWING_MIN
+    assert WORTH_FOLLOWING_MIN == 10, WORTH_FOLLOWING_MIN
+    assert GALLERY_HEART_MIN == 5, GALLERY_HEART_MIN
 
     day = (datetime.now() - timedelta(days=1)).date().isoformat()
     pixel = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3C/svg%3E"
@@ -40,6 +38,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-worth-following-", ignore_clean
          "url": pixel, "width": 8, "height": 8, "type": "image", "nsfwLevel": "None",
          "stats": {"reactionCount": 1}},
         {"id": 9802, "postId": 9802, "username": "AlreadyFollowed", "createdAt": f"{day}T11:00:00Z",
+         "url": pixel, "width": 8, "height": 8, "type": "image", "nsfwLevel": "None",
+         "stats": {"reactionCount": 1}},
+        {"id": 9803, "postId": 9803, "username": "BelowHeart", "createdAt": f"{day}T10:00:00Z",
+         "url": pixel, "width": 8, "height": 8, "type": "image", "nsfwLevel": "None",
+         "stats": {"reactionCount": 1}},
+        {"id": 9804, "postId": 9804, "username": "HeartAtFive", "createdAt": f"{day}T09:00:00Z",
          "url": pixel, "width": 8, "height": 8, "type": "image", "nsfwLevel": "None",
          "stats": {"reactionCount": 1}},
     ], forced_date=day)
@@ -64,6 +68,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-worth-following-", ignore_clean
                        "first_observed_at, last_observed_at) VALUES(?,?,?,?,?)",
                        [(n, 503, "AlreadyFollowed", "now", "now")
                         for n in range(201, 201 + WORTH_FOLLOWING_MIN + 2)])
+        db.executemany("INSERT INTO reacted_images(image_id, creator_id, creator_username, "
+                       "first_observed_at, last_observed_at) VALUES(?,?,?,?,?)",
+                       [(n, 504, "BelowHeart", "now", "now")
+                        for n in range(301, 301 + GALLERY_HEART_MIN - 1)])
+        db.executemany("INSERT INTO reacted_images(image_id, creator_id, creator_username, "
+                       "first_observed_at, last_observed_at) VALUES(?,?,?,?,?)",
+                       [(n, 505, "HeartAtFive", "now", "now")
+                        for n in range(401, 401 + GALLERY_HEART_MIN)])
         db.execute("INSERT INTO followed_creators(creator_id) VALUES(503)")
         db.execute("INSERT INTO creator_followers(creator_id, username, follower_count, fetched_at) "
                    "VALUES(503,'AlreadyFollowed',900,'now')")
@@ -99,22 +111,39 @@ with tempfile.TemporaryDirectory(prefix="civitai-worth-following-", ignore_clean
             with urllib.request.urlopen(f"http://127.0.0.1:{PORT}{path}", timeout=30) as response:
                 return json.loads(response.read())
 
+        summary = get("/api/discovery/summary")
+        assert summary["worthFollowingThreshold"] == 10, summary
+        assert summary["galleryHeartThreshold"] == 5, summary
+        assert [creator["username"] for creator in summary["reactedNotFollowed"]] == ["OftenReacted"], summary
+
         page = get(f"/api/history/artists?date={day}&segment=all&view=discovery&offset=0&limit=10")
         by_name = {artist["username"]: artist for artist in page["artists"]}
 
         often = by_name["OftenReacted"]
         assert often["reactedCount"] == WORTH_FOLLOWING_MIN, often
         assert often["worthFollowing"] is True, often
+        assert often["reactedOften"] is True, often
 
         below = by_name["JustBelowBar"]
         assert below["reactedCount"] == WORTH_FOLLOWING_MIN - 1, below
         assert below["worthFollowing"] is False, below
+        assert below["reactedOften"] is True, below
 
         followed = by_name["AlreadyFollowed"]
         assert followed["following"] is True, followed
         assert followed["reactedCount"] >= WORTH_FOLLOWING_MIN, followed
         # Already following them, so there is nothing left to suggest.
         assert followed["worthFollowing"] is False, followed
+        assert followed["reactedOften"] is False, followed
+
+        below_heart = by_name["BelowHeart"]
+        assert below_heart["reactedCount"] == GALLERY_HEART_MIN - 1, below_heart
+        assert below_heart["reactedOften"] is False, below_heart
+
+        heart_at_five = by_name["HeartAtFive"]
+        assert heart_at_five["reactedCount"] == GALLERY_HEART_MIN, heart_at_five
+        assert heart_at_five["reactedOften"] is True, heart_at_five
+        assert heart_at_five["worthFollowing"] is False, heart_at_five
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
@@ -137,9 +166,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-worth-following-", ignore_clean
                      title: card.querySelector('.worth-badge')?.getAttribute('title') || null}
                 ]))""")
             assert cards["OftenReacted"]["badge"] is True, cards["OftenReacted"]
-            assert "5" in cards["OftenReacted"]["title"], cards["OftenReacted"]
-            assert cards["JustBelowBar"]["badge"] is False, cards["JustBelowBar"]
+            assert "10" in cards["OftenReacted"]["title"], cards["OftenReacted"]
+            assert cards["JustBelowBar"]["badge"] is True, cards["JustBelowBar"]
             assert cards["AlreadyFollowed"]["badge"] is False, cards["AlreadyFollowed"]
+            assert cards["BelowHeart"]["badge"] is False, cards["BelowHeart"]
+            assert cards["HeartAtFive"]["badge"] is True, cards["HeartAtFive"]
+            assert "5" in cards["HeartAtFive"]["title"], cards["HeartAtFive"]
 
             page.eval_on_selector(".worth-badge", "n => n.scrollIntoView({block:'center'})")
             page.wait_for_timeout(500)
@@ -147,8 +179,11 @@ with tempfile.TemporaryDirectory(prefix="civitai-worth-following-", ignore_clean
             assert not errors, errors
             browser.close()
 
-        print({"sharedConstant": WORTH_FOLLOWING_MIN, "qualifiesAtBar": True,
-               "excludedOneBelow": True, "followedNeverBadged": True, "badgeRendersInFeed": True})
+        print({"worthFollowingMinimum": WORTH_FOLLOWING_MIN,
+               "galleryHeartMinimum": GALLERY_HEART_MIN,
+               "tenQualifiesForSuggestion": True, "nineDoesNot": True,
+               "fiveQualifiesForHeart": True, "fourDoesNot": True,
+               "followedArtistNotHearted": True})
     finally:
         process.terminate()
         try:

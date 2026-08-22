@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
     assert not store.status()["error"], store.status()
     summary = store.summary()
     assert summary["reactedImages"] == 85, summary
-    assert summary["followedCreators"] == 3 and summary["creatorsNotFollowed"] == 2, summary
+    assert summary["followedCreators"] == 3 and summary["creatorsNotFollowed"] == 1, summary
 
     env = {**os.environ, "CIVITAI_HISTORY_DATA_DIR": temporary}
     process = subprocess.Popen([sys.executable, str(ROOT / "server.py"), "--port", str(PORT), "--no-browser"],
@@ -138,7 +138,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             page.wait_for_selector("#summaryRow .metric-card")
             values = page.eval_on_selector_all("#summaryRow .metric-card .value",
                                                "nodes => nodes.map(n => n.textContent)")
-            assert values == ["3", "85", "4", "2"], values
+            assert values == ["3", "85", "4", "1"], values
 
             mix = page.eval_on_selector_all(".donut-legend-value", "nodes => nodes.map(n => n.textContent)")
             percents = [float(text.split("·")[1].strip().rstrip("%")) for text in mix]
@@ -167,15 +167,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
 
             not_followed = page.eval_on_selector_all("#notFollowed .rank-name a",
                                                      "nodes => nodes.map(n => n.textContent.trim())")
-            assert not_followed == ["@GWGeek", "@AiMetatron"], not_followed
+            assert not_followed == ["@GWGeek"], not_followed
             # Follower counts and the emerging badge appear on every creator panel.
             worth = page.eval_on_selector_all("#notFollowed .rank-item", """nodes => nodes.map(n => ({
                 name: n.querySelector('.rank-name a').textContent,
                 value: n.querySelector('.rank-value').textContent,
                 emerging: !!n.querySelector('.pill.emerging')}))""")
             assert worth[0]["value"] == "12 images · 430 followers", worth
-            assert worth[0]["emerging"] is True and worth[1]["emerging"] is False, worth
-            assert worth[1]["value"] == "8 images · 5,100 followers", worth
+            assert worth[0]["emerging"] is True, worth
             top_creator = page.eval_on_selector("#topCreators .rank-item .rank-value",
                                                 "n => n.textContent")
             assert top_creator == "40 images · 3,025 followers", top_creator
@@ -203,14 +202,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
                         creators: top('topCreators')};
             }""")
             assert order["lead"] < order["distinctive"] and order["lead"] < order["creators"], order
-            assert "of 2" in page.text_content("#notFollowedNote"), page.text_content("#notFollowedNote")
+            assert "of 1" in page.text_content("#notFollowedNote"), page.text_content("#notFollowedNote")
             # Read-only: every follow control is present but refuses, and no write is sent.
             writes = []
             page.on("request", lambda r: writes.append(r.url) if r.method == "POST"
                     and "/api/follow" in r.url else None)
             follow_state = page.eval_on_selector_all("#notFollowed .follow-button",
                 "nodes => nodes.map(n => ({disabled: n.disabled, text: n.textContent}))")
-            assert len(follow_state) == 2, follow_state
+            assert len(follow_state) == 1, follow_state
             assert all(item["disabled"] and item["text"] == "+ Follow" for item in follow_state), follow_state
             page.eval_on_selector("#notFollowed .follow-button", "n => n.click()")
             page.wait_for_timeout(400)
@@ -254,9 +253,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             assert sent == [{"userId": 13, "username": "GWGeek", "following": True}], sent
             assert writer.text_content("#notFollowed .follow-button") == "✓ Following"
             # The count is re-read from the server rather than guessed in the browser. The
-            # store is untouched here because /api/follow is mocked, so it stays at 2.
+            # store is untouched here because /api/follow is mocked, so it stays at 1.
             assert writer.eval_on_selector_all("#summaryRow .metric-card .value",
-                "nodes => nodes.map(n => n.textContent)")[3] == "2"
+                "nodes => nodes.map(n => n.textContent)")[3] == "1"
             # This page claims a connection the server does not have, so creator enrichment
             # is correctly refused. That must be a clean 401, never a 500, and never a
             # JavaScript error.
@@ -318,6 +317,6 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
         process.terminate()
         process.wait(timeout=15)
 
-print({"metrics": [3, 85, 4, 2], "percentTotal": 100.0, "distinctiveFirst": "katana",
+print({"metrics": [3, 85, 4, 1], "percentTotal": 100.0, "distinctiveFirst": "katana",
        "artworkRendered": 0, "responsive": ["1440", "900", "430"], "reset": True,
        "consoleErrors": 0, "screenshots": str(SHOTS)})

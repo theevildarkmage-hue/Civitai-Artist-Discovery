@@ -140,16 +140,21 @@ with tempfile.TemporaryDirectory(prefix="gallery-views-", ignore_cleanup_errors=
         server.TASTE = real_taste
     assert "reacted_one" not in filtered and filtered_total == len(creators) - 1, filtered
 
-    # With nothing scored yet the view falls back to the archive order rather than
-    # presenting an arbitrary one.
+    # With nothing tag-scored yet, For You still uses personal/quality lanes rather than
+    # falling back to raw total reactions (which strongly rewards upload volume).
     class NoScores:
         def score_images(self, ids):
             return {}
+        def follower_counts(self, names):
+            return {}
     server.TASTE = NoScores()
     try:
-        assert server.day_view_order(day, "foryou", "Me", signals) == (None, None)
+        fallback, fallback_total = server.day_view_order(day, "foryou", "Me", signals)
     finally:
         server.TASTE = real_taste
+    assert fallback_total == len(creators), (fallback, fallback_total)
+    assert fallback != ranked, (fallback, ranked)
+    assert fallback[-1] == "me", fallback
 
     decorated = server.decorate_history_artist({"username": "Unknown_A"}, {}, set(), signals)
 

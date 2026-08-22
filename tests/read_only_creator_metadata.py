@@ -22,6 +22,7 @@ from discovery.history import HistoryArchive
 
 with tempfile.TemporaryDirectory(prefix="creator-metadata-unit-", ignore_cleanup_errors=True) as temporary:
     root = Path(temporary)
+    real_taste = server.TASTE
     server.CREATOR_PROFILES = root / "creator_profiles.json"
     server.FOLLOW_CACHE = root / "following.json"
     server.CREATOR_PROFILES.write_text(json.dumps({"byUsername": {"blueeyes": {
@@ -37,10 +38,22 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-unit-", ignore_cleanup
             if procedure == "user.getFollowingUsers":
                 return [482053] if server.auth_status()["id"] == 111 else []
             raise AssertionError(f"Unexpected profile lookup: {procedure}")
+        def batch_query_optional(self, procedure: str, payloads: list[dict]):
+            self.calls.append((procedure, {"payloads": payloads}))
+            values = {"resolvedlater": {"id": 902, "username": "ResolvedLater",
+                       "stats": {"followerCountAllTime": 1500}}}
+            return [values.get(payload["username"].casefold()) for payload in payloads]
         def mutate(self, procedure: str, payload: dict):
             raise AssertionError("Read-only enrichment attempted a mutation")
 
+    class FakeTaste:
+        counts: dict[str, int] = {}
+        def follower_counts(self, names):
+            return {name.casefold(): self.counts[name.casefold()] for name in names
+                    if name.casefold() in self.counts}
+
     server.SocialClient = FakeSocialClient
+    server.TASTE = FakeTaste()
     server.auth_status = lambda: {"connected": True, "id": 111, "username": "account-one", "socialWrite": False}
     first = server.enrich_creator_metadata(["Blueeyes"])["blueeyes"]
     cache = json.loads(server.FOLLOW_CACHE.read_text(encoding="utf-8"))
@@ -72,6 +85,20 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-unit-", ignore_cleanup
     assert enriched["unknowncount"]["emerging"] is False
     assert all(name == "user.getFollowingUsers"
                for name, _ in FakeSocialClient.calls[before:]), FakeSocialClient.calls[before:]
+
+    # The full-day sweep stores follower counts in SQLite rather than in the visible-card
+    # profile JSON. Card metadata uses that value immediately, without another lookup.
+    server.TASTE.counts = {"unknowncount": 77, "gonecreator": 12}
+    swept = server.enrich_creator_metadata(["UnknownCount"])["unknowncount"]
+    assert swept["followers"] == 77 and swept["emerging"] is True
+
+    # A deleted creator is optional: it does not discard the successful profiles beside
+    # it, and a swept count remains usable even when no live profile can be resolved.
+    mixed = server.enrich_creator_metadata(["ResolvedLater", "GoneCreator"])
+    assert mixed["resolvedlater"]["followers"] == 1500
+    assert mixed["gonecreator"]["followers"] == 12
+    assert mixed["gonecreator"]["avatarUrl"] is None
+    server.TASTE = real_taste
 
 
 PORT = 8881

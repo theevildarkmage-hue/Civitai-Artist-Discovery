@@ -165,6 +165,19 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
         after_filter = get(f"/api/history/day?date={day}&segment=all")
         assert after_filter["artistCount"] == summary["artistCount"], after_filter
         assert get(f"/api/history/artists?date={day}&segment=all&view=discovery&offset=0&limit=50")["artists"]
+
+        # If tags arrive later (an on-demand details read or the background sweep), a
+        # fresh gallery session must immediately enforce them rather than retaining the
+        # image in the frozen order. With all three TaggedArtist images now hidden, the
+        # entire card disappears.
+        with store.connect() as db:
+            db.execute("INSERT INTO archive_image_tags(image_id,tag_name) VALUES(?,?)",
+                       (9303, "furry"))
+            db.execute("INSERT INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)",
+                       (9303, datetime.now().isoformat()))
+        refreshed = get(f"/api/history/artists?date={day}&segment=all&view=foryou"
+                        "&offset=0&limit=50&session=new-hidden-tag")
+        assert "TaggedArtist" not in {row["username"] for row in refreshed["artists"]}, refreshed
     finally:
         process.terminate()
         try:

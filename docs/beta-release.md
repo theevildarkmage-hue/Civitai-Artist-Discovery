@@ -1,14 +1,20 @@
 # Beta releases
 
-Version **0.3.1-beta.1** is the current public beta of Civitai Artist Discovery. It keeps
+Version **0.3.2-beta.1** is the current public beta of Civitai Artist Discovery. It keeps
 the existing local Python/SQLite architecture while incorporating the fixes and features
 validated during alpha testing.
 
-The 0.3.1 beta refreshes My Profile automatically when its last successful update is more
-than 24 hours old, while deferring during gallery collection. It also adds a persistent
-option to disable the visual dimming of viewed cards without clearing seen history or
-changing discovery order. If a generated Civitai CDN preview is missing, gallery cards
-and the detail dialog now retry the original artwork once instead of remaining black.
+The 0.3.2 beta adds an optional, user-approved updater backed by this project's GitHub
+releases. It displays release notes before downloading, verifies GitHub's SHA-256 digest,
+preserves the portable `data/` folder, rolls back a failed replacement, and restarts the
+app. It also makes hidden-tag filtering fail closed before a preview is displayed and
+keeps the feed in place when image details are opened.
+
+Personalized discovery now makes its background tag-preparation state visible, reduces
+the advantage held by creators who post very large batches, and uses separate familiarity
+thresholds: an unfollowed artist receives a gallery heart after reactions to five distinct
+images and appears under Worth Following after ten. Follower enrichment now keeps partial
+successes and reuses cached counts instead of blanking most cards when one request fails.
 
 The full-day progress handoff fix from 0.3.0 Beta 2 remains included: Evening visibly
 restarts its Find, Collect, and Organize phases after Morning completes, while the overall
@@ -31,6 +37,8 @@ bar continues from 50% to 100%.
 - A My Profile dashboard for distinctive tags, model signals, reaction preferences, and
   creator recommendations.
 - Secure OAuth token storage through Windows DPAPI or Linux Secret Service.
+- Optional daily GitHub release checks with a plain-text changelog, verified portable
+  download, preserved `data/`, rollback on copy failure, and automatic restart.
 
 This remains pre-1.0 software. Windows is the primary tested platform; Linux source use
 is experimental and Linux packaging is not currently provided. Packages are unsigned

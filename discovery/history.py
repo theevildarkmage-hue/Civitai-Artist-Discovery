@@ -1038,6 +1038,44 @@ class HistoryArchive:
                         "SELECT username_key, username, image_count, rank_order, representative_id "
                         "FROM day_artists WHERE day=? ORDER BY rank_order", (value,))]
 
+    def creator_quality_scores(self, value: str, excluded_images=None) -> dict[str, float]:
+        """Volume-resistant daily artwork quality for the personalised gallery.
+
+        Total reactions are useful for the explicit Popular view, but they let a creator
+        posting a hundred merely-average images dominate a creator posting a few strong
+        ones.  For You instead considers at most the five best images, gives each lower
+        ranked image diminishing influence, and shrinks small samples toward the day's
+        per-image average.  A separate soft upload penalty is applied by the recommender.
+        """
+        hidden = set(excluded_images or ())
+        with self.connect() as db:
+            rating_clause, rating_params = _rating_clause(self.visible_levels)
+            rows = db.execute(
+                "SELECT i.username_key AS key,i.id AS id,"
+                "CAST(COALESCE(json_extract(i.stats,'$.reactionCount'),0) AS INTEGER) AS reactions "
+                "FROM block_images b JOIN images i ON i.id=b.image_id "
+                f"WHERE b.block_key=?{rating_clause}", (value, *rating_params)).fetchall()
+        groups: dict[str, list[int]] = {}
+        all_reactions = []
+        for row in rows:
+            if row["id"] in hidden:
+                continue
+            reactions = max(0, int(row["reactions"] or 0))
+            groups.setdefault(row["key"], []).append(reactions)
+            all_reactions.append(reactions)
+        prior = sum(all_reactions) / len(all_reactions) if all_reactions else 0.0
+        weights = (1.0, .8, .6, .4, .2)
+        prior_weight = 2.0
+        result = {}
+        for key, reactions in groups.items():
+            best = sorted(reactions, reverse=True)[:len(weights)]
+            used_weights = weights[:len(best)]
+            weighted = sum(value * weight for value, weight in zip(best, used_weights))
+            adjusted = (weighted + prior * prior_weight) / (sum(used_weights) + prior_weight)
+            # Compress reaction-count outliers before scores are normalized together.
+            result[key] = math.log1p(adjusted)
+        return result
+
     def creators_with_visible_images(self, value: str, excluded_images) -> set[str]:
         """Creator keys left with at least one image once hidden artwork is removed.
 

@@ -16,23 +16,26 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
     settings = AppSettings(path)
 
     assert settings.load() == {"contentRating": "Soft", "browsingLevels": [1, 2],
-                               "dimSeenCards": True}
+                               "dimSeenCards": True, "checkForUpdates": True}
 
     path.write_text(json.dumps({"contentRating": "X"}), encoding="utf-8")
     assert settings.load() == {"contentRating": "X", "browsingLevels": [1, 2, 4, 8, 16],
-                               "dimSeenCards": True}
+                               "dimSeenCards": True, "checkForUpdates": True}
 
     saved = settings.update(browsing_levels_value=[16, 4])
     assert saved == {"contentRating": "X", "browsingLevels": [4, 16],
-                     "dimSeenCards": True}
+                     "dimSeenCards": True, "checkForUpdates": True}
     assert settings.load() == saved
 
     saved = settings.update(dim_seen_cards_value=False)
     assert saved == {"contentRating": "X", "browsingLevels": [4, 16],
-                     "dimSeenCards": False}
+                     "dimSeenCards": False, "checkForUpdates": True}
+    saved = settings.update(check_for_updates_value=False)
+    assert saved == {"contentRating": "X", "browsingLevels": [4, 16],
+                     "dimSeenCards": False, "checkForUpdates": False}
     saved = settings.update(content_rating_value="Soft")
     assert saved == {"contentRating": "Soft", "browsingLevels": [1, 2],
-                     "dimSeenCards": False}
+                     "dimSeenCards": False, "checkForUpdates": False}
 
     try:
         settings.update(browsing_levels_value=[])
@@ -42,4 +45,4 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
 
 print({"safeDefault": [1, 2], "legacySettingMigrates": True,
        "independentLevelsPersist": True, "dimmingPreferencePersists": True,
-       "emptySelectionRejected": True})
+       "updatePreferencePersists": True, "emptySelectionRejected": True})

@@ -31,11 +31,11 @@ BASELINE_PAGES = 10
 # 1,000 followers is the project's stated experiment, not a law.
 SIGNAL_TAGS = 8
 EMERGING_FOLLOWERS = 1000
-# Below this, one or two reactions read as noise, not a signal worth surfacing as
-# "you should follow this person" — on a measured account, 1+ reaction named 246
-# creators; 5+ named 5. The single source of truth for both the dashboard panel and
-# the feed badge, so the two can never disagree about who qualifies.
-WORTH_FOLLOWING_MIN = 5
+# The dashboard recommendation is deliberately stronger than the gallery's lightweight
+# familiarity marker. Ten distinct reacted-to images says "consider following"; five is
+# enough for a heart on an unfollowed creator card without making that stronger recommendation.
+WORTH_FOLLOWING_MIN = 10
+GALLERY_HEART_MIN = 5
 # Version 1 could mark cards when the DOM hid or replaced them. Keep those rows for
 # recoverability but do not trust them; a genuine new pass upgrades that creator to v2.
 SEEN_TRACKING_VERSION = 2
@@ -576,14 +576,14 @@ class TasteStore:
                     break
                 except CivitaiHTTPError as error:
                     if (error.status != 429 and error.status < 500) or attempt == MAX_ATTEMPTS:
-                        return done
+                        raise
                     if cancel.wait(delay):
                         return done
                     delay = min(delay * 2, 60.0)
                 except Exception:  # noqa: BLE001
-                    return done
+                    raise
             else:
-                return done
+                raise RuntimeError("Civitai follower lookup exhausted its retries")
             stamp = _now()
             rows = []
             for name, profile in zip(chunk, profiles):
@@ -1003,14 +1003,14 @@ class TasteStore:
                     break
                 except CivitaiHTTPError as error:
                     if (error.status != 429 and error.status < 500) or attempt == MAX_ATTEMPTS:
-                        return done
+                        raise
                     if cancel.wait(delay):
                         return done
                     delay = min(delay * 2, 60.0)
                 except Exception:  # noqa: BLE001
-                    return done
+                    raise
             else:
-                return done
+                raise RuntimeError("Civitai tag lookup exhausted its retries")
             stamp = _now()
             tag_rows, seen_rows = [], []
             for image_id, tags in zip(chunk, results):
@@ -1081,6 +1081,52 @@ class TasteStore:
             hidden = {row["tag_name"] for row in db.execute("SELECT tag_name FROM hidden_tags")}
         return {"known": bool(seen), "tags": [{"name": name, "hidden": name in hidden}
                                               for name in names]}
+
+    def ensure_image_tags(self, client: SocialClient, image_id: int) -> dict:
+        """Fetch and cache one image's tags when its details are explicitly opened.
+
+        The full-day tag sweep is deliberately background work and may not have reached
+        a card yet. Opening that card is a direct request for its information, so it must
+        not depend on the sweep having completed first.
+        """
+        return self.ensure_image_tags_many(client, [image_id])[int(image_id)]
+
+    def ensure_image_tags_many(self, client: SocialClient, image_ids) -> dict[int, dict]:
+        """Fetch and cache tags for the images whose previews are about to be shown.
+
+        Browser cards arrive in groups, so doing one request per card needlessly hammers
+        Civitai and makes Content Controls race the image download. This bounded batch is
+        the same data as ``ensure_image_tags`` but lets the browser verify a whole group
+        before assigning any preview URLs.
+        """
+        wanted = list(dict.fromkeys(int(value) for value in image_ids if value))
+        if not wanted:
+            return {}
+        with self.connect() as db:
+            holes = ",".join("?" for _ in wanted)
+            known = {row["image_id"] for row in db.execute(
+                f"SELECT image_id FROM archive_image_seen WHERE image_id IN ({holes}) UNION "
+                f"SELECT DISTINCT image_id FROM archive_image_tags WHERE image_id IN ({holes})",
+                (*wanted, *wanted))}
+        missing = [value for value in wanted if value not in known]
+        if missing:
+            results = client.batch_query_optional(
+                "tag.getVotableTags", [{"id": value, "type": "image"} for value in missing])
+            stamp = _now()
+            tag_rows = []
+            for image_id, result in zip(missing, results):
+                names = {str((tag or {}).get("name") or "").strip().casefold()
+                         for tag in (result if isinstance(result, list) else [])
+                         if str((tag or {}).get("name") or "").strip()}
+                tag_rows.extend((image_id, name) for name in names)
+            with self.lock, self.connect() as db:
+                db.executemany(
+                    "INSERT OR IGNORE INTO archive_image_tags(image_id,tag_name) VALUES(?,?)",
+                    tag_rows)
+                db.executemany(
+                    "INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)",
+                    [(image_id, stamp) for image_id in missing])
+        return {image_id: self.image_tags(image_id) for image_id in wanted}
 
     def gallery_signals(self) -> dict:
         """Username sets the daily gallery needs to order a day by personal signal."""
@@ -1351,6 +1397,8 @@ class TasteStore:
             "signalTags": [tag["name"] for tag in self.signal_tags()],
             "recentWork": self.recent_work_summary(),
             "emergingThreshold": EMERGING_FOLLOWERS,
+            "worthFollowingThreshold": WORTH_FOLLOWING_MIN,
+            "galleryHeartThreshold": GALLERY_HEART_MIN,
         }
 
 

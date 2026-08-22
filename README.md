@@ -14,7 +14,7 @@ sponsored by Civitai.
 
 ## Project status
 
-Version `0.3.1-beta.1` is the current public beta and remains under active development. Data formats, UI
+Version `0.3.2-beta.1` is the current public beta and remains under active development. Data formats, UI
 behavior, and Civitai integration details may still change. Windows is the primary and
 only routinely tested platform.
 
@@ -45,6 +45,9 @@ Windows-only.
   driving recommendations.
 - Blends two creators similar to the user's uploaded work, one familiar favorite, and one
   emerging match in **For you**. Reaction-taste matches fill any unavailable lane.
+- Clearly marks **For you** as preliminary while the background tag analysis is still
+  preparing a gallery, shows its progress, and refreshes the ranking automatically when
+  the tag-backed personalization is ready.
 - Shows creator avatars and follower counts and highlights emerging creators under 1,000
   followers.
 - Supports Like, Heart, Laugh, and Cry reactions plus follow/unfollow when Civitai grants
@@ -65,6 +68,8 @@ Windows-only.
 - Retries the original artwork when a generated Civitai CDN preview is unavailable.
 - Includes a local **My Profile** dashboard for the creative fingerprint, dominant model
   signals, reaction mix, distinctive tags, favorite creators, and creators worth following.
+  Worth Following starts after reactions to 10 distinct images from an unfollowed artist;
+  gallery hearts use a lighter 5-image threshold and also disappear once the artist is followed.
 - Refreshes My Profile automatically when its last successful Civitai read is more than
   24 hours old, deferring while a daily gallery is being built. Known tags and upload
   fingerprint pages are reused; the reacted-image listing is still reconciled for accuracy.
@@ -72,6 +77,10 @@ Windows-only.
   a portable `data/` folder beside the executable.
 - Shows a Windows notification-area icon with **Open** and **Exit** while the local server
   is running.
+- Checks the project's GitHub releases once per day and offers an in-app, user-approved
+  update with release notes, verified download progress, portable-data preservation,
+  rollback on installation failure, and automatic restart. Automatic checks can be
+  disabled in **My Profile**.
 
 ## Requirements
 
@@ -81,6 +90,8 @@ Windows-only.
 - A Civitai account for the personalized gallery, profile analysis, follows, and
   reactions.
 - Internet access to Civitai's public REST API, authenticated site API, and image CDN.
+- Internet access to GitHub's public release API and release downloads when update
+  checking or installation is enabled; no GitHub account or token is required.
 - Port `8765` available during OAuth sign-in. The application itself uses an available
   random loopback port.
 - On Linux, a desktop Secret Service provider such as GNOME Keyring, running in the same
@@ -196,6 +207,8 @@ It can include:
 - `oauth_tokens.dpapi`: Windows-only DPAPI-encrypted OAuth credentials;
 - `oauth_client.json` and `settings.json`: local configuration;
 - creator/follow caches, the single-instance marker, and `error.log`.
+- `update/`: the cached daily release check and, only while an approved update is being
+  prepared, its verified archive, staging folder, rollback copy, and result receipt.
 
 The application does not create Registry settings. These files can contain account
 identifiers, creator names, reaction history, browsing
@@ -248,13 +261,15 @@ remains viewable and the gallery offers **Complete this day** rather than hiding
 the collection screen. Collection coverage and later viewing filters are presented as
 separate concepts; viewing filters never redownload an already-covered level.
 
-## Content Controls limitation
+## Content Controls
 
-Creator- and image-level exclusions are exact for the data the account returns. Tag-level
-filtering can act only on images whose tags have been read. Tags are fetched for card
-covers and prepared personalized views, but the app intentionally does not fetch tags or
-full metadata for every image in a large day. See [docs/content-controls.md](docs/content-controls.md)
-for the detailed behavior and limitation.
+Creator- and image-level exclusions are applied from the account data Civitai returns.
+Because the daily listing feed does not include tags, the app verifies tags in small
+batches as artwork approaches the screen and before assigning its preview URL. An image
+matching a hidden Civitai tag is removed without being displayed; the same check is made
+before moving through a creator's carousel. Opening image details does not rebuild or
+reset the feed. See [docs/content-controls.md](docs/content-controls.md) for the detailed
+behavior and API tradeoff.
 
 ## Testing
 
@@ -282,6 +297,12 @@ PyInstaller folder build under `dist/`; its `data/` folder is created on first l
 Release packaging is available through
 `scripts/release.ps1`. Generated packages and local release backups are intentionally
 excluded from Git.
+
+The packaged app's updater expects the release asset name
+`CivitaiArtistDiscovery-<version>.zip`, matching the version in `server.py`, and requires
+the SHA-256 digest GitHub records for the uploaded asset. Draft releases, missing or
+renamed packages, unsigned digest metadata, and downloads outside this repository are
+ignored. See [docs/updates.md](docs/updates.md) for the complete update and recovery flow.
 
 One-file builds are intentionally disabled: they extract their runtime into the Windows
 temporary folder and therefore do not meet this project's portable-only behavior. Windows

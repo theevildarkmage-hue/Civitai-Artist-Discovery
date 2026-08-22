@@ -26,6 +26,12 @@ class CivitaiHTTPError(RuntimeError):
 
 
 class SocialClient:
+    def __init__(self):
+        # Civitai's accepted tRPC batch size has changed over time. Learn the current
+        # ceiling from a rejected request so long sweeps do not repeat the same failure
+        # for every chunk, while retaining the historical 100-item client-side cap.
+        self._batch_limits: dict[str, int] = {}
+
     def public_model_version(self, model_version_id: int) -> dict:
         """Resolve a public model-version id without sending the OAuth token."""
         request = urllib.request.Request(
@@ -62,17 +68,23 @@ class SocialClient:
             raise RuntimeError(response["error"].get("json", {}).get("message", "Civitai query failed"))
         return unwrap_result(response["result"])
 
-    def batch_query(self, procedure: str, payloads: list[dict]) -> list[object]:
-        if not payloads:
-            return []
-        if len(payloads) > 100:
-            raise ValueError("Civitai query batches are limited to 100 items")
+    @staticmethod
+    def _batch_size_error(error: CivitaiHTTPError) -> bool:
+        message = str(error).casefold()
+        return error.status in (400, 413, 414) and "batch" in message and (
+            "maximum size" in message or "too large" in message)
+
+    def _batch_request(self, procedure: str, payloads: list[dict],
+                       optional: bool) -> list[object | None]:
         procedures = ",".join(procedure for _ in payloads)
         inputs = {str(index): {"json": payload} for index, payload in enumerate(payloads)}
         encoded = urllib.parse.quote(json.dumps(inputs, separators=(",", ":")))
         response = self._request(urllib.request.Request(f"{BASE_URL}/api/trpc/{procedures}?batch=1&input={encoded}"))
         if not isinstance(response, list) or len(response) != len(payloads):
-            raise RuntimeError("Civitai returned an incomplete creator batch")
+            raise RuntimeError("Civitai returned an incomplete query batch")
+        if optional:
+            return [None if not isinstance(item, dict) or "error" in item
+                    else unwrap_result(item["result"]) for item in response]
         results = []
         for item in response:
             if not isinstance(item, dict) or "error" in item:
@@ -81,20 +93,36 @@ class SocialClient:
             results.append(unwrap_result(item["result"]))
         return results
 
-    def batch_query_optional(self, procedure: str, payloads: list[dict]) -> list[object | None]:
-        """Run a read batch while preserving successful rows if one item is unavailable."""
+    def _adaptive_batch(self, procedure: str, payloads: list[dict],
+                        optional: bool) -> list[object | None]:
         if not payloads:
             return []
+        limit = self._batch_limits.get(procedure, 100)
+        if len(payloads) > limit:
+            results: list[object | None] = []
+            for start in range(0, len(payloads), limit):
+                results.extend(self._adaptive_batch(
+                    procedure, payloads[start:start + limit], optional))
+            return results
+        try:
+            return self._batch_request(procedure, payloads, optional)
+        except CivitaiHTTPError as error:
+            if len(payloads) <= 1 or not self._batch_size_error(error):
+                raise
+            smaller = max(1, len(payloads) // 2)
+            self._batch_limits[procedure] = min(limit, smaller)
+            return self._adaptive_batch(procedure, payloads, optional)
+
+    def batch_query(self, procedure: str, payloads: list[dict]) -> list[object]:
         if len(payloads) > 100:
             raise ValueError("Civitai query batches are limited to 100 items")
-        procedures = ",".join(procedure for _ in payloads)
-        inputs = {str(index): {"json": payload} for index, payload in enumerate(payloads)}
-        encoded = urllib.parse.quote(json.dumps(inputs, separators=(",", ":")))
-        response = self._request(urllib.request.Request(f"{BASE_URL}/api/trpc/{procedures}?batch=1&input={encoded}"))
-        if not isinstance(response, list) or len(response) != len(payloads):
-            raise RuntimeError("Civitai returned an incomplete query batch")
-        return [None if not isinstance(item, dict) or "error" in item else unwrap_result(item["result"])
-            for item in response]
+        return list(self._adaptive_batch(procedure, payloads, False))
+
+    def batch_query_optional(self, procedure: str, payloads: list[dict]) -> list[object | None]:
+        """Run a read batch while preserving successful rows if one item is unavailable."""
+        if len(payloads) > 100:
+            raise ValueError("Civitai query batches are limited to 100 items")
+        return self._adaptive_batch(procedure, payloads, True)
 
     def mutate(self, procedure: str, payload: dict) -> object:
         body = json.dumps({"json": payload}, separators=(",", ":")).encode()

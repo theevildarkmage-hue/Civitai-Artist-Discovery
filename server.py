@@ -12,6 +12,7 @@ import math
 import mimetypes
 import os
 import re
+import subprocess
 from pathlib import Path
 from statistics import mean
 import threading
@@ -25,19 +26,21 @@ from discovery.history import HistoryArchive, parse_day, previous_local_day
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
                              set_client_id)
-from discovery.paths import data_root
+from discovery.paths import application_root, data_root
 from discovery.settings import AppSettings
 from discovery.site import SITE_ORIGIN, profile_url
 from discovery.social import (CivitaiHTTPError, SocialClient, auth_status,
                               following_ids, reaction_names)
-from discovery.taste import EMERGING_FOLLOWERS, TasteStore, WORTH_FOLLOWING_MIN
+from discovery.taste import (EMERGING_FOLLOWERS, GALLERY_HEART_MIN, TasteStore,
+                             WORTH_FOLLOWING_MIN)
 from discovery.tray import start_windows_tray, stop_windows_tray
+from discovery.updater import UpdateManager, apply_staged_update
 
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "0.3.1-beta.1"
+APP_VERSION = "0.3.2-beta.1"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
@@ -48,6 +51,7 @@ INITIAL_SETTINGS = SETTINGS.load()
 HISTORY = HistoryArchive(DATA_ROOT / "history", INITIAL_SETTINGS["contentRating"],
                          INITIAL_SETTINGS["browsingLevels"])
 TASTE = TasteStore(DATA_ROOT / "discovery")
+UPDATES = UpdateManager(DATA_ROOT, application_root(), APP_VERSION)
 WRITE_LOCK = threading.Lock()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
@@ -110,13 +114,14 @@ def decorate_history_artist(artist: dict, profiles: dict | None = None, follows:
     followed = follows if follows is not None else followed_usernames()
     following = username.casefold() in followed
     # How many of this creator's images the account has reacted to, regardless of the
-    # day on screen — the same count that drives the dashboard's "Worth following"
-    # panel, so a card can say "you already do this a lot" without a second signal.
+    # day on screen. Five earns the gallery familiarity heart; the dashboard's stronger
+    # "Worth following" recommendation starts at ten. Both disappear once followed.
     reacted_count = (signals or {}).get("reacted", {}).get(username.casefold(), 0)
     return {**artist, "profileUrl": profile_url(username),
         "avatarUrl": profile_avatar(profile), "following": following,
         "userId": (profile or {}).get("id"),
         "reactedCount": reacted_count,
+        "reactedOften": not following and reacted_count >= GALLERY_HEART_MIN,
         "worthFollowing": not following and reacted_count >= WORTH_FOLLOWING_MIN,
         # Read fresh on every request, unlike the order: dimming a card the moment it
         # is marked seen is the whole point, while the order it sits in only moves on
@@ -191,7 +196,8 @@ RECENT_MODEL_MIN_SHARE = .10
 # background and cached permanently.
 SWEEP_KINDS = ("followers", "tags")
 SWEEP_JOBS: dict[str, dict] = {kind: {"running": False, "done": 0, "total": 0, "day": None,
-                                      "error": None, "kind": kind} for kind in SWEEP_KINDS}
+                                      "error": None, "attemptedAll": False,
+                                      "kind": kind} for kind in SWEEP_KINDS}
 SWEEP_CANCEL: dict[str, threading.Event] = {kind: threading.Event() for kind in SWEEP_KINDS}
 SWEEP_LOCK = threading.Lock()
 
@@ -209,7 +215,10 @@ def sweep_status(kind: str, key: str) -> dict:
     _, (known, total) = sweep_targets(kind, key)
     with SWEEP_LOCK:
         job = dict(SWEEP_JOBS[kind])
-    return {"kind": kind, "known": known, "total": total, "complete": known >= total,
+    attempted = (job.get("day") == key and not job.get("running")
+                 and not job.get("error") and job.get("attemptedAll"))
+    return {"kind": kind, "known": known, "total": total,
+            "complete": known >= total or bool(attempted),
             "job": job}
 
 
@@ -223,11 +232,11 @@ def start_sweep(kind: str, key: str) -> dict:
         targets, (known, total) = sweep_targets(kind, key)
         if known >= total:
             SWEEP_JOBS[kind].update({"running": False, "done": total, "total": total,
-                                     "day": key, "error": None})
+                                     "day": key, "error": None, "attemptedAll": True})
             return dict(SWEEP_JOBS[kind])
         SWEEP_CANCEL[kind].clear()
         SWEEP_JOBS[kind].update({"running": True, "done": known, "total": total,
-                                 "day": key, "error": None})
+                                 "day": key, "error": None, "attemptedAll": False})
         job = dict(SWEEP_JOBS[kind])
     threading.Thread(target=run_sweep, args=(kind, key, targets, known, total), daemon=True).start()
     return job
@@ -241,15 +250,21 @@ def run_sweep(kind: str, key: str, targets, known: int, total: int) -> None:
                 SWEEP_JOBS[kind]["done"] = min(total, known + done)
         client = SocialClient()
         if kind == "followers":
-            TASTE.sweep_followers(client, targets, SWEEP_CANCEL[kind], progress)
+            processed = TASTE.sweep_followers(client, targets, SWEEP_CANCEL[kind], progress)
         else:
-            TASTE.sweep_image_tags(client, targets, SWEEP_CANCEL[kind], progress)
+            processed = TASTE.sweep_image_tags(client, targets, SWEEP_CANCEL[kind], progress)
+        _, (fresh, _total) = sweep_targets(kind, key)
+        attempted_all = processed >= max(0, total - known)
+        with SWEEP_LOCK:
+            SWEEP_JOBS[kind].update({"running": False, "done": fresh,
+                                     "attemptedAll": attempted_all,
+                                     "error": None if attempted_all else
+                                     "Preparation stopped before it finished."})
+    except Exception as error:  # noqa: BLE001
         _, (fresh, _total) = sweep_targets(kind, key)
         with SWEEP_LOCK:
-            SWEEP_JOBS[kind].update({"running": False, "done": fresh})
-    except Exception as error:  # noqa: BLE001
-        with SWEEP_LOCK:
-            SWEEP_JOBS[kind].update({"running": False, "error": str(error)[:200]})
+            SWEEP_JOBS[kind].update({"running": False, "done": fresh,
+                                     "error": str(error)[:200], "attemptedAll": False})
 
 
 def prepare_finished_block(key: str, merged: str | None) -> None:
@@ -271,7 +286,8 @@ def prepare_finished_block(key: str, merged: str | None) -> None:
                 if known >= total:
                     continue
                 SWEEP_JOBS["tags"].update({"running": True, "done": known, "total": total,
-                                           "day": target, "error": None})
+                                           "day": target, "error": None,
+                                           "attemptedAll": False})
             run_sweep("tags", target, targets, known, total)
 
     threading.Thread(target=run, daemon=True).start()
@@ -294,6 +310,27 @@ def gallery_signals() -> dict:
     except Exception:
         pass
     return signals
+
+
+def balance_posting_volume(rows: list[dict], threshold: int = 20,
+                           window: int = 5, maximum: int = 2) -> list[dict]:
+    """Stably space very high-volume creators without excluding or demoting a lane.
+
+    Scores still decide the order.  When the next scored creator would make a five-card
+    window majority high-volume, the first ordinary-volume creator waiting behind them
+    fills that slot instead.  Once no alternative remains, all remaining rows are kept.
+    """
+    pending = list(rows)
+    balanced = []
+    while pending:
+        recent = balanced[-(window - 1):] if window > 1 else []
+        high_in_window = sum(int(row.get("imageCount") or 0) > threshold for row in recent)
+        pick = 0
+        if high_in_window >= maximum and int(pending[0].get("imageCount") or 0) > threshold:
+            pick = next((index for index, row in enumerate(pending)
+                         if int(row.get("imageCount") or 0) <= threshold), 0)
+        balanced.append(pending.pop(pick))
+    return balanced
 
 
 def day_view_order(key: str, view: str, pinned_username: str | None,
@@ -328,8 +365,64 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
                           for image_id, score in TASTE.score_images(image_ids).items()}
         model_weights = TASTE.recent_model_weights() if hasattr(TASTE, "recent_model_weights") else {}
         image_models = HISTORY.image_model_versions(image_ids)
+        counts = TASTE.follower_counts([row["username"] for row in rows])
+        quality = HISTORY.creator_quality_scores(key, hidden_images)
+        quality_values = [quality.get(row["key"], 0.0) for row in rows]
+        quality_low = min(quality_values, default=0.0)
+        quality_high = max(quality_values, default=0.0)
+
+        def quality_score(row):
+            value = quality.get(row["key"], 0.0)
+            return ((value - quality_low) / (quality_high - quality_low)
+                    if quality_high > quality_low else 0.0)
+
+        def volume_penalty(row):
+            # Ordinary posting volume is neutral. Above twenty daily uploads, apply a
+            # logarithmic correction: a strong personal match can still win, but sheer
+            # opportunity no longer floods the first page.
+            images = max(1, int(row.get("imageCount") or 1))
+            return min(.15, .04 * math.log2(images / 20)) if images > 20 else 0.0
+
+        def affinity(row):
+            reacted_strength = math.log1p(min(20, int(reacted.get(row["key"], 0)))) / math.log(21)
+            return max(.65 if row["key"] in followed else 0.0, reacted_strength)
+
+        seen = set(seen or ())
+
+        def fallback_rows(candidates) -> list[dict]:
+            """Balanced personal/quality order when tag coverage is absent or partial."""
+            candidates = [row for row in candidates if row["key"] != pinned]
+            familiar = [row for row in candidates
+                        if row["key"] in followed or row["key"] in reacted]
+            emerging = [row for row in candidates if row not in familiar and
+                        counts.get(row["key"]) is not None and
+                        counts[row["key"]] < EMERGING_FOLLOWERS]
+            emerging_keys = {row["key"] for row in emerging}
+            new = [row for row in candidates if row not in familiar and
+                   row["key"] not in emerging_keys]
+            score = lambda row: (.55 * affinity(row) + .45 * quality_score(row) -
+                                 volume_penalty(row))
+            for lane in (familiar, emerging, new):
+                lane.sort(key=lambda row: (-score(row), row["key"]))
+
+            def blend(is_seen: bool) -> list[dict]:
+                queues = {"new": deque(row for row in new if (row["key"] in seen) == is_seen),
+                          "familiar": deque(row for row in familiar
+                                            if (row["key"] in seen) == is_seen),
+                          "emerging": deque(row for row in emerging
+                                            if (row["key"] in seen) == is_seen)}
+                group = []
+                while any(queues.values()):
+                    for lane in ("new", "new", "familiar", "emerging"):
+                        if queues[lane]:
+                            group.append(queues[lane].popleft())
+                return balance_posting_volume(group)
+            return blend(False) + blend(True)
+
         if not components:
-            return None, None
+            ordered = fallback_rows(rows)
+            ordered += [row for row in rows if row["key"] == pinned]
+            return [row["key"] for row in ordered], len(ordered)
         def component_for(row, name):
             image_id = effective.get(row["key"], row["representativeId"])
             return components.get(image_id, {}).get(name, 0.0)
@@ -341,9 +434,9 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
         scored = [row for row in rows if component_for(row, "reaction") > 0 or
                   component_for(row, "recent") > 0]
         if not scored:
-            return None, None
-        max_rank = max(1, max(row["rank"] for row in rows))
-        counts = TASTE.follower_counts([row["username"] for row in rows])
+            ordered = fallback_rows(rows)
+            ordered += [row for row in rows if row["key"] == pinned]
+            return [row["key"] for row in ordered], len(ordered)
 
         def normalized(name):
             values = [component_for(row, name) for row in scored]
@@ -351,13 +444,6 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
             return lambda row: (1.0 if high == low and high > 0 else
                                 (component_for(row, name) - low) / (high - low) if high > low else 0.0)
         reaction_score, recent_score = normalized("reaction"), normalized("recent")
-
-        def engagement(row):
-            return 1.0 - min(1.0, row["rank"] / max_rank)
-
-        def affinity(row):
-            reacted_strength = math.log1p(min(20, int(reacted.get(row["key"], 0)))) / math.log(21)
-            return max(.65 if row["key"] in followed else 0.0, reacted_strength)
 
         similar, familiar, emerging, new = [], [], [], []
         for row in scored:
@@ -373,20 +459,21 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
             else:
                 new.append(row)
 
-        discovery_score = lambda row: (.55 * reaction_score(row) + .30 * recent_score(row) +
-                                       .15 * engagement(row))
+        discovery_score = lambda row: (.60 * reaction_score(row) + .35 * recent_score(row) +
+                                       .05 * quality_score(row) - volume_penalty(row))
         similar_score = lambda row: (.55 * recent_score(row) + .30 * model_for(row) +
-                                     .10 * reaction_score(row) + .05 * engagement(row))
-        familiar_score = lambda row: (.45 * reaction_score(row) + .20 * recent_score(row) +
-                                      .30 * affinity(row) + .05 * engagement(row))
-        similar.sort(key=lambda row: (-similar_score(row), row["rank"]))
-        new.sort(key=lambda row: (-discovery_score(row), row["rank"]))
-        emerging.sort(key=lambda row: (-discovery_score(row), row["rank"]))
-        familiar.sort(key=lambda row: (-familiar_score(row), row["rank"]))
+                                     .10 * reaction_score(row) + .05 * quality_score(row) -
+                                     volume_penalty(row))
+        familiar_score = lambda row: (.50 * reaction_score(row) + .20 * recent_score(row) +
+                                      .25 * affinity(row) + .05 * quality_score(row) -
+                                      volume_penalty(row))
+        similar.sort(key=lambda row: (-similar_score(row), row["key"]))
+        new.sort(key=lambda row: (-discovery_score(row), row["key"]))
+        emerging.sort(key=lambda row: (-discovery_score(row), row["key"]))
+        familiar.sort(key=lambda row: (-familiar_score(row), row["key"]))
 
         # Two current-style matches, one proven favorite, then one emerging creator.
         # A reaction-taste match fills a style slot when no model-backed match remains.
-        seen = set(seen or ())
         def blend_group(is_seen: bool) -> list[dict]:
             queues = {"similar": deque(row for row in similar if (row["key"] in seen) == is_seen),
                       "new": deque(row for row in new if (row["key"] in seen) == is_seen),
@@ -402,13 +489,16 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
                         queues[name] for name in ("similar", "familiar", "emerging")):
                     group.append(queues["new"].popleft())
             return group
-        blended = blend_group(False) + blend_group(True)
+        # Keep unseen and previously-seen groups separate while preventing either from
+        # becoming a wall of prolific accounts. Scores and lanes remain authoritative;
+        # this only spaces high-volume rows when an ordinary-volume alternative exists.
+        blended = balance_posting_volume(blend_group(False)) + \
+                  balance_posting_volume(blend_group(True))
         chosen = {row["key"] for row in blended}
-        # Missing tag data is not evidence of a poor match. Keep unscored creators in the
-        # archive's engagement order after the personalized portion instead of dropping
-        # them or inventing a score; the user's own card also stays out of recommendations.
-        remainder = sorted((row for row in rows if row["key"] not in chosen),
-                           key=lambda row: row["key"] in seen)
+        # Partial tag coverage must not make the rest silently fall back to raw total
+        # reactions. Use the same personal/quality fallback and volume spacing instead.
+        remainder = fallback_rows(row for row in rows if row["key"] not in chosen)
+        remainder += [row for row in rows if row["key"] == pinned and row["key"] not in chosen]
         ordered = blended + remainder
         return [row["key"] for row in ordered], len(ordered)
     if view == "emerging":
@@ -541,7 +631,10 @@ def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
     followed_ids = following_ids(client.query("user.getFollowingUsers", {}))
 
     if missing:
-        resolved = client.batch_query("user.getCreator", [{"username": name} for name in missing])
+        # A deleted or renamed creator is an ordinary condition in a saved daily
+        # archive. Keep every successful row instead of failing all 50 visible cards.
+        resolved = client.batch_query_optional(
+            "user.getCreator", [{"username": name} for name in missing])
         for name, profile in zip(missing, resolved):
             if isinstance(profile, dict) and profile.get("id"):
                 profiles[name.casefold()] = profile
@@ -563,20 +656,29 @@ def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
             "usernames": sorted(followed_names, key=str.casefold)}, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(FOLLOW_CACHE)
 
-    return {
-        name.casefold(): {
+    follower_counts = TASTE.follower_counts(clean)
+
+    def result_for(name: str) -> dict:
+        key = name.casefold()
+        profile = profiles.get(key)
+        fields = _follower_fields(profile)
+        cached_count = follower_counts.get(key)
+        if fields["followers"] is None and cached_count is not None:
+            fields = {"followers": cached_count,
+                      "emerging": cached_count < EMERGING_FOLLOWERS}
+        return {
             "username": name,
-            "avatarUrl": profile_avatar(profiles.get(name.casefold())),
+            "avatarUrl": profile_avatar(profile),
             "following": bool(
-                profiles.get(name.casefold(), {}).get("id") is not None
-                and int(profiles[name.casefold()]["id"]) in followed_ids
+                (profile or {}).get("id") is not None
+                and int(profile["id"]) in followed_ids
             ),
-            "userId": profiles.get(name.casefold(), {}).get("id"),
-            # Already present in the cached profile, so this costs no extra request.
-            **_follower_fields(profiles.get(name.casefold())),
+            "userId": (profile or {}).get("id"),
+            # The all-day sweep stores counts in SQLite. The profile cache carries
+            # avatars and ids, but is populated only for cards the user has loaded.
+            **fields,
         }
-        for name in clean
-    }
+    return {name.casefold(): result_for(name) for name in clean}
 
 
 def start_oauth_login() -> None:
@@ -739,6 +841,19 @@ def request_app_shutdown(server: ThreadingHTTPServer) -> None:
     threading.Thread(target=server.shutdown, daemon=True, name="app-shutdown").start()
 
 
+def update_busy_reason() -> str | None:
+    """Explain why replacing the app now could interrupt saved background work."""
+    with HISTORY.lock:
+        if any(job.get("state") == "loading" for job in HISTORY.jobs.values()):
+            return "Wait for the daily gallery build to finish or stop it first."
+    if TASTE.status().get("running"):
+        return "Wait for the My Profile refresh to finish or stop it first."
+    with SWEEP_LOCK:
+        if any(job.get("running") for job in SWEEP_JOBS.values()):
+            return "Wait for gallery preparation to finish before updating."
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "CivitaiDiscovery/1.0"
     timeout = 15
@@ -830,6 +945,13 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({**SETTINGS.load(), "siteOrigin": SITE_ORIGIN,
                 "ratings": ["Soft", "Mature", "X"],
                 "browsingLevelOptions": [1, 2, 4, 8, 16]})
+            return
+        if parsed.path == "/api/update/status":
+            enabled = SETTINGS.load()["checkForUpdates"]
+            if enabled and UPDATES.supported:
+                UPDATES.start_check()
+            self.json_response({**UPDATES.status(), "enabled": enabled,
+                                "busyReason": update_busy_reason()})
             return
         if parsed.path == "/api/history/status":
             try:
@@ -1072,7 +1194,13 @@ class Handler(BaseHTTPRequestHandler):
                 # Tags are already collected for the personalised ordering; showing them
                 # here means the reason an image was ranked or hidden is inspectable.
                 try:
-                    detail = {**detail, **TASTE.image_tags(image_id)}
+                    tags = TASTE.image_tags(image_id)
+                    # A newly built day may be opened before its background tag sweep
+                    # reaches this card. The user's click takes priority: fetch just this
+                    # image now and cache it for every later view.
+                    if not tags["known"] and connected_or_false():
+                        tags = TASTE.ensure_image_tags(SocialClient(), image_id)
+                    detail = {**detail, **tags}
                 except Exception:
                     detail = {**detail, "known": False, "tags": []}
                 self.json_response(detail)
@@ -1164,13 +1292,15 @@ class Handler(BaseHTTPRequestHandler):
                 content_change = ("browsingLevels" in body or "contentRating" in body)
                 value = SETTINGS.update(browsing_levels_value=body.get("browsingLevels"),
                                         content_rating_value=body.get("contentRating"),
-                                        dim_seen_cards_value=body.get("dimSeenCards"))
+                                        dim_seen_cards_value=body.get("dimSeenCards"),
+                                        check_for_updates_value=body.get("checkForUpdates"))
                 if content_change:
                     try:
                         HISTORY.set_content_filter(value["browsingLevels"])
                     except Exception:
                         SETTINGS.update(browsing_levels_value=previous["browsingLevels"],
-                                        dim_seen_cards_value=previous["dimSeenCards"])
+                                        dim_seen_cards_value=previous["dimSeenCards"],
+                                        check_for_updates_value=previous["checkForUpdates"])
                         raise
                     with WRITE_LOCK:
                         ORDER_CACHE.clear()
@@ -1178,6 +1308,36 @@ class Handler(BaseHTTPRequestHandler):
                         # so switching away and back can reuse it. The account-data token
                         # still invalidates every selection when Civitai controls change.
                 self.json_response({**value, "siteOrigin": SITE_ORIGIN})
+                return
+            if parsed.path == "/api/update/check":
+                if not SETTINGS.load()["checkForUpdates"]:
+                    self.json_response({"error": "Update checks are disabled in My Profile."}, 409)
+                    return
+                self.json_response({**UPDATES.start_check(force=True), "enabled": True}, 202)
+                return
+            if parsed.path == "/api/update/download":
+                if not SETTINGS.load()["checkForUpdates"]:
+                    self.json_response({"error": "Update checks are disabled in My Profile."}, 409)
+                    return
+                self.json_response({**UPDATES.start_download(), "enabled": True}, 202)
+                return
+            if parsed.path == "/api/update/install":
+                reason = update_busy_reason()
+                if reason:
+                    self.json_response({"error": reason}, 409)
+                    return
+                command = UPDATES.helper_command()
+                flags = 0
+                if os.name == "nt":
+                    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                subprocess.Popen(command, cwd=Path(command[0]).parent, close_fds=True,
+                                 creationflags=flags)
+                self.json_response({"installing": True, "version": UPDATES.status().get("release", {}).get("version")})
+                request_app_shutdown(self.server)
+                return
+            if parsed.path == "/api/update/result/acknowledge":
+                UPDATES.clear_result()
+                self.json_response({"acknowledged": True})
                 return
             if parsed.path == "/api/history/start":
                 value = str(body.get("date") or previous_local_day())
@@ -1226,6 +1386,24 @@ class Handler(BaseHTTPRequestHandler):
                 key = HISTORY.archive_key(str(body.get("date") or previous_local_day()),
                                           str(body.get("segment") or "all"))
                 self.json_response(start_sweep(kind, key), 202)
+                return
+            if parsed.path == "/api/history/tags":
+                raw_ids = body.get("imageIds")
+                if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 100:
+                    self.json_response({"error": "Provide 1 to 100 image IDs"}, 400)
+                    return
+                image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
+                if any(not HISTORY.has_image(image_id) for image_id in image_ids):
+                    self.json_response({"error": "An image is not in this history archive"}, 400)
+                    return
+                tags = {image_id: TASTE.image_tags(image_id) for image_id in image_ids}
+                # Cached checks remain useful in read-only/offline test and recovery
+                # states. A live lookup needs OAuth, but the ordinary signed-in gallery
+                # always has it before reaching this endpoint.
+                if connected_or_false() and any(not value["known"] for value in tags.values()):
+                    tags = TASTE.ensure_image_tags_many(SocialClient(), image_ids)
+                self.json_response({"images": {str(image_id): tags[image_id]
+                                                for image_id in image_ids}})
                 return
             if parsed.path == "/api/history/prepare/stop":
                 for event in SWEEP_CANCEL.values(): event.set()
@@ -1353,6 +1531,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("For your privacy, this app can only listen on the local computer")
@@ -1371,6 +1550,7 @@ def main() -> None:
     display_host = f"[{args.host}]" if ":" in args.host else args.host
     url = f"http://{display_host}:{actual_port}"
     save_instance_url(url)
+    UPDATES.schedule_success_cleanup()
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
     tray = None
@@ -1397,7 +1577,10 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
-        main()
+        if len(sys.argv) == 3 and sys.argv[1] == "--apply-update":
+            apply_staged_update(Path(sys.argv[2]))
+        else:
+            main()
     except Exception:
         DATA_ROOT.mkdir(parents=True, exist_ok=True)
         (DATA_ROOT / "error.log").write_text(traceback.format_exc(), encoding="utf-8")

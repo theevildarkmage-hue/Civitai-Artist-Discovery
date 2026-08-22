@@ -3,6 +3,7 @@ let selectedModels = new Set();
 let contentRating = "Soft";
 let visibleBrowsingLevels = new Set([1, 2]);
 let dimSeenCards = true;
+let updateChecksEnabled = true, updateState = null, updatePollTimer = 0;
 let buildSegment = "all", buildCoverageRating = "Soft", currentBlocks = null, estimateToken = 0;
 // How many creators this day's Civitai content controls removed, so the count on screen
 // can explain itself rather than looking like missing data.
@@ -12,6 +13,9 @@ const PROFILE_REFRESH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let automaticProfileRefreshTimer = 0, automaticProfileRefreshPending = false;
 let recommendationsNeedRefresh = false, refreshRecommendationsAfterSync = false;
 const imageReactionState = new Map();
+const imageTagState = new Map();
+const pendingTagChecks = new Map();
+let tagCheckTimer = 0;
 const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="contentFilter" class="filter-button" aria-expanded="false" title="Choose the content levels to display">Content: PG + PG-13</button><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
 segmentToolbar.insertAdjacentHTML("afterbegin", '<span id="completeDayPrompt" class="complete-day-prompt hidden"><span id="completeDayText"></span><button id="completeDay">Complete this day</button></span>');
 $("modelFilter").insertAdjacentHTML("afterend", '<button id="seenDimming" class="filter-button" aria-pressed="true" title="Previously viewed creators still move later; this changes only card brightness">Dim viewed: On</button>');
@@ -71,6 +75,121 @@ async function chooseContentRating(nextLevels) {
   finally { $("contentFilter").disabled = false; buttons.forEach(button => button.disabled = false); }
 }
 function toast(text) { $("toast").textContent = text; $("toast").classList.remove("hidden"); setTimeout(() => $("toast").classList.add("hidden"), 3000); }
+function updateBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+    : bytes >= 1024 ? `${Math.round(bytes / 1024)} KB` : `${Math.round(bytes)} bytes`;
+}
+function scheduleUpdatePoll() {
+  clearTimeout(updatePollTimer);
+  const phase = updateState?.job?.phase;
+  if (["checking", "downloading", "preparing"].includes(phase)) {
+    updatePollTimer = setTimeout(() => refreshUpdateStatus().catch(() => {}), 750);
+  }
+}
+function renderUpdateState(state) {
+  updateState = state;
+  updateChecksEnabled = state.enabled !== false;
+  $("updateChecks").checked = updateChecksEnabled;
+  const release = state.release, phase = state.job?.phase || "idle";
+  $("updateAvailable").classList.toggle("hidden", !updateChecksEnabled || !state.available);
+  if (release) $("updateAvailable").textContent = `Update ${release.version}`;
+  const preference = $("updatePreferenceStatus");
+  if (!updateChecksEnabled) preference.textContent = `Automatic checks are off. Current version: ${state.currentVersion}.`;
+  else if (!state.supported) preference.textContent = `Current source version: ${state.currentVersion}. One-click installation is available in packaged builds.`;
+  else if (phase === "checking") preference.textContent = `Checking GitHub… Current version: ${state.currentVersion}.`;
+  else if (release) preference.textContent = `Version ${release.version} is available. Nothing downloads without your approval.`;
+  else preference.textContent = `Up to date on version ${state.currentVersion}. GitHub is checked at most once per day.`;
+
+  if (release) {
+    $("updateTitle").textContent = release.name;
+    $("updateSummary").textContent = `${release.prerelease ? "Beta release" : "Release"} · ${updateBytes(release.assetSize)} · Current version ${state.currentVersion}`;
+    $("updateNotes").textContent = release.notes || "No release notes were provided.";
+    $("updateReleaseLink").href = release.pageUrl;
+    $("updateReleaseLink").classList.toggle("hidden", !release.pageUrl);
+  } else {
+    $("updateTitle").textContent = phase === "checking" ? "Checking for updates…" : "No update available";
+    $("updateSummary").textContent = `You are running version ${state.currentVersion}.`;
+    $("updateNotes").textContent = phase === "checking" ? "Reading published releases from GitHub." : "This build is current.";
+    $("updateReleaseLink").classList.add("hidden");
+  }
+  const active = ["downloading", "preparing"].includes(phase), total = Number(state.job?.total) || 0;
+  $("updateProgressWrap").classList.toggle("hidden", !active && phase !== "ready");
+  const percent = total ? Math.min(100, Math.round((Number(state.job?.downloaded) || 0) * 100 / total)) : 0;
+  $("updateProgress").value = phase === "ready" ? 100 : percent;
+  $("updateProgressValue").textContent = `${phase === "ready" ? 100 : percent}%`;
+  $("updateProgressLabel").textContent = phase === "preparing" ? "Verifying and unpacking…"
+    : phase === "ready" ? "Verified and ready to install" : "Downloading update…";
+  const error = state.job?.error || (state.lastResult?.state === "failed" ? state.lastResult.error : "");
+  $("updateError").textContent = error || "";
+  $("updateError").classList.toggle("hidden", !error);
+  const action = $("runUpdate");
+  action.textContent = phase === "ready" ? "Install and restart" : phase === "error" ? "Try download again" : "Download and install";
+  action.disabled = !release || active || phase === "checking" || (phase === "ready" && !!state.busyReason);
+  action.title = phase === "ready" && state.busyReason ? state.busyReason : "";
+  if (phase === "ready" && state.busyReason) {
+    $("updateError").textContent = state.busyReason;
+    $("updateError").classList.remove("hidden");
+  }
+  if (state.lastResult && !document.body.dataset.updateResultShown) {
+    document.body.dataset.updateResultShown = "1";
+    toast(state.lastResult.state === "installed"
+      ? `Updated successfully to ${state.lastResult.version}.`
+      : `The update failed and the previous version was restored.`);
+    api("/api/update/result/acknowledge", { method: "POST", body: "{}" }).catch(() => {});
+  }
+  scheduleUpdatePoll();
+}
+async function refreshUpdateStatus() {
+  const state = await api("/api/update/status");
+  renderUpdateState(state);
+  return state;
+}
+async function forceUpdateCheck() {
+  $("checkUpdates").disabled = true;
+  try {
+    renderUpdateState(await api("/api/update/check", { method: "POST", body: "{}" }));
+    scheduleUpdatePoll();
+  } catch (error) { toast(error.message); }
+  finally { $("checkUpdates").disabled = false; }
+}
+function openUpdateDialog() {
+  if (updateState) renderUpdateState(updateState);
+  $("updateDialog").showModal();
+}
+async function runUpdateAction() {
+  const button = $("runUpdate"), phase = updateState?.job?.phase;
+  button.disabled = true;
+  try {
+    if (phase === "ready") {
+      button.textContent = "Closing and installing…";
+      await api("/api/update/install", { method: "POST", body: "{}" });
+      $("updateSummary").textContent = "The verified update is being installed. The app will reopen automatically.";
+      return;
+    }
+    renderUpdateState(await api("/api/update/download", { method: "POST", body: "{}" }));
+  } catch (error) {
+    $("updateError").textContent = error.message; $("updateError").classList.remove("hidden");
+    button.disabled = false;
+  }
+}
+$("updateAvailable").onclick = openUpdateDialog;
+$("closeUpdate").onclick = () => $("updateDialog").close();
+$("laterUpdate").onclick = () => $("updateDialog").close();
+$("updateDialog").onclick = event => { if (event.target === $("updateDialog")) $("updateDialog").close(); };
+$("runUpdate").onclick = runUpdateAction;
+$("checkUpdates").onclick = forceUpdateCheck;
+$("updateChecks").onchange = async () => {
+  const desired = $("updateChecks").checked;
+  $("updateChecks").disabled = true;
+  try {
+    const settings = await api("/api/settings", { method: "POST", body: JSON.stringify({ checkForUpdates: desired }) });
+    updateChecksEnabled = settings.checkForUpdates;
+    if (updateChecksEnabled) await forceUpdateCheck();
+    else await refreshUpdateStatus();
+  } catch (error) { $("updateChecks").checked = updateChecksEnabled; toast(error.message); }
+  finally { $("updateChecks").disabled = false; }
+};
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]); }
 function safeCount(value) { const number = Number(value); return Number.isFinite(number) ? Math.max(0, Math.round(number)) : 0; }
 function displayCount(value) { return safeCount(value).toLocaleString(); }
@@ -138,12 +257,43 @@ setInterval(() => { refreshAuth().catch(() => {}); }, 5 * 60 * 1000);
     window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
   };
 })();
+async function flushTagChecks() {
+  clearTimeout(tagCheckTimer); tagCheckTimer = 0;
+  const entries = [...pendingTagChecks.entries()].slice(0, 100);
+  if (!entries.length) return;
+  entries.forEach(([id]) => pendingTagChecks.delete(id));
+  try {
+    const data = await api("/api/history/tags", { method: "POST",
+      body: JSON.stringify({ imageIds: entries.map(([id]) => Number(id)) }) });
+    entries.forEach(([id, waiters]) => {
+      const result = data.images?.[id] || { known: false, tags: [] };
+      imageTagState.set(id, result);
+      waiters.forEach(({ resolve }) => resolve(result));
+    });
+  } catch (error) {
+    entries.forEach(([, waiters]) => waiters.forEach(({ reject }) => reject(error)));
+  }
+  if (pendingTagChecks.size) tagCheckTimer = setTimeout(flushTagChecks, 20);
+}
+function checkImageTags(imageId) {
+  const id = String(imageId), cached = imageTagState.get(id);
+  if (cached) return Promise.resolve(cached);
+  return new Promise((resolve, reject) => {
+    const waiters = pendingTagChecks.get(id) || [];
+    waiters.push({ resolve, reject }); pendingTagChecks.set(id, waiters);
+    if (pendingTagChecks.size >= 50) flushTagChecks();
+    else if (!tagCheckTimer) tagCheckTimer = setTimeout(flushTagChecks, 20);
+  });
+}
+function tagsHideImage(result) { return !!result?.tags?.some(tag => tag.hidden); }
 const cardImageObserver = new IntersectionObserver(entries => {
   entries.forEach(entry => {
     if (!entry.isIntersecting) return;
     cardImageObserver.unobserve(entry.target);
-    entry.target.dataset.imagesActive = "1";
-    entry.target.paintImages?.();
+    entry.target.prepareArtwork?.().catch(error => {
+      entry.target.classList.add("tag-check-failed");
+      console.warn("Image tags could not be verified", error);
+    });
   });
 }, { rootMargin: "700px" });
 // Cards the user has scrolled past dim in place immediately, and the fact of having
@@ -254,8 +404,9 @@ function showArtwork(image, previewUrl, originalUrl) {
 }
 function card(a) {
   let images = [a.representative], index = 0, current = images[0], imagesLoaded = a.imageCount <= 1;
+  let navigating = false;
   const el = document.createElement("article"); el.className = a.seen ? "creator-card is-seen" : "creator-card"; el.dataset.id = current.id;
-  el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.worthFollowing ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of their images but do not follow them" aria-label="You react to this creator often">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
+  el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
   [[".previous", "Previous image", "15 5 8 12 15 19"], [".next", "Next image", "9 5 16 12 9 19"]].forEach(([selector, label, points]) => {
     const button = el.querySelector(selector);
     button.setAttribute("aria-label", label);
@@ -269,17 +420,72 @@ function card(a) {
     el.querySelector(".image-stage").appendChild(reason);
   }
   const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"); wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
-  function renderReactions() { reaction.innerHTML = reactionBar(current); wireReactions(); }
+  function renderReactions() {
+    reaction.innerHTML = reactionBar(current);
+    wireReactions();
+    if (navigating) reaction.querySelectorAll("[data-reaction]").forEach(button => { button.disabled = true; });
+  }
   function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!socialWrite) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
-  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showArtwork(main, current.thumbnailUrl, current.url); age.textContent = ago(current.createdAt); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => { index = Number(button.dataset.index); paint(); }); }
+  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showArtwork(main, current.thumbnailUrl, current.url); age.textContent = ago(current.createdAt); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
   async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${modelQuery()}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
-  async function move(delta) { try { await ensureImages(); index = (index + delta + images.length) % images.length; paint(); } catch (error) { toast(error.message); } }
-  wireArtworkFallback(main); el.querySelector(".previous").onclick = () => move(-1); el.querySelector(".next").onclick = () => move(1); el.querySelector(".image-button").onclick = () => showDetails(current, a); el.querySelector(".info-button").onclick = () => showDetails(current, a); el.querySelector(".more-menu").onclick = () => showDetails(current, a);
+  function removeCard() {
+    cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
+    el.remove();
+    loadMore().catch(error => toast(error.message));
+  }
+  async function selectAllowed(candidate, delta = 1) {
+    while (images.length) {
+      candidate = (candidate + images.length) % images.length;
+      const result = await checkImageTags(images[candidate].id);
+      if (!tagsHideImage(result)) { index = candidate; paint(); return true; }
+      images.splice(candidate, 1); a.imageCount = images.length;
+      if (delta < 0) candidate--;
+    }
+    removeCard(); return false;
+  }
+  async function prepareArtwork() {
+    const result = await checkImageTags(current.id);
+    if (tagsHideImage(result)) {
+      await ensureImages();
+      images = images.filter(image => String(image.id) !== String(current.id));
+      a.imageCount = images.length;
+      if (!await selectAllowed(0, 1)) return;
+    }
+    el.dataset.imagesActive = "1";
+    paint();
+  }
+  function setCardNavigationBusy(value) {
+    navigating = value;
+    el.setAttribute("aria-busy", value ? "true" : "false");
+    el.querySelectorAll(".previous, .next, .image-progress button").forEach(button => { button.disabled = value; });
+    renderReactions();
+  }
+  async function navigateTo(candidate, delta) {
+    if (navigating) return;
+    setCardNavigationBusy(true);
+    try {
+      await ensureImages();
+      if (images.length) await selectAllowed(candidate, delta);
+    } catch (error) { toast(error.message); }
+    finally { if (document.body.contains(el)) setCardNavigationBusy(false); }
+  }
+  async function move(delta) { await navigateTo(index + delta, delta); }
+  wireArtworkFallback(main); el.querySelector(".previous").onclick = () => move(-1); el.querySelector(".next").onclick = () => move(1); el.querySelector(".image-button").onclick = () => showDetails(current, a, el); el.querySelector(".info-button").onclick = () => showDetails(current, a, el); el.querySelector(".more-menu").onclick = () => showDetails(current, a, el);
   applyCreatorFollowers(el, a);
   // Setting src while the card is still detached defeats loading="lazy" — the browser
   // fetches immediately — so a whole page of cards requested every preview at once and
   // saturated the connection. Artwork is attached only as a card nears the viewport.
   el.paintImages = paint;
+  el.prepareArtwork = prepareArtwork;
+  el.removeHiddenImage = async imageId => {
+    imageTagState.delete(String(imageId));
+    if (!imagesLoaded) await ensureImages();
+    images = images.filter(image => String(image.id) !== String(imageId));
+    a.imageCount = images.length;
+    if (!images.length) { removeCard(); return; }
+    index = Math.min(index, images.length - 1);
+    await selectAllowed(index, 1);
+  };
   cardImageObserver.observe(el);
   el.dataset.username = a.username.toLowerCase();
   el.dataset.seenDate = selectedDate;
@@ -529,7 +735,7 @@ function showReady(status) {
   setNavigationBusy(false);
 }
 function showStopped() { $("loadingTitle").textContent = "Loading stopped"; $("loadingMessage").textContent = "Everything collected so far has been saved. Press Continue building whenever you are ready."; $("progressText").textContent = "Safe to close the app"; $("progressBar").classList.remove("indeterminate"); $("stopLoading").classList.add("hidden"); $("startLoading").textContent = "Continue building"; $("startLoading").classList.remove("hidden"); $("startLoading").disabled = false; setNavigationBusy(false); }
-async function showCompletedDay(value, token) { const [day, auth] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), api("/api/auth-status")]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; applyAuth(auth); const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); $("gallery").classList.remove("hidden"); segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); }
+async function showCompletedDay(value, token) { const [day, auth] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), api("/api/auth-status")]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; applyAuth(auth); const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); $("gallery").classList.remove("hidden"); segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); const needs = { emerging: "followers", foryou: "tags" }[selectedView]; if (needs === "tags") showPreliminaryPlaceholder(); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); if (needs) ensureViewData(needs); }
 async function beginSelectedDay(rebuild = false) { const value = selectedDate, token = ++activeLoadToken; activeBuildSegment = selectedSegment; activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases(); showBuildSetup(false); $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery(); $("startLoading").disabled = true; $("startLoading").classList.add("hidden"); $("stopLoading").classList.remove("hidden"); $("stopLoading").disabled = false; $("elapsedText").classList.remove("hidden"); $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} ${displayDate(value)}`; setNavigationBusy(true); updateProgress({ phase: "locating", elapsedSeconds: 0, itemCount: 0, creatorCount: 0 }); const request = { ...dayRequest(value), contentRating: buildCoverageRating }; let status = await api(rebuild ? "/api/history/rebuild" : "/api/history/start", { method: "POST", body: JSON.stringify(request) }); while (!status.complete) { if (token !== activeLoadToken) return; if (loadCancelled || status.state === "cancelled") return; if (status.state === "error") throw new Error(status.error || "Daily import failed"); updateProgress(status); await new Promise(resolve => setTimeout(resolve, 750)); if (loadCancelled || token !== activeLoadToken) return; status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`); } activeBuildSegment = null; setLoadingPhase("complete"); await showCompletedDay(value, token); refreshBlockLabels(value); }
 async function beginFullDay(rebuild = false) {
   const value = selectedDate, token = ++activeLoadToken;
@@ -621,8 +827,16 @@ function renderDetailTags(detail) {
     `<span class="tag-chip${tag.hidden ? " is-hidden" : ""}"${tag.hidden
       ? ' title="You hide this tag on Civitai"' : ""}>${escapeHtml(tag.name)}</span>`).join("")}`;
 }
-async function showDetails(image, artist) { showArtwork($("detailImage"), image.thumbnailUrl, image.url); $("detailTags").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; $("detailPrompt").textContent = "Loading generation details…"; $("details").showModal(); try { const detail = await api(`/api/history/image?id=${image.id}`); showArtwork($("detailImage"), detail.detailImageUrl || detail.thumbnailUrl, detail.url); $("detailMeta").innerHTML = `<div><dt>Image</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
-    $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url; } catch (error) { $("detailPrompt").textContent = error.message; } }
+async function showDetails(image, artist, artistCard) { showArtwork($("detailImage"), image.thumbnailUrl, image.url); $("detailTags").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; $("detailPrompt").textContent = "Loading generation details…"; $("details").showModal(); try { const detail = await api(`/api/history/image?id=${image.id}`); showArtwork($("detailImage"), detail.detailImageUrl || detail.thumbnailUrl, detail.url); $("detailMeta").innerHTML = `<div><dt>Image</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
+    $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url;
+    imageTagState.set(String(image.id), { known: detail.known, tags: detail.tags || [] });
+    if (detail.tags?.some(tag => tag.hidden)) {
+      // Preserve the explanation in the open dialog, but remove only this image behind
+      // it. Rebuilding the entire feed loses scroll position and every loaded page.
+      toast("This image matches a tag you hide on Civitai. Removing it from the gallery…");
+      artistCard?.removeHiddenImage?.(image.id).catch(error => toast(error.message));
+    }
+  } catch (error) { $("detailPrompt").textContent = error.message; } }
 const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) loadMore().catch(error => toast(error.message)); }, { rootMargin: "800px" });
 new MutationObserver(() => { const sentinel = $("loadSentinel"); if (sentinel) observer.observe(sentinel); }).observe($("gallery"), { childList: true });
 $("close").onclick = () => $("details").close(); $("details").onclick = event => { if (event.target === $("details")) $("details").close(); }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
@@ -745,25 +959,86 @@ $("daySegment").onchange = () => { selectedSegment = $("daySegment").value; load
 // background and the view refreshes itself when it finishes.
 let sweepWatch = 0;
 const sweepLabels = { followers: "Reading follower counts", tags: "Reading artwork tags" };
+function hideSweepNote() {
+  const note = $("followerSweep");
+  note.classList.add("hidden");
+  note.classList.remove("personalization-note", "preliminary", "ready");
+  note.replaceChildren();
+}
+function showSweepProgress(note, kind, state) {
+  if (kind !== "tags") {
+    note.classList.remove("personalization-note", "preliminary", "ready");
+    note.textContent = `${sweepLabels[kind]}… ${displayCount(state.known)} of ${displayCount(state.total)}`;
+    note.classList.remove("hidden");
+    return;
+  }
+  const known = safeCount(state.known), total = safeCount(state.total);
+  const percent = total ? Math.min(100, Math.round(known * 100 / total)) : 0;
+  note.classList.add("personalization-note", "preliminary");
+  note.classList.remove("ready", "hidden");
+  note.innerHTML = `<span class="sweep-copy"><strong>For You is still learning this gallery</strong><span>Rankings are preliminary while artwork tags are prepared.</span></span><span class="sweep-count">${displayCount(known)} of ${displayCount(total)} creator previews analyzed</span><progress class="sweep-progress" aria-label="Preparing tag-based recommendations" aria-valuenow="${percent}" max="100" value="${percent}"></progress>`;
+}
+function showPreliminaryPlaceholder() {
+  const note = $("followerSweep");
+  note.classList.add("personalization-note", "preliminary");
+  note.classList.remove("ready", "hidden");
+  note.innerHTML = '<span class="sweep-copy"><strong>For You is checking this gallery</strong><span>Rankings may be preliminary until artwork tags are ready.</span></span>';
+}
+function showSweepFailure(note, kind, state) {
+  note.replaceChildren();
+  const message = document.createElement("span");
+  if (kind === "tags") {
+    note.classList.add("personalization-note", "preliminary");
+    note.classList.remove("ready");
+    message.textContent = state?.known !== undefined && state?.total !== undefined
+      ? `For You is using preliminary rankings. Tag preparation stopped at ${displayCount(state.known)} of ${displayCount(state.total)} creator previews. `
+      : "For You is using preliminary rankings because tag preparation could not continue. ";
+  } else {
+    note.classList.remove("personalization-note", "preliminary", "ready");
+    message.textContent = state?.known !== undefined && state?.total !== undefined
+      ? `${sweepLabels[kind]} stopped at ${displayCount(state.known)} of ${displayCount(state.total)}. `
+      : `${sweepLabels[kind]} could not continue. `;
+  }
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "Retry";
+  retry.title = state.job?.error || `Retry ${sweepLabels[kind].toLowerCase()}`;
+  retry.onclick = () => ensureViewData(kind);
+  note.append(message, retry);
+  note.classList.remove("hidden");
+}
 async function ensureViewData(kind) {
   const note = $("followerSweep"), url = `/api/history/prepare?date=${selectedDate}&segment=${selectedSegment}&kind=${kind}`;
   try {
     let state = await api(url);
-    if (state.complete) { note.classList.add("hidden"); return; }
+    if (state.complete) { hideSweepNote(); return; }
     if (!oauthConnected) { note.textContent = "Connect Civitai to prepare this view"; note.classList.remove("hidden"); return; }
     const watch = ++sweepWatch;
-    note.classList.remove("hidden");
+    showSweepProgress(note, kind, state);
     if (!state.job?.running) await api("/api/history/prepare", { method: "POST", body: JSON.stringify({ date: selectedDate, segment: selectedSegment, kind }) });
     while (watch === sweepWatch) {
       state = await api(url);
-      note.textContent = `${sweepLabels[kind]}… ${displayCount(state.known)} of ${displayCount(state.total)}`;
-      if (state.complete || !state.job?.running) break;
+      showSweepProgress(note, kind, state);
+      if (state.complete) break;
+      if (!state.job?.running) {
+        if (state.job?.error) {
+          showSweepFailure(note, kind, state);
+          await reloadView();
+          return;
+        }
+        break;
+      }
       await new Promise(resolve => setTimeout(resolve, 1200));
     }
     if (watch !== sweepWatch) return;
-    note.classList.add("hidden");
+    if (kind === "tags") {
+      note.classList.remove("preliminary");
+      note.classList.add("ready");
+      note.innerHTML = '<span class="sweep-copy"><strong>Tag analysis complete</strong><span>Refreshing For You with the fully personalized ranking…</span></span>';
+    }
     await reloadView();
-  } catch (error) { note.textContent = error.message; }
+    hideSweepNote();
+  } catch (error) { showSweepFailure(note, kind, { job: { error: error.message } }); }
 }
 async function reloadView() {
   const token = ++activeLoadToken;
@@ -787,7 +1062,10 @@ $("dayView").onchange = async () => {
   selectedView = $("dayView").value;
   if (!dayBuilt) return;
   const needs = { emerging: "followers", foryou: "tags" }[selectedView];
-  if (needs) ensureViewData(needs); else { sweepWatch++; $("followerSweep").classList.add("hidden"); }
+  if (needs) {
+    if (needs === "tags") showPreliminaryPlaceholder();
+    ensureViewData(needs);
+  } else { sweepWatch++; hideSweepNote(); }
   await reloadView();
   if (selectedView === "foryou") recommendationsNeedRefresh = false;
 };
@@ -876,7 +1154,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
   }, delay);
 }
 async function startup() {
-  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; showContentRating(); showSeenDimming(); } catch (_) { showContentRating(); showSeenDimming(); }
+  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showSeenDimming(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); } catch (_) { showContentRating(); showSeenDimming(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
@@ -1078,7 +1356,7 @@ function renderDiscovery(data) {
     metricCard("Creators you follow", data.followedCreators, "Exact count from your Civitai account", true),
     metricCard("Images you reacted to", total, "Your complete reaction history"),
     metricCard("Creators you reacted to", data.creatorsReactedTo, "Distinct artists in that history"),
-    metricCard("Not yet followed", data.creatorsNotFollowed, "Reacted to 5+ times, but you do not follow them"),
+    metricCard("Not yet followed", data.creatorsNotFollowed, `Reacted to ${data.worthFollowingThreshold || 10}+ images, but you do not follow them`),
     donut(data.reactionMix || [], data.reactionRecords),
   ].join("");
   let fingerprintPanel = $("creativeFingerprint");
@@ -1112,11 +1390,13 @@ function renderDiscovery(data) {
   $("distinctiveTags").innerHTML = rankList((data.distinctiveTags || []).map(tag => `<div class="rank-item"><span class="rank-name">${escapeHtml(tag.name)}</span><span class="rank-value"><span class="pill lift">×${tag.lift}</span> ${displayCount(tag.images)} images</span></div>`), "No tag stands out from the sample yet.");
   $("topCreators").innerHTML = rankList((data.topCreators || []).map(creator => `<div class="rank-item"><span class="rank-name"><a href="${escapeHtml(profileUrl(creator.username))}" target="_blank" rel="noopener">@${escapeHtml(creator.username)}</a>${creator.following ? '<span class="pill">FOLLOWING</span>' : ""}${emergingPill(creator)}</span><span class="rank-value">${displayCount(creator.images)} images${followerText(creator)}</span></div>`), "No creators recorded yet.");
   const notFollowed = data.reactedNotFollowed || [];
-  $("notFollowed").innerHTML = rankList(notFollowed.map(creator => `<div class="rank-item" data-user-id="${escapeHtml(creator.id)}" data-username="${escapeHtml(creator.username)}"><span class="rank-name"><a href="${escapeHtml(profileUrl(creator.username))}" target="_blank" rel="noopener">@${escapeHtml(creator.username)}</a>${emergingPill(creator)}</span><span class="rank-value">${displayCount(creator.images)} images${followerText(creator)}</span><button class="follow-button" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">+ Follow</button></div>`), "No creator you react to 5 or more times goes unfollowed.", "dense");
+  const worthThreshold = data.worthFollowingThreshold || 10;
+  const heartThreshold = data.galleryHeartThreshold || 5;
+  $("notFollowed").innerHTML = rankList(notFollowed.map(creator => `<div class="rank-item" data-user-id="${escapeHtml(creator.id)}" data-username="${escapeHtml(creator.username)}"><span class="rank-name"><a href="${escapeHtml(profileUrl(creator.username))}" target="_blank" rel="noopener">@${escapeHtml(creator.username)}</a>${emergingPill(creator)}</span><span class="rank-value">${displayCount(creator.images)} images${followerText(creator)}</span><button class="follow-button" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">+ Follow</button></div>`), `No creator you react to ${worthThreshold} or more times goes unfollowed.`, "dense");
   $("notFollowed").querySelectorAll(".rank-item").forEach(row => { row.querySelector(".follow-button").onclick = () => followFromDashboard(row); });
   $("notFollowedNote").textContent = notFollowed.length
-    ? `Creators you've reacted to 5 or more times without following — the clearest signal you have. Showing the top ${notFollowed.length} of ${displayCount(data.creatorsNotFollowed)}. The same signal marks their card ♥ in the daily gallery.`
-    : "Creators you've reacted to 5 or more times without following.";
+    ? `Creators whose work you have reacted to on ${worthThreshold} or more distinct images without following. Showing the top ${notFollowed.length} of ${displayCount(data.creatorsNotFollowed)}. A ♥ in the daily gallery marks unfollowed artists at the broader ${heartThreshold}+ image threshold.`
+    : `Creators you've reacted to on ${worthThreshold} or more distinct images without following.`;
   // Suggestions moved into the For You feed, where browsing happens.
   const age = data.lastSyncAt ? (Date.now() - new Date(data.lastSyncAt).getTime()) / 1000 : 0;
   const when = age < 120 ? "moments ago" : ago(data.lastSyncAt);
@@ -1143,6 +1423,7 @@ $("hiddenPreferencesRefresh").onclick = async () => {
   button.disabled = true;
   try {
     renderHiddenPreferencesNote(await api("/api/discovery/hidden?refresh=1"));
+    imageTagState.clear();
     toast("Re-read your Civitai Content Controls.");
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; }

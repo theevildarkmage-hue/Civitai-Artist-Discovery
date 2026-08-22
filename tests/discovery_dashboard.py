@@ -95,7 +95,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-", ignore_cleanup_err
     assert summary["followedCreators"] == 2
     # The creator with no username is excluded from creator rankings but still counted above.
     assert summary["creatorsReactedTo"] == 3, summary
-    # Below the 5-reaction "worth following" bar, a single reaction from each of
+    # Below the 10-image "worth following" bar, a single reaction from each of
     # art_two and art_three does not count as not-followed here.
     assert summary["creatorsNotFollowed"] == 0, summary
     assert sum(entry["percent"] for entry in summary["reactionMix"]) == 100.0

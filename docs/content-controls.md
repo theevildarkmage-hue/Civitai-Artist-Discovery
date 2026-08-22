@@ -32,7 +32,7 @@ are treated exactly like hidden creators.
 | `hiddenUsers` | Excluded from every view and from the artist count | Exact |
 | `blockedByUsers` | Same | Exact |
 | `hiddenImages` | Removed from carousels; never used as a card cover | Exact |
-| `hiddenTags` | Images carrying one are removed; a creator left with none gets no card | **Partial — see below** |
+| `hiddenTags` | Verified before a preview is displayed; matching images are removed | Exact for every displayed preview |
 
 Measured on one real day (2026-08-03, 2,966 creators, 27,002 images):
 
@@ -45,27 +45,27 @@ Measured on one real day (2026-08-03, 2,966 creators, 27,002 images):
 A creator is only dropped when *all* their images are hidden. Someone with ten images and
 one hidden image keeps their card and loses that image.
 
-## The limit
+## Preview-time tag verification
 
-Tag filtering can only act on images whose tags the app has read. The archive's collection
-endpoint (`/api/v1/images`) does not return tags at all — confirmed against the live API,
-the per-item keys are id, url, dimensions, `nsfwLevel`, `browsingLevel`, `baseModel`, `stats` and similar,
-with no tag field. Tags come from a separate sweep that fetches them for the image on each
-creator's card, which on the measured day covered **5,012 of 27,002 images (18.6%)**.
+The archive's collection endpoint (`/api/v1/images`) does not return tags at all. Confirmed
+against the live API, its per-item keys include the id, URL, dimensions, `nsfwLevel`,
+`browsingLevel`, `baseModel`, and stats, but not tags. Tags therefore require a separate
+authenticated request.
 
-So:
+The app does not delay a full-day build by fetching tags for every archived image. Instead,
+cards entering the viewport queue their image IDs into a short batched request. A preview
+URL is assigned only after that result is available. If an image carries a hidden tag, it is
+removed and the card advances to another verified image; a creator left with no visible
+image is removed. Carousel navigation uses the same gate before painting the next image.
 
-- The image you see first on each card is covered well.
-- An image deeper in a carousel may carry a hidden tag that was never read, and will not
-  be filtered.
-- Creator-level hiding has no gap of this kind.
+This makes the guarantee match what matters to the user: artwork carrying a hidden tag is
+not displayed. It also avoids tens of thousands of tag calls for images the user may never
+scroll to. A background preparation sweep still collects tags used by the personalized
+ranking, and all results share the same persistent cache.
 
-Fetching tags for every image would multiply collection time and API load for a day the
-user may only scan. That trade was rejected for the default path. If it is ever wanted, the
-sweep already exists and would simply need to cover every image rather than the covers.
-
-The gap is stated in `README.md` under **Content Controls** rather than left for a user to
-discover. A filter that silently under-delivers is worse than one whose reach is known.
+If tag verification itself fails, the app leaves the preview blank and explains that it
+could not verify the image against Content Controls. It does not fail open by showing
+unverified artwork.
 
 ## Saying what was removed
 
@@ -81,14 +81,17 @@ whose every image was hidden — which the regression test now pins.
 ## Inspecting tags
 
 The image dialog lists the tags Civitai holds for that image, marking any the account
-hides. Three states are distinguished, because collapsing them would be misleading:
+hides. Its data normally comes from the same cache populated before the preview. Three
+states are distinguished, because collapsing them would be misleading:
 
 - tags listed, some marked hidden
 - read, and genuinely carries no tags
 - **not read yet** — said plainly, never rendered as "no tags"
 
 An image that holds tags is treated as read regardless of the bookkeeping table, so the
-two facts cannot contradict each other.
+two facts cannot contradict each other. If preferences changed after a preview passed its
+initial check and the detail response newly marks it hidden, only that image is removed
+from its card. The feed, loaded pages, ordering, and scroll position stay intact.
 
 ## Refresh
 
@@ -116,4 +119,6 @@ so it is cached and invalidated by the import stamp.
 `hidden: false`, re-import replacing rather than merging, exclusion from all five views,
 `blockedByUsers` treated as hidden, a fully-hidden creator dropped, cover falling back to a
 visible image, carousel filtering, the count agreeing with what is shown, and the three tag
-states in the image dialog.
+states in the image dialog. `tests/hidden_tags_before_preview.py` verifies that hidden-tag
+artwork never receives a preview URL, checks batched tag lookup, and confirms that a late
+detail result removes only the affected image without reloading the feed.

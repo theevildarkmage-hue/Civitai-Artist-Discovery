@@ -48,3 +48,4 @@ tests/*
 docs/*
 !docs/content-controls.md
 !docs/beta-release.md
+!docs/updates.md
