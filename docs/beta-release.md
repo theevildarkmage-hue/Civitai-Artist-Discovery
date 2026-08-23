@@ -1,8 +1,18 @@
 # Beta releases
 
-Version **0.3.2-beta.1** is the current public beta of Civitai Artist Discovery. It keeps
+Version **0.3.3-beta.1** is the current public beta of Civitai Artist Discovery. It keeps
 the existing local Python/SQLite architecture while incorporating the fixes and features
 validated during alpha testing.
+
+The 0.3.3 beta introduces a touch-friendly **Gallery preferences** panel. Viewed-card
+dimming now lives beside optional high-volume artist filtering and explicit Balanced,
+Strict, and Unadjusted modes for **Emerging First**. Strict mode can optionally hide
+artists above a selected daily reaction total, while its safe default applies no cutoff.
+All of these controls re-filter the local gallery without downloading the day again.
+
+Initial and automatic profile analysis now uses more conservative API pacing, honors
+Civitai's requested retry delay, and avoids request bursts between analysis phases. This
+reduces first-launch rate limiting without changing the user's connection requirements.
 
 The 0.3.2 beta adds an optional, user-approved updater backed by this project's GitHub
 releases. It displays release notes before downloading, verifies GitHub's SHA-256 digest,
@@ -32,7 +42,8 @@ bar continues from 50% to 100%.
 - Personalized For You discovery using reaction history and a cached fingerprint of the
   connected account's public uploads.
 - Automatic profile refresh after 24 hours, with incremental upload-fingerprint reads.
-- Persistent control over viewed-card dimming while preserving seen-history ranking.
+- A Gallery preferences cog for viewed-card dimming, optional high-volume creator
+  filtering, and volume-resistant or strict Emerging First discovery.
 - Automatic fallback to original artwork when a generated CDN preview is unavailable.
 - A My Profile dashboard for distinctive tags, model signals, reaction preferences, and
   creator recommendations.

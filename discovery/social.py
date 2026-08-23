@@ -20,9 +20,10 @@ REACTION_NAMES = ("Like", "Heart", "Laugh", "Cry")
 class CivitaiHTTPError(RuntimeError):
     """Carries the HTTP status so callers can back off on 429 without parsing text."""
 
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, retry_after: str | None = None):
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after
 
 
 class SocialClient:
@@ -45,7 +46,8 @@ class SocialClient:
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", "replace")[:600]
             raise CivitaiHTTPError(
-                error.code, f"Civitai returned HTTP {error.code}: {detail}") from error
+                error.code, f"Civitai returned HTTP {error.code}: {detail}",
+                (error.headers or {}).get("Retry-After")) from error
         if not isinstance(value, dict):
             raise RuntimeError("Civitai returned an unexpected model-version response")
         return value
@@ -59,7 +61,9 @@ class SocialClient:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", "replace")[:600]
-            raise CivitaiHTTPError(error.code, f"Civitai returned HTTP {error.code}: {detail}") from error
+            raise CivitaiHTTPError(
+                error.code, f"Civitai returned HTTP {error.code}: {detail}",
+                (error.headers or {}).get("Retry-After")) from error
 
     def query(self, procedure: str, payload: dict) -> object:
         encoded = urllib.parse.quote(json.dumps({"json": payload}, separators=(",", ":")))

@@ -265,10 +265,110 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
 
             # The display preference suppresses only the shadow. It must not clear the
             # seen class or history that moves this creator later on the next fresh load.
-            page.locator("#seenDimming").click()
+            page.locator("#galleryPreferences").click()
+
+            def change_without_reload(selector, action, key, expected):
+                page.eval_on_selector(selector, "node => node.scrollIntoView({block: 'center'})")
+                with page.expect_response(lambda response:
+                        response.url.endswith("/api/settings")
+                        and response.request.method == "POST") as settings_response:
+                    action(page.locator(selector))
+                saved = settings_response.value.json()
+                assert saved[key] == expected, saved
+                page.wait_for_function(
+                    f"() => document.querySelector('{selector}').disabled === false")
+                assert get("/api/settings")[key] == expected
+
+            change_without_reload("#prefDimSeen", lambda item: item.uncheck(),
+                                  "dimSeenCards", False)
             page.locator("html.disable-seen-dimming").wait_for(state="attached")
-            page.wait_for_timeout(250)
-            assert page.locator("#seenDimming").inner_text() == "Dim viewed: Off"
+            assert page.locator("#prefDimSeen").is_checked() is False
+            change_without_reload("#prefDimSeen", lambda item: item.check(),
+                                  "dimSeenCards", True)
+            assert page.locator("html.disable-seen-dimming").count() == 0
+            change_without_reload("#prefDimSeen", lambda item: item.uncheck(),
+                                  "dimSeenCards", False)
+            page.locator("html.disable-seen-dimming").wait_for(state="attached")
+            assert page.locator("#prefDimSeen").is_enabled()
+            assert page.locator("#prefHideHighVolume").is_enabled()
+
+            def change_and_wait(selector, action, key, expected):
+                page.eval_on_selector(selector, "node => node.scrollIntoView({block: 'center'})")
+                with page.expect_response(lambda response:
+                        "/api/history/artists?" in response.url) as gallery_response:
+                    with page.expect_response(lambda response:
+                            response.url.endswith("/api/settings")
+                            and response.request.method == "POST") as settings_response:
+                        action(page.locator(selector))
+                saved = settings_response.value.json()
+                assert saved[key] == expected, saved
+                assert gallery_response.value.ok, gallery_response.value.status
+                page.wait_for_function("() => loadingMore === false")
+                assert get("/api/settings")[key] == expected
+
+            # Enabling high-volume filtering must survive the resulting gallery reorder
+            # and enable its dependent threshold control.
+            change_and_wait("#prefHideHighVolume", lambda item: item.check(),
+                            "hideHighVolumeCreators", True)
+            assert page.locator("#prefHideHighVolume").is_checked()
+            assert page.locator("#prefDimSeen").is_enabled()
+            assert page.locator("#prefHideHighVolume").is_enabled()
+            assert page.locator("#prefHighVolumeThreshold").is_enabled()
+            for threshold in ("50", "100", "200"):
+                change_and_wait("#prefHighVolumeThreshold",
+                                lambda item, value=threshold: item.select_option(value),
+                                "highVolumeThreshold", int(threshold))
+                assert page.locator("#prefHideHighVolume").is_checked()
+                assert page.locator("#prefHighVolumeThreshold").is_enabled()
+
+            change_and_wait("#prefHideHighVolume", lambda item: item.uncheck(),
+                            "hideHighVolumeCreators", False)
+            assert page.locator("#prefHideHighVolume").is_checked() is False
+            assert page.locator("#prefHighVolumeThreshold").is_disabled()
+
+            # Strict mode owns the reaction threshold. Exercise every threshold and all
+            # three modes, checking both the real POST and the state after each reorder.
+            assert page.locator("#prefEmergingLimit").is_disabled()
+            assert page.locator("#prefEmergingLimit").input_value() == "0"
+            assert page.locator("#emergingLimitHelp").is_visible()
+            assert "Available when Strict discovery" in \
+                page.locator("#emergingLimitHelp").inner_text()
+            change_and_wait("#prefEmergingMode",
+                            lambda _item: page.locator('[data-mode="strict"]').click(),
+                            "emergingReactionMode", "strict")
+            assert page.locator("#prefEmergingLimit").is_enabled()
+            assert page.locator('[data-mode="strict"]').get_attribute("aria-pressed") == "true"
+            for threshold in ("0", "100", "250", "500"):
+                change_and_wait("#prefEmergingLimit",
+                                lambda item, value=threshold: item.select_option(value),
+                                "emergingReactionLimit", int(threshold))
+                assert page.locator("#prefEmergingMode").input_value() == "strict"
+                assert page.locator("#prefEmergingLimit").is_enabled()
+                if threshold == "0":
+                    assert "No reaction cutoff" in \
+                        page.locator("#emergingLimitHelp").inner_text()
+            change_and_wait("#prefEmergingMode",
+                            lambda _item: page.locator('[data-mode="unadjusted"]').click(),
+                            "emergingReactionMode", "unadjusted")
+            assert page.locator("#prefEmergingLimit").is_disabled()
+            change_and_wait("#prefEmergingMode",
+                            lambda _item: page.locator('[data-mode="balanced"]').click(),
+                            "emergingReactionMode", "balanced")
+            assert page.locator("#prefEmergingLimit").is_disabled()
+            preferences = get("/api/settings")
+            assert preferences["highVolumeThreshold"] == 200
+            assert preferences["emergingReactionMode"] == "balanced"
+            assert preferences["emergingReactionLimit"] == 500
+            page.locator("#closePreferences").click()
+            assert page.locator("#preferencesMenu").is_hidden()
+            page.locator("#galleryPreferences").click()
+            assert page.locator("#prefHideHighVolume").is_checked() is False
+            assert page.locator("#prefHighVolumeThreshold").input_value() == "200"
+            assert page.locator("#prefHighVolumeThreshold").is_disabled()
+            assert page.locator("#prefEmergingMode").input_value() == "balanced"
+            assert page.locator("#prefEmergingLimit").input_value() == "500"
+            assert page.locator("#prefEmergingLimit").is_disabled()
+            page.locator("#closePreferences").click()
             assert page.eval_on_selector(selector, "n => getComputedStyle(n).opacity") == "1"
             assert get("/api/settings")["dimSeenCards"] is False
 
@@ -283,7 +383,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
             # the now-seen card out of the lead position rather than showing it again first.
             page.reload(wait_until="networkidle")
             page.wait_for_selector(".creator-card")
-            assert page.locator("#seenDimming").inner_text() == "Dim viewed: Off"
+            page.locator("#galleryPreferences").click()
+            assert page.locator("#prefDimSeen").is_checked() is False
+            assert page.locator("#prefHideHighVolume").is_checked() is False
+            assert page.locator("#prefHighVolumeThreshold").input_value() == "200"
+            assert page.locator("#prefHighVolumeThreshold").is_disabled()
+            assert page.locator("#prefEmergingMode").input_value() == "balanced"
+            assert page.locator("#prefEmergingLimit").input_value() == "500"
+            assert page.locator("#prefEmergingLimit").is_disabled()
             assert page.evaluate(
                 "document.documentElement.classList.contains('disable-seen-dimming')") is True
             reloaded = cards()

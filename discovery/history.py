@@ -1076,6 +1076,22 @@ class HistoryArchive:
             result[key] = math.log1p(adjusted)
         return result
 
+    def creator_reaction_totals(self, value: str, excluded_images=None) -> dict[str, int]:
+        """Total daily reactions per creator from the already-saved listing metadata."""
+        hidden = set(excluded_images or ())
+        with self.connect() as db:
+            rating_clause, rating_params = _rating_clause(self.visible_levels)
+            rows = db.execute(
+                "SELECT i.username_key AS key,i.id AS id,"
+                "CAST(COALESCE(json_extract(i.stats,'$.reactionCount'),0) AS INTEGER) AS reactions "
+                "FROM block_images b JOIN images i ON i.id=b.image_id "
+                f"WHERE b.block_key=?{rating_clause}", (value, *rating_params)).fetchall()
+        totals = {}
+        for row in rows:
+            if row["id"] not in hidden:
+                totals[row["key"]] = totals.get(row["key"], 0) + max(0, int(row["reactions"] or 0))
+        return totals
+
     def creators_with_visible_images(self, value: str, excluded_images) -> set[str]:
         """Creator keys left with at least one image once hidden artwork is removed.
 

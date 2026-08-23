@@ -3,11 +3,13 @@ let selectedModels = new Set();
 let contentRating = "Soft";
 let visibleBrowsingLevels = new Set([1, 2]);
 let dimSeenCards = true;
+let hideHighVolumeCreators = false, highVolumeThreshold = 100;
+let emergingReactionMode = "balanced", emergingReactionLimit = 0;
 let updateChecksEnabled = true, updateState = null, updatePollTimer = 0;
 let buildSegment = "all", buildCoverageRating = "Soft", currentBlocks = null, estimateToken = 0;
 // How many creators this day's Civitai content controls removed, so the count on screen
 // can explain itself rather than looking like missing data.
-let hiddenCreators = 0;
+let hiddenCreators = 0, preferenceHidden = 0;
 let selectedDate = null, selectedSegment = "evening", activeBuildSegment = null, selectedView = "foryou", newestDate = null, socialWrite = false, oauthConnected = false, artistTotal = 0, imageTotal = 0, loadedArtists = 0, loadingMore = false, loadCancelled = false, loadingPhaseIndex = -1, activeLoadToken = 0, dayBuilt = false, activeRebuild = false;
 const PROFILE_REFRESH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let automaticProfileRefreshTimer = 0, automaticProfileRefreshPending = false;
@@ -16,9 +18,30 @@ const imageReactionState = new Map();
 const imageTagState = new Map();
 const pendingTagChecks = new Map();
 let tagCheckTimer = 0;
-const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="contentFilter" class="filter-button" aria-expanded="false" title="Choose the content levels to display">Content: PG + PG-13</button><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
+const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="contentFilter" class="filter-button" aria-expanded="false" title="Choose the content levels to display">Content: PG + PG-13</button><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><button id="galleryPreferences" class="filter-button preferences-button" aria-expanded="false" aria-label="Gallery preferences" title="Gallery preferences">&#9881;</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div><div id="preferencesMenu" class="filter-menu preferences-menu hidden" aria-label="Gallery preferences"><div class="filter-head"><strong>Gallery preferences</strong><button id="closePreferences" class="quiet-button" aria-label="Close gallery preferences">×</button></div><label class="preference-row"><span><b>Dim viewed cards</b><small>Previously viewed artists still move later either way.</small></span><input id="prefDimSeen" type="checkbox"></label><label class="preference-row"><span><b>Hide high-volume artists</b><small>Applies to every gallery view.</small></span><input id="prefHideHighVolume" type="checkbox"></label><label class="preference-field" for="prefHighVolumeThreshold"><span>High-volume threshold</span><select id="prefHighVolumeThreshold"><option value="50">50+ images</option><option value="100">100+ images</option><option value="200">200+ images</option></select></label><label class="preference-field" for="prefEmergingMode"><span>Emerging First</span><select id="prefEmergingMode"><option value="balanced">Balanced discovery</option><option value="strict">Strict discovery</option><option value="unadjusted">No adjustment</option></select></label><p id="emergingModeHelp" class="preference-help"></p><label class="preference-field" for="prefEmergingLimit"><span>Strict-mode threshold</span><select id="prefEmergingLimit"><option value="100">100+ daily reactions</option><option value="250">250+ daily reactions</option><option value="500">500+ daily reactions</option></select></label><small class="preferences-footnote">Thresholds can be set anytime and apply when their matching option is active. These controls use the saved gallery and never download the day again.</small></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
+segmentToolbar.querySelector(".preferences-footnote").textContent = "Thresholds become available when their matching option is active. These controls use the saved gallery and never download the day again.";
+// A fixed element inside the sticky, backdrop-filtered toolbar is fixed to that toolbar
+// in Chromium rather than to the viewport. On short windows this placed the lower half
+// of the panel off-screen. Keep the trigger in the toolbar but portal the panel to body.
+document.body.appendChild($("preferencesMenu"));
+const noReactionLimit = document.createElement("option");
+noReactionLimit.value = "0"; noReactionLimit.textContent = "None";
+$("prefEmergingLimit").prepend(noReactionLimit);
+const emergingModeField = $("prefEmergingMode").closest("label");
+emergingModeField.querySelector("span").textContent = "Emerging First ranking";
+$("prefEmergingMode").classList.add("hidden");
+emergingModeField.insertAdjacentHTML("beforeend", '<div id="emergingModeChoices" class="preference-choice-group" role="radiogroup" aria-label="Emerging First ranking"><button type="button" data-mode="balanced">Balanced</button><button type="button" data-mode="strict">Strict</button><button type="button" data-mode="unadjusted">Unadjusted</button></div>');
+$("prefEmergingLimit").closest("label").insertAdjacentHTML("afterend",
+  '<p id="emergingLimitHelp" class="preference-help"></p>');
+// Put the ranking choice near the top of the panel. On short tablet windows the old
+// select sat below the fold, making Strict discovery effectively undiscoverable.
+const highVolumeRow = $("prefHideHighVolume").closest("label");
+const emergingLimitField = $("prefEmergingLimit").closest("label");
+highVolumeRow.insertAdjacentElement("beforebegin", emergingModeField);
+emergingModeField.insertAdjacentElement("afterend", $("emergingModeHelp"));
+$("emergingModeHelp").insertAdjacentElement("afterend", emergingLimitField);
+emergingLimitField.insertAdjacentElement("afterend", $("emergingLimitHelp"));
 segmentToolbar.insertAdjacentHTML("afterbegin", '<span id="completeDayPrompt" class="complete-day-prompt hidden"><span id="completeDayText"></span><button id="completeDay">Complete this day</button></span>');
-$("modelFilter").insertAdjacentHTML("afterend", '<button id="seenDimming" class="filter-button" aria-pressed="true" title="Previously viewed creators still move later; this changes only card brightness">Dim viewed: On</button>');
 // Card size is a plain display preference, so it is saved locally rather than round-
 // tripping to the server, and applied immediately — before anything else on the page
 // runs — so there is no flash of the default size while a saved smaller one loads in.
@@ -57,8 +80,75 @@ function showContentRating() {
 }
 function showSeenDimming() {
   document.documentElement.classList.toggle("disable-seen-dimming", !dimSeenCards);
-  $("seenDimming").textContent = `Dim viewed: ${dimSeenCards ? "On" : "Off"}`;
-  $("seenDimming").setAttribute("aria-pressed", String(dimSeenCards));
+  if ($("prefDimSeen")) $("prefDimSeen").checked = dimSeenCards;
+}
+function showGalleryPreferences() {
+  showSeenDimming();
+  $("prefHideHighVolume").checked = hideHighVolumeCreators;
+  $("prefHighVolumeThreshold").value = String(highVolumeThreshold);
+  $("prefHighVolumeThreshold").disabled = !hideHighVolumeCreators;
+  $("prefEmergingMode").value = emergingReactionMode;
+  $("emergingModeChoices").querySelectorAll("[data-mode]").forEach(button => {
+    const selected = button.dataset.mode === emergingReactionMode;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  $("prefEmergingLimit").value = String(emergingReactionLimit);
+  $("prefEmergingLimit").disabled = emergingReactionMode !== "strict";
+  $("emergingModeHelp").textContent = emergingReactionMode === "balanced"
+    ? "Prioritizes strong work and smaller audiences while gently lowering unusually high daily reaction totals."
+    : emergingReactionMode === "strict"
+      ? (emergingReactionLimit > 0
+        ? `Uses balanced ranking and hides artists with ${emergingReactionLimit}+ reactions that day.`
+        : "Uses balanced ranking without hiding artists by reaction count.")
+      : "Keeps the original daily popularity order inside the under-1,000-follower tier.";
+  $("emergingLimitHelp").textContent = emergingReactionMode !== "strict"
+    ? "Available when Strict discovery is selected."
+    : emergingReactionLimit > 0
+      ? `Artists with ${emergingReactionLimit}+ total reactions that day are hidden.`
+      : "No reaction cutoff is applied. Select a limit only if you want to hide highly reacted artists.";
+  $("galleryPreferences").classList.toggle("has-active-preference",
+    hideHighVolumeCreators || emergingReactionMode !== "balanced" || !dimSeenCards);
+}
+async function saveGalleryPreferences(patch, reload = true) {
+  const controls = [...$("preferencesMenu").querySelectorAll("input,select,[data-mode]")];
+  const previous = { dimSeenCards, hideHighVolumeCreators, highVolumeThreshold,
+    emergingReactionMode, emergingReactionLimit };
+  // Reflect the click immediately and keep that state visible while the saved gallery
+  // is reordered. Waiting until after reload made a checked box appear to undo itself.
+  if (Object.hasOwn(patch, "dimSeenCards")) dimSeenCards = patch.dimSeenCards;
+  if (Object.hasOwn(patch, "hideHighVolumeCreators")) hideHighVolumeCreators = patch.hideHighVolumeCreators;
+  if (Object.hasOwn(patch, "highVolumeThreshold")) highVolumeThreshold = patch.highVolumeThreshold;
+  if (Object.hasOwn(patch, "emergingReactionMode")) emergingReactionMode = patch.emergingReactionMode;
+  if (Object.hasOwn(patch, "emergingReactionLimit")) emergingReactionLimit = patch.emergingReactionLimit;
+  showGalleryPreferences();
+  controls.forEach(control => { control.disabled = true; });
+  try {
+    const settings = await api("/api/settings", { method: "POST", body: JSON.stringify(patch) });
+    dimSeenCards = settings.dimSeenCards !== false;
+    hideHighVolumeCreators = settings.hideHighVolumeCreators === true;
+    highVolumeThreshold = Number(settings.highVolumeThreshold) || 100;
+    emergingReactionMode = settings.emergingReactionMode || "balanced";
+    emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit))
+      ? Number(settings.emergingReactionLimit) : 0;
+    // Saving is complete now. Re-enable and render the persisted state before the
+    // potentially slower gallery reorder so the panel remains truthful and responsive.
+    controls.forEach(control => { control.disabled = false; });
+    showGalleryPreferences();
+    if (reload && selectedDate && dayBuilt) await reloadView();
+    return true;
+  } catch (error) {
+    ({ dimSeenCards, hideHighVolumeCreators, highVolumeThreshold,
+       emergingReactionMode, emergingReactionLimit } = previous);
+    toast(error.message);
+    return false;
+  }
+  finally {
+    // Lock the controls only while the save/reorder is running. Leaving them disabled
+    // made the open preferences panel look usable while swallowing every later click.
+    controls.forEach(control => { control.disabled = false; });
+    showGalleryPreferences();
+  }
 }
 async function chooseContentRating(nextLevels) {
   const previous = contentRating, buttons = [...$("contentMenu").querySelectorAll("[data-level]")];
@@ -371,6 +461,7 @@ function clearGallery() {
     cardImageObserver.unobserve(el);
     el.seenEnteredAt = null;
   });
+  preferenceHidden = 0;
   $("gallery").replaceChildren();
 }
 function avatar(a) { return a.avatarUrl ? `<img class="creator-avatar" src="${escapeHtml(a.avatarUrl)}" alt="">` : `<span class="creator-avatar fallback">${escapeHtml(initials(a.username))}</span>`; }
@@ -571,8 +662,8 @@ let galleryToken = 0;
 // page loads could send the same value and collide on the server's cache. This adds the
 // per-page-load part that makes the combination unique across reloads, not just within one.
 const PAGE_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-async function loadMore() { if (loadingMore || loadedArtists >= artistTotal) return; loadingMore = true; const token = galleryToken; try { const data = await api(`/api/history/artists?date=${selectedDate}&segment=${selectedSegment}&offset=${loadedArtists}&limit=50&view=${selectedView}&session=${PAGE_SESSION}-${galleryToken}${modelQuery()}`); if (token !== galleryToken) return; if (Number.isFinite(data.total)) artistTotal = data.total; const fragment = document.createDocumentFragment(), cards = []; data.artists.forEach(artist => { const element = card(artist); cards.push(element); fragment.appendChild(element); }); $("gallery").insertBefore(fragment, $("loadSentinel")); loadedArtists += data.artists.length; $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}`;
-  $("summary").title = hiddenCreators ? "Creators you hide on Civitai, or who have blocked you, are left out of this gallery." : ""; enrichCards(data.artists, cards); hydrateReactionStates(data.artists.map(artist => artist.representative)).catch(error => console.warn("Reaction history could not be loaded", error)); } finally { loadingMore = false; } }
+async function loadMore() { if (loadingMore || loadedArtists >= artistTotal) return; loadingMore = true; const token = galleryToken; try { const data = await api(`/api/history/artists?date=${selectedDate}&segment=${selectedSegment}&offset=${loadedArtists}&limit=50&view=${selectedView}&session=${PAGE_SESSION}-${galleryToken}${modelQuery()}`); if (token !== galleryToken) return; if (Number.isFinite(data.total)) artistTotal = data.total; preferenceHidden = safeCount(data.preferenceHidden); const fragment = document.createDocumentFragment(), cards = []; data.artists.forEach(artist => { const element = card(artist); cards.push(element); fragment.appendChild(element); }); $("gallery").insertBefore(fragment, $("loadSentinel")); loadedArtists += data.artists.length; $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}${preferenceHidden ? ` · ${displayCount(preferenceHidden)} hidden by Gallery preferences` : ""}`;
+  $("summary").title = [hiddenCreators ? "Creators you hide on Civitai, or who have blocked you, are left out of this gallery." : "", preferenceHidden ? "Gallery preferences are hiding high-volume or high-reaction creators." : ""].filter(Boolean).join(" "); enrichCards(data.artists, cards); hydrateReactionStates(data.artists.map(artist => artist.representative)).catch(error => console.warn("Reaction history could not be loaded", error)); } finally { loadingMore = false; } }
 function applyAuth(auth) { oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; const waiting = auth.oauthJob?.state === "loading";
   // Follows and reactions are granted at sign-in, so the normal signed-in state needs no
   // qualifier. The exception is worth naming: Civitai can complete a sign-in while
@@ -912,6 +1003,8 @@ $("modelFilter").onclick = () => {
   const menu = $("modelMenu"), open = menu.classList.toggle("hidden");
   $("modelFilter").setAttribute("aria-expanded", String(!open));
   $("contentMenu").classList.add("hidden");
+  $("preferencesMenu").classList.add("hidden");
+  $("galleryPreferences").setAttribute("aria-expanded", "false");
   $("contentFilter").setAttribute("aria-expanded", "false");
   if (!open) refreshModelMenu();
 };
@@ -919,20 +1012,43 @@ $("contentFilter").onclick = () => {
   const opening = $("contentMenu").classList.toggle("hidden");
   $("contentFilter").setAttribute("aria-expanded", String(!opening));
   $("modelMenu").classList.add("hidden");
+  $("preferencesMenu").classList.add("hidden");
+  $("galleryPreferences").setAttribute("aria-expanded", "false");
 };
-$("seenDimming").onclick = async () => {
-  const button = $("seenDimming"), previous = dimSeenCards;
-  button.disabled = true;
-  try {
-    const settings = await api("/api/settings", { method: "POST",
-      body: JSON.stringify({ dimSeenCards: !dimSeenCards }) });
-    dimSeenCards = settings.dimSeenCards !== false;
-    showSeenDimming();
-    toast(dimSeenCards ? "Viewed cards will be dimmed." : "Viewed cards will stay at full brightness.");
-  } catch (error) {
-    dimSeenCards = previous; showSeenDimming(); toast(error.message);
-  } finally { button.disabled = false; }
+$("galleryPreferences").onclick = () => {
+  const hidden = $("preferencesMenu").classList.toggle("hidden");
+  $("galleryPreferences").setAttribute("aria-expanded", String(!hidden));
+  $("modelMenu").classList.add("hidden"); $("modelFilter").setAttribute("aria-expanded", "false");
+  $("contentMenu").classList.add("hidden"); $("contentFilter").setAttribute("aria-expanded", "false");
+  if (!hidden) showGalleryPreferences();
 };
+$("closePreferences").onclick = () => {
+  $("preferencesMenu").classList.add("hidden");
+  $("galleryPreferences").setAttribute("aria-expanded", "false");
+};
+$("prefDimSeen").onchange = () => {
+  const desired = $("prefDimSeen").checked;
+  saveGalleryPreferences({ dimSeenCards: desired }, false).then(saved => {
+    if (saved) toast(desired ? "Viewed cards will be dimmed." : "Viewed cards will stay at full brightness.");
+  });
+};
+$("prefHideHighVolume").onchange = () => saveGalleryPreferences({
+  hideHighVolumeCreators: $("prefHideHighVolume").checked
+}).then(saved => { if (saved) toast("Gallery preferences applied from saved data."); });
+$("prefHighVolumeThreshold").onchange = () => saveGalleryPreferences({
+  highVolumeThreshold: Number($("prefHighVolumeThreshold").value)
+}).then(saved => { if (saved) toast("High-volume artist limit updated."); });
+$("prefEmergingMode").onchange = () => saveGalleryPreferences({
+  emergingReactionMode: $("prefEmergingMode").value
+}).then(saved => { if (saved) toast("Emerging First ranking updated."); });
+$("emergingModeChoices").querySelectorAll("[data-mode]").forEach(button => {
+  button.onclick = () => saveGalleryPreferences({
+    emergingReactionMode: button.dataset.mode
+  }).then(saved => { if (saved) toast("Emerging First ranking updated."); });
+});
+$("prefEmergingLimit").onchange = () => saveGalleryPreferences({
+  emergingReactionLimit: Number($("prefEmergingLimit").value)
+}).then(saved => { if (saved) toast("Strict discovery limit updated."); });
 $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
   button.onclick = () => {
     const level = Number(button.dataset.level), next = new Set(visibleBrowsingLevels);
@@ -949,6 +1065,10 @@ document.addEventListener("click", event => {
   if (!event.target.closest("#contentMenu") && !event.target.closest("#contentFilter")) {
     $("contentMenu").classList.add("hidden");
     $("contentFilter").setAttribute("aria-expanded", "false");
+  }
+  if (!event.target.closest("#preferencesMenu") && !event.target.closest("#galleryPreferences")) {
+    $("preferencesMenu").classList.add("hidden");
+    $("galleryPreferences").setAttribute("aria-expanded", "false");
   }
 });
 $("daySegment").onchange = () => { selectedSegment = $("daySegment").value; loadDay(selectedDate, false).catch(showLoadError); };
@@ -1154,7 +1274,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
   }, delay);
 }
 async function startup() {
-  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showSeenDimming(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); } catch (_) { showContentRating(); showSeenDimming(); }
+  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); } catch (_) { showContentRating(); showGalleryPreferences(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
@@ -1173,7 +1293,7 @@ async function startup() {
     setChrome(false);
     $("welcome").classList.remove("hidden"); $("loading").classList.add("hidden");
     $("welcomeTitle").textContent = "Getting to know your taste";
-    $("welcomeBody").textContent = "Reading the artwork you have reacted to on Civitai. This takes about a minute and only happens once.";
+    $("welcomeBody").textContent = "Reading the artwork you have reacted to on Civitai. The first review may take several minutes because requests are paced to respect Civitai’s limits; later refreshes reuse the analysis already saved.";
     $("welcomeConnect").classList.add("hidden");
     await runFirstAnalysis();
   }

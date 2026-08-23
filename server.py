@@ -40,7 +40,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "0.3.2-beta.1"
+APP_VERSION = "0.3.3-beta.1"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
@@ -343,15 +343,26 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
     Returns None to mean "use the archive's own order", which keeps the default view on
     its existing SQL path.
     """
-    if view not in GALLERY_VIEWS or view == "discovery":
+    if view not in GALLERY_VIEWS:
         return None, None
     followed, reacted = signals["followed"], signals["reacted"]
     rows = HISTORY.day_artist_keys(key)
+    preferences = SETTINGS.load()
+    hide_high_volume = preferences["hideHighVolumeCreators"]
+    high_volume_threshold = preferences["highVolumeThreshold"]
+    if hide_high_volume:
+        # "100+" is inclusive: a creator posting exactly the selected limit is hidden.
+        rows = [row for row in rows if int(row.get("imageCount") or 0) < high_volume_threshold]
     hidden_creators = set(hidden_creators or ())
     if hidden_creators or eligible_creators is not None:
         rows = [row for row in rows if row["key"] not in hidden_creators and
                 (eligible_creators is None or row["key"] in eligible_creators)]
     pinned = (pinned_username or "").casefold()
+    if view == "discovery":
+        # Popular is already the archive's native rank. It only needs an explicit order
+        # when a gallery preference removes creators from that native list.
+        return (([row["key"] for row in rows], len(rows))
+                if hide_high_volume else (None, None))
     if view == "foryou":
         # Score whichever image will actually be the card's cover, not the raw archive
         # pick: a hidden cover can carry the score while a different image renders, and
@@ -508,21 +519,49 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
         if not rows:
             return [], 0
         counts = TASTE.follower_counts([row["username"] for row in rows])
+        reaction_mode = preferences["emergingReactionMode"]
+        reaction_limit = preferences["emergingReactionLimit"]
+        totals = HISTORY.creator_reaction_totals(key, hidden_images)
+        if reaction_mode == "strict" and reaction_limit > 0:
+            rows = [row for row in rows if totals.get(row["key"], 0) < reaction_limit]
+            if not rows:
+                return [], 0
+        quality = HISTORY.creator_quality_scores(key, hidden_images)
+        quality_values = [quality.get(row["key"], 0.0) for row in rows]
+        quality_low = min(quality_values, default=0.0)
+        quality_high = max(quality_values, default=0.0)
+
+        def balanced_score(row):
+            quality_value = quality.get(row["key"], 0.0)
+            normalized_quality = ((quality_value - quality_low) / (quality_high - quality_low)
+                                  if quality_high > quality_low else 0.0)
+            followers = counts.get(row["key"])
+            follower_discovery = (1.0 - min(EMERGING_FOLLOWERS, max(0, followers)) /
+                                  EMERGING_FOLLOWERS if followers is not None else 0.0)
+            reactions = totals.get(row["key"], 0)
+            popularity_penalty = (min(.45, .20 * math.log2(reactions / 100))
+                                  if reactions > 100 else 0.0)
+            return .70 * normalized_quality + .30 * follower_discovery - popularity_penalty
         # Only a creator with a known count can be called emerging. Unknown counts sort
         # after the rest rather than being presented as small accounts.
-        # Within the emerging tier, order by the day's own engagement rank, not by
-        # ascending follower count. Ascending count leads with one-follower throwaway
-        # accounts; 77% of a measured day sits under the threshold, so the threshold
-        # selects a tier and engagement decides who leads it.
+        # Within the emerging tier, Balanced uses the strongest few images, follower
+        # scale, and a capped high-reaction penalty. It avoids both extremes: total
+        # reactions rewarding batch uploaders, and ascending reactions leading with
+        # zero-engagement throwaway accounts. No adjustment preserves the original
+        # daily popularity order; Strict uses Balanced after removing the selected cap.
         def rank(row):
             value = counts.get(row["key"])
             if value is None:
                 return (2, row["rank"])
-            return (0 if value < EMERGING_FOLLOWERS else 1, row["rank"])
+            tier = 0 if value < EMERGING_FOLLOWERS else 1
+            if tier == 0 and reaction_mode in {"balanced", "strict"}:
+                return (tier, -balanced_score(row), row["rank"])
+            return (tier, row["rank"], row["rank"])
         ordered = sorted(rows, key=rank)
         return [row["key"] for row in ordered], len(ordered)
     if not followed and not reacted:
-        return None, None
+        return (([row["key"] for row in rows], len(rows))
+                if hide_high_volume else (None, None))
     if view == "new":
         # The connected user is excluded too: this view is about creators you have never
         # engaged with, and your own card is the opposite of that.
@@ -1029,6 +1068,22 @@ class Handler(BaseHTTPRequestHandler):
                 signals = gallery_signals()
                 hidden_creators, hidden_images = hidden_preferences()
                 showable = visible_creator_keys(key, hidden_images) if hidden_images else None
+                preference_rows = [row for row in HISTORY.day_artist_keys(key)
+                                   if row["key"] not in hidden_creators and
+                                   (showable is None or row["key"] in showable)]
+                if view == "emerging":
+                    preference_rows = [row for row in preference_rows
+                                       if row["key"] not in signals["followed"] and
+                                       row["key"] != (pinned_username or "").casefold()]
+                preferences = SETTINGS.load()
+                preference_hidden_keys = ({row["key"] for row in preference_rows
+                    if int(row.get("imageCount") or 0) >= preferences["highVolumeThreshold"]}
+                    if preferences["hideHighVolumeCreators"] else set())
+                if (view == "emerging" and preferences["emergingReactionMode"] == "strict"
+                        and preferences["emergingReactionLimit"] > 0):
+                    reaction_totals = HISTORY.creator_reaction_totals(key, hidden_images)
+                    preference_hidden_keys.update(row["key"] for row in preference_rows
+                        if reaction_totals.get(row["key"], 0) >= preferences["emergingReactionLimit"])
                 session_token = query.get("session", [None])[0]
                 seen = TASTE.seen_creator_keys(value)
                 order, total = cached_day_view_order(key, view, pinned_username, signals,
@@ -1103,7 +1158,9 @@ class Handler(BaseHTTPRequestHandler):
                             reasons.append("New to you")
                         artist["recommendationReasons"] = reasons
                 self.json_response({"date": value, "offset": offset, "artists": artists,
-                    "view": view, "total": total, "hasMore": offset + len(artists) < total
+                    "view": view, "total": total,
+                    "preferenceHidden": len(preference_hidden_keys),
+                    "hasMore": offset + len(artists) < total
                         if total is not None else len(artists) == limit})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("History artist page", error)
@@ -1290,10 +1347,17 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/settings":
                 previous = SETTINGS.load()
                 content_change = ("browsingLevels" in body or "contentRating" in body)
+                gallery_change = any(name in body for name in (
+                    "hideHighVolumeCreators", "highVolumeThreshold",
+                    "emergingReactionMode", "emergingReactionLimit"))
                 value = SETTINGS.update(browsing_levels_value=body.get("browsingLevels"),
                                         content_rating_value=body.get("contentRating"),
                                         dim_seen_cards_value=body.get("dimSeenCards"),
-                                        check_for_updates_value=body.get("checkForUpdates"))
+                                        check_for_updates_value=body.get("checkForUpdates"),
+                                        hide_high_volume_creators_value=body.get("hideHighVolumeCreators"),
+                                        high_volume_threshold_value=body.get("highVolumeThreshold"),
+                                        emerging_reaction_mode_value=body.get("emergingReactionMode"),
+                                        emerging_reaction_limit_value=body.get("emergingReactionLimit"))
                 if content_change:
                     try:
                         HISTORY.set_content_filter(value["browsingLevels"])
@@ -1302,11 +1366,12 @@ class Handler(BaseHTTPRequestHandler):
                                         dim_seen_cards_value=previous["dimSeenCards"],
                                         check_for_updates_value=previous["checkForUpdates"])
                         raise
+                if content_change or gallery_change:
                     with WRITE_LOCK:
                         ORDER_CACHE.clear()
                         # Visibility is cached separately for each exact level selection,
-                        # so switching away and back can reuse it. The account-data token
-                        # still invalidates every selection when Civitai controls change.
+                        # so switching away and back can reuse it. Gallery preferences
+                        # invalidate only local ordering; neither path redownloads a day.
                 self.json_response({**value, "siteOrigin": SITE_ORIGIN})
                 return
             if parsed.path == "/api/update/check":

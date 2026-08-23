@@ -41,9 +41,23 @@ GALLERY_HEART_MIN = 5
 SEEN_TRACKING_VERSION = 2
 # How far a distinctive tag may outweigh a common one of equal frequency.
 TAG_BOOST_CAP = 3.0
-MIN_PAUSE = 1.0
-MAX_PAUSE = 1.8
+# Profile analysis crosses several Civitai endpoints in succession. Keep the same
+# conservative cadence as the daily-history collector so phase changes cannot create
+# a fresh burst of requests.
+MIN_PAUSE = 5.0
+MAX_PAUSE = 5.8
 MAX_ATTEMPTS = 5
+
+
+def _retry_wait(error: CivitaiHTTPError, attempt: int) -> float:
+    """Respect a 429 Retry-After value, with a conservative fallback if absent."""
+    if error.status == 429:
+        try:
+            requested = float(error.retry_after) if error.retry_after else 0.0
+        except (TypeError, ValueError):
+            requested = 0.0
+        return max(MIN_PAUSE, requested or min(300.0, 30.0 * (2 ** (attempt - 1))))
+    return min(60.0, 4.0 * (2 ** (attempt - 1)))
 
 # Rows derived from one Civitai account. Public archive-tag caches, mirrored Content
 # Controls, and local seen-card state deliberately live outside this list: they are either
@@ -326,7 +340,6 @@ class TasteStore:
 
     def _page(self, client: SocialClient, **kwargs) -> dict:
         """One page with 429-aware backoff. Never mutates anything on Civitai."""
-        delay = 4.0
         for attempt in range(1, MAX_ATTEMPTS + 1):
             if self.cancel.is_set():
                 raise SyncCancelled()
@@ -337,9 +350,9 @@ class TasteStore:
                 if not retryable or attempt == MAX_ATTEMPTS:
                     raise
                 self._progress(message="Civitai is rate limiting; waiting before retrying…")
+                delay = _retry_wait(error, attempt)
                 if self.cancel.wait(delay):
                     raise SyncCancelled() from error
-                delay = min(delay * 2, 60.0)
         raise RuntimeError("Civitai did not return a page")
 
     def _run_sync(self) -> None:
@@ -568,7 +581,6 @@ class TasteStore:
             chunk = missing[start:start + 100]
             if cancel.wait(random.uniform(MIN_PAUSE, MAX_PAUSE)):
                 break
-            delay = 4.0
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
                     profiles = client.batch_query_optional(
@@ -577,9 +589,9 @@ class TasteStore:
                 except CivitaiHTTPError as error:
                     if (error.status != 429 and error.status < 500) or attempt == MAX_ATTEMPTS:
                         raise
+                    delay = _retry_wait(error, attempt)
                     if cancel.wait(delay):
                         return done
-                    delay = min(delay * 2, 60.0)
                 except Exception:  # noqa: BLE001
                     raise
             else:
@@ -739,7 +751,6 @@ class TasteStore:
             incremental = self._state(db, "recent_work_complete", "0") == "1"
         cursor, added, reached_end, reached_known = None, 0, False, False
         while True:
-            delay = 4.0
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
                     page = client.creator_images_page(username, cursor=cursor, limit=200)
@@ -747,9 +758,9 @@ class TasteStore:
                 except CivitaiHTTPError as error:
                     if (error.status != 429 and error.status < 500) or attempt == MAX_ATTEMPTS:
                         raise
+                    delay = _retry_wait(error, attempt)
                     if self.cancel.wait(delay):
                         raise SyncCancelled()
-                    delay = min(delay * 2, 60.0)
             items = page["items"]
             page_ids = {item.get("id") for item in items if isinstance(item, dict)
                         and isinstance(item.get("id"), int)}
@@ -809,6 +820,7 @@ class TasteStore:
                 raise SyncCancelled()
             version_id = int(row["model_version_id"])
             try:
+                self._pause()
                 value = client.public_model_version(version_id)
             except Exception:  # Missing/deleted models must not fail the fingerprint sync.
                 continue
@@ -995,7 +1007,6 @@ class TasteStore:
             chunk = missing[start:start + 100]
             if cancel.wait(random.uniform(MIN_PAUSE, MAX_PAUSE)):
                 break
-            delay = 4.0
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
                     results = client.batch_query_optional(
@@ -1004,9 +1015,9 @@ class TasteStore:
                 except CivitaiHTTPError as error:
                     if (error.status != 429 and error.status < 500) or attempt == MAX_ATTEMPTS:
                         raise
+                    delay = _retry_wait(error, attempt)
                     if cancel.wait(delay):
                         return done
-                    delay = min(delay * 2, 60.0)
                 except Exception:  # noqa: BLE001
                     raise
             else:

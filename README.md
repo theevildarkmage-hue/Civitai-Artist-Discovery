@@ -14,7 +14,7 @@ sponsored by Civitai.
 
 ## Project status
 
-Version `0.3.2-beta.1` is the current public beta and remains under active development. Data formats, UI
+Version `0.3.3-beta.1` is the current public beta and remains under active development. Data formats, UI
 behavior, and Civitai integration details may still change. Windows is the primary and
 only routinely tested platform.
 
@@ -50,6 +50,9 @@ Windows-only.
   the tag-backed personalization is ready.
 - Shows creator avatars and follower counts and highlights emerging creators under 1,000
   followers.
+- Collects secondary display controls under **Gallery preferences**: viewed-card dimming,
+  an optional 50/100/200-image daily limit, and Balanced, Strict, or original ordering
+  for **Emerging first**. These preferences re-filter saved data without another download.
 - Supports Like, Heart, Laugh, and Cry reactions plus follow/unfollow when Civitai grants
   social-write access.
 - Imports Civitai Content Controls, including hidden creators, hidden images, hidden tags,
@@ -205,7 +208,7 @@ It can include:
 - `discovery/taste.sqlite3`: reaction-derived taste analysis, seen state, tags, and
   mirrored Content Controls;
 - `oauth_tokens.dpapi`: Windows-only DPAPI-encrypted OAuth credentials;
-- `oauth_client.json` and `settings.json`: local configuration;
+- `oauth_client.json` and `settings.json`: local configuration, including Gallery preferences;
 - creator/follow caches, the single-instance marker, and `error.log`.
 - `update/`: the cached daily release check and, only while an approved update is being
   prepared, its verified archive, staging folder, rollback copy, and result receipt.

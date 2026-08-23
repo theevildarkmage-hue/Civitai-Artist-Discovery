@@ -114,6 +114,8 @@ body>header h1{line-height:1.15}
 .segment-toolbar{position:sticky}
 .filter-button{border:1px solid var(--line);background:#22242a;color:var(--text);padding:7px 12px;border-radius:8px;cursor:pointer;font:inherit;font-size:13px}
 .filter-button:hover{border-color:#4a9f92}
+.preferences-button{min-width:38px;padding-inline:10px;font-size:18px;line-height:1}
+.preferences-button.has-active-preference{border-color:#4a9f92;color:#82e8d7;background:#173b35}
 .filter-menu{position:absolute;top:calc(100% + 6px);right:max(12px,3vw);z-index:26;width:min(320px,92vw);max-height:min(420px,60vh);overflow-y:auto;padding:10px;background:#17181b;border:1px solid var(--line);border-radius:11px;box-shadow:0 14px 40px #0009}
 .filter-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:2px 4px 8px;border-bottom:1px solid var(--line);margin-bottom:6px}
 .filter-head strong{font-size:13px;color:var(--text)}
@@ -133,6 +135,31 @@ body>header h1{line-height:1.15}
 .rating-pills button.fixed{cursor:default;opacity:1}
 .content-warning{margin-top:15px;color:var(--muted);font-size:13px}
 .content-menu>small{display:block;margin-top:9px;color:#777c88;line-height:1.4}
+.preferences-menu{position:fixed;top:12px;right:3vw;z-index:100;width:min(440px,94vw);max-height:calc(100vh - 24px);padding:14px}
+.preferences-menu .filter-head{margin-bottom:2px}
+.preferences-menu .filter-head strong{font-size:17px}
+.preferences-menu .quiet-button{border:0;background:transparent;color:var(--muted);font-size:22px;cursor:pointer;padding:1px 6px}
+.preference-row{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:13px 5px;border-bottom:1px solid #292b31;cursor:pointer}
+.preference-row>span{display:grid;gap:3px}
+.preference-row b,.preference-field>span{color:var(--text);font-size:14px}
+.preference-row small,.preferences-footnote{color:var(--muted);font-size:12px;line-height:1.4}
+.preference-row input{width:18px;height:18px;accent-color:#4a9f92;flex:0 0 auto}
+.preference-field{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:11px 5px}
+.preference-field select{min-width:190px;border:1px solid var(--line);border-radius:8px;background:#24262c;color:var(--text);padding:7px 9px;font:inherit;font-size:13px}
+.preference-field select:disabled{opacity:.45}
+.preference-choice-group{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;width:min(270px,100%)}
+.preference-choice-group button{border:1px solid var(--line);border-radius:8px;background:#24262c;color:var(--muted);padding:8px 7px;font:inherit;font-size:12px;cursor:pointer}
+.preference-choice-group button:hover{border-color:#4a9f92;color:var(--text)}
+.preference-choice-group button.selected{border-color:#62cdbb;background:#1d4841;color:#eafffb;box-shadow:inset 0 0 0 1px #62cdbb}
+.preference-choice-group button:disabled{opacity:.45;cursor:wait}
+.preference-help{margin:0 5px 4px;padding:0 0 10px;border-bottom:1px solid #292b31;color:var(--muted);font-size:12px;line-height:1.45}
+.preferences-footnote{display:block;margin:8px 5px 2px}
+@media(max-width:600px){
+  .preferences-menu{position:fixed;top:12px;right:3vw;max-height:calc(100vh - 24px)}
+  .preference-field{align-items:stretch;flex-direction:column;gap:6px}
+  .preference-field select{width:100%;min-width:0}
+  .preference-choice-group{width:100%}
+}
 
 /* Masthead on laptop-class widths. The full title wrapped to two lines and the tagline
    added a third, spending vertical space on a gallery that needs it for artwork. */
