@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
 
     archive._request = request
     cursor, pages, transferred = archive._seek_cursor(
-        value, target_end, threading.Event(), archive.content_rating, lambda *_: None)
+        value, target_end, threading.Event(), 3, lambda *_: None)
     selected = int(cursor.split("|", 1)[0])
 
     def oldest_at(offset):
@@ -42,4 +42,28 @@ with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
     assert transferred == pages * 100
     assert max(offsets) >= selected
 
-print({"linearPagesAvoided": selected // PAGE_SIZE, "seekRequests": pages, "boundaryPreserved": True})
+    # A probe beyond Civitai's cursor ceiling can return an empty page even though
+    # the target is reachable below it. The locator must narrow back toward the last
+    # valid page instead of abandoning the seek and restarting from the newest image.
+    offsets.clear()
+    crossing_page = 100
+    ceiling_page = 120
+
+    def ceiling_request(params, **_):
+        offset = int(params["cursor"].split("|", 1)[0]); offsets.append(offset)
+        page = offset // PAGE_SIZE
+        if page >= ceiling_page:
+            return {"items": []}, 50
+        oldest = target_end + timedelta(minutes=(crossing_page - page) * 10 - 1)
+        return {"items": [{"createdAt": oldest.isoformat()}]}, 50
+
+    archive._request = ceiling_request
+    ceiling_cursor, ceiling_pages, _ = archive._seek_cursor(
+        value, target_end, threading.Event(), 16, lambda *_: None)
+    ceiling_selected = int(ceiling_cursor.split("|", 1)[0]) // PAGE_SIZE
+    assert ceiling_selected == crossing_page, (ceiling_selected, offsets)
+    assert any(offset // PAGE_SIZE >= ceiling_page for offset in offsets)
+    assert ceiling_pages == len(offsets) < 20
+
+print({"linearPagesAvoided": selected // PAGE_SIZE, "seekRequests": pages,
+       "boundaryPreserved": True, "emptyCeilingRecovered": True})

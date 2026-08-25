@@ -7,7 +7,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from discovery.history import HistoryArchive
+from discovery.history import COLLECTION_VERSION, HistoryArchive
 
 
 DAY = "2026-07-31"
@@ -62,8 +62,11 @@ with tempfile.TemporaryDirectory(prefix="civitai-resumed-metrics-") as temporary
     with archive.connect() as db:
         db.execute("""INSERT INTO days(day,complete,scan_cursor,content_rating,elapsed_seconds,
                     collect_pages,pace_seconds,response_seconds,retry_seconds,retry_count,
-                    rate_limit_count,wire_bytes,decoded_bytes,updated_at)
-                    VALUES(?,0,?,'Soft',100,3,10,20,30,2,2,1000,2000,?)""",
+                    rate_limit_count,wire_bytes,decoded_bytes,collection_version,updated_at)
+                    VALUES(?,0,NULL,'Soft',100,3,10,20,30,2,2,1000,2000,?,?)""",
+                   (key, COLLECTION_VERSION, "2026-07-31T00:00:00Z"))
+        db.execute("""INSERT INTO block_feeds(block_key,browsing_mask,complete,scan_cursor,
+                    pages,updated_at) VALUES(?,3,0,?,3,?)""",
                    (key, "saved-cursor", "2026-07-31T00:00:00Z"))
 
     def resumed_request(_params, minimum_interval=None, on_delay=None, cancel_event=None,

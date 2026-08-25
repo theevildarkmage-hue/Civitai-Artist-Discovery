@@ -14,7 +14,7 @@ sponsored by Civitai.
 
 ## Project status
 
-Version `0.3.3-beta.1` is the current public beta and remains under active development. Data formats, UI
+Version `0.3.3-beta.2` is the current public beta and remains under active development. Data formats, UI
 behavior, and Civitai integration details may still change. Windows is the primary and
 only routinely tested platform.
 
@@ -161,7 +161,11 @@ Python process.
 Public image collection uses `https://civitai.red/api/v1/images`. The endpoint returns at
 most 200 listings per request, so a full all-ratings day can require hundreds of
 serialized requests. Collection is deliberately sequential, adaptively paced, retried
-with backoff, and checkpointed after every page.
+with backoff, and checkpointed after every page. The app collects each required Civitai
+browsing-level feed separately, combines duplicate image IDs locally, and marks a block
+ready only after every feed has crossed the requested time boundary. If Civitai stops a
+feed early, the block remains unfinished with saved progress instead of publishing a
+truncated gallery.
 
 Bulk collection always requests lightweight listings with `withMeta=false`. Full prompts
 and generation resources are fetched lazily for the image whose detail dialog is opened.
@@ -232,15 +236,18 @@ read the connected account, and perform user-requested Civitai actions.
 
 PG and PG-13 are enabled by default. R, X, and XXX require explicit opt-in. Each image's
 individual browsing level is stored with its lightweight listing, so any non-empty
-combination can be displayed locally—for example, only PG-13 or only R. Civitai's API
-still collects through grouped ceilings: selecting R requires the through-R feed, while
-selecting X or XXX requires the explicit feed. Every completed block records that
-coverage; selecting a level above it requests an upgrade scan, while changing the visible
-levels within existing coverage filters the local database immediately.
+combination can be displayed locally—for example, only PG-13 or only R. Collection uses
+non-overlapping browsing-level feeds: safe coverage uses PG/PG-13; through-R coverage
+adds R; and all-ratings coverage also collects X and XXX independently. Results are
+deduplicated by image ID. Every completed block records that coverage; selecting a level
+above it requests an upgrade scan, while changing the visible levels within existing
+coverage filters the local database immediately.
 
 Collection time depends heavily on rating level, posting volume, latency, and rate
-limiting. One measured all-ratings day contained 82,050 retained images and required 458
-collection pages plus 34 boundary-seeking pages, completing in about 67 minutes. Preserved
+limiting. The fixed all-ratings benchmark contains 82,050 retained images and 458
+collection pages. The boundary-verified collector budgets up to 136 date-seeking requests
+across four feeds and two halves, producing an estimated range of roughly 50 to 72 minutes.
+Preserved
 PG/PG-13 measurements required 69–84 collection pages for a half day and 140–147 for a
 full day, so even a clean safe half is a multi-minute operation.
 

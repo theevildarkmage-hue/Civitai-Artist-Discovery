@@ -1,8 +1,24 @@
 # Beta releases
 
-Version **0.3.3-beta.1** is the current public beta of Civitai Artist Discovery. It keeps
+Version **0.3.3-beta.2** is the current public beta of Civitai Artist Discovery. It keeps
 the existing local Python/SQLite architecture while incorporating the fixes and features
 validated during alpha testing.
+
+The 0.3.3 Beta 2 collector no longer trusts an early end-of-feed response as proof that a
+large gallery is complete. Each half-day now records independent PG/PG-13, R, X, and XXX
+checkpoints and becomes ready only after every required feed crosses the requested time
+boundary. X and XXX are traversed separately so an all-ratings day does not exhaust
+Civitai's deep-history result window before reaching the day. Existing pages remain
+checkpointed through overloads, restarts, and retries, while legacy galleries whose saved
+timestamps reveal incomplete coverage are reopened for a resumable repair instead of
+continuing to present a truncated artist count.
+
+This migration was validated end to end against August 23, 2026. Both half-days crossed
+all four required boundaries, SQLite passed its integrity check, and the merged gallery
+contained 84,020 distinct day memberships. The run also recovered from temporary Civitai
+service-overload responses without losing completed pages. Because part of the migration
+reused earlier checkpoints, those measurements validate completeness and recovery rather
+than replace the fixed cold-build timing benchmark.
 
 The 0.3.3 beta introduces a touch-friendly **Gallery preferences** panel. Viewed-card
 dimming now lives beside optional high-volume artist filtering and explicit Balanced,

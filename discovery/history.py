@@ -27,6 +27,18 @@ from .site import (DEFAULT_CONTENT_RATING, RATING_RANK,
 PAGE_SIZE = 200
 RATE_LIMIT_RETRIES = 8
 
+# Civitai's browsing-level parameter is a bitmask.  Collect the cumulative build
+# choices as non-overlapping feeds so a busy all-ratings day cannot exhaust the
+# service's roughly 50,000-result traversal window before reaching the requested
+# time boundary.  The saved image rows still retain their individual level and are
+# filtered precisely when displayed.
+COLLECTION_FEEDS = {
+    "Soft": (3,),       # PG | PG-13
+    "Mature": (3, 4),  # safe feed + R
+    "X": (3, 4, 8, 16),  # safe feed + R + separate X and XXX feeds
+}
+COLLECTION_VERSION = 3
+
 # Fixed planning benchmarks from the preserved completed runs. These are intentionally
 # not updated from runtime rows: later rows can represent partial/resumed work and caused
 # implausibly low estimates. The safe benchmark is the corrected 2026-07-24 run; the
@@ -260,6 +272,12 @@ class HistoryArchive:
                     PRIMARY KEY(block_key,image_id), FOREIGN KEY(image_id) REFERENCES images(id)
                 );
                 CREATE INDEX IF NOT EXISTS block_images_image ON block_images(image_id);
+                CREATE TABLE IF NOT EXISTS block_feeds (
+                    block_key TEXT NOT NULL, browsing_mask INTEGER NOT NULL,
+                    complete INTEGER NOT NULL DEFAULT 0, scan_cursor TEXT,
+                    older_cursor TEXT, top_cursor TEXT, pages INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT, PRIMARY KEY(block_key,browsing_mask)
+                );
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(days)")}
             for name in ("timezone", "start_utc", "end_utc", "top_cursor", "content_rating",
@@ -282,6 +300,9 @@ class HistoryArchive:
             columns = {row[1] for row in db.execute("PRAGMA table_info(days)")}
             for name, declaration in numeric_metrics.items():
                 if name not in columns: db.execute(f"ALTER TABLE days ADD COLUMN {name} {declaration}")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(days)")}
+            if "collection_version" not in columns:
+                db.execute("ALTER TABLE days ADD COLUMN collection_version INTEGER NOT NULL DEFAULT 0")
             db.execute("INSERT OR IGNORE INTO block_images(block_key,image_id) SELECT local_date,id FROM images")
             # Popular v2 ranks by total daily reactions and uses the most-reacted image.
             # Cached indexes are derived data, so invalidate the old hash-ranked version
@@ -293,6 +314,37 @@ class HistoryArchive:
                 db.execute("DELETE FROM day_artist_cache_state")
                 db.execute("UPDATE days SET artist_levels=NULL")
                 db.execute(f"PRAGMA user_version={POPULAR_INDEX_VERSION}")
+        self._audit_legacy_block_coverage()
+
+    def _audit_legacy_block_coverage(self) -> None:
+        """Reopen legacy half-days whose saved timestamps do not cover the block.
+
+        Older collectors considered a missing ``nextCursor`` successful even when
+        Civitai stopped at its deep-traversal ceiling.  Those rows have no per-feed
+        checkpoints, so timestamp coverage is the only durable evidence available.
+        A valid crossing page leaves saved images close to both boundaries; a generous
+        thirty-minute tolerance avoids invalidating normal sparse edges.
+        """
+        tolerance = timedelta(minutes=30)
+        invalid_days: set[str] = set()
+        with self.connect() as db:
+            rows = list(db.execute("""SELECT day,start_utc,end_utc FROM days
+                WHERE complete=1 AND collection_version=0
+                  AND (day LIKE '%#morning' OR day LIKE '%#evening')
+                  AND start_utc IS NOT NULL AND end_utc IS NOT NULL"""))
+            for row in rows:
+                limits = db.execute("""SELECT MIN(i.created_at),MAX(i.created_at),COUNT(*)
+                    FROM block_images b JOIN images i ON i.id=b.image_id
+                    WHERE b.block_key=?""", (row["day"],)).fetchone()
+                start, end = parse_timestamp(row["start_utc"]), parse_timestamp(row["end_utc"])
+                earliest = parse_timestamp(limits[0]) if limits[0] else None
+                latest = parse_timestamp(limits[1]) if limits[1] else None
+                if not earliest or not latest or earliest > start + tolerance or latest < end - tolerance:
+                    db.execute("UPDATE days SET complete=0,scan_cursor=NULL,updated_at=? WHERE day=?",
+                               (utcnow(), row["day"]))
+                    invalid_days.add(row["day"].split("#", 1)[0])
+            for day in invalid_days:
+                db.execute("UPDATE days SET complete=0,updated_at=? WHERE day=?", (utcnow(), day))
 
     def _migrate_json_once(self) -> None:
         marker = self.root / ".json_migrated"
@@ -367,12 +419,20 @@ class HistoryArchive:
                 f"WHERE b.block_key=?{rating_clause}", (value, *rating_params)).fetchone()[0]
             creators = db.execute("SELECT COUNT(DISTINCT i.username_key) FROM block_images b JOIN images i ON i.id=b.image_id "
                 f"WHERE b.block_key=?{rating_clause}", (value, *rating_params)).fetchone()[0]
+            feed_complete = True
+            if day and "#" in value and int(day["collection_version"] or 0) >= COLLECTION_VERSION:
+                expected = COLLECTION_FEEDS[content_rating(day["content_rating"])]
+                states = {int(row["browsing_mask"]): bool(row["complete"])
+                          for row in db.execute("SELECT browsing_mask,complete FROM block_feeds WHERE block_key=?",
+                                                (value,))}
+                feed_complete = all(states.get(mask, False) for mask in expected)
         with self.lock:
             job = dict(self.jobs.get(value, {}))
         coverage = (day["content_rating"] if day and day["content_rating"] else DEFAULT_CONTENT_RATING)
-        required = content_rating(required_content_rating or job.get("contentRating") or self.content_rating)
+        active_job_rating = job.get("contentRating") if job.get("state") == "loading" else None
+        required = content_rating(required_content_rating or active_job_rating or self.content_rating)
         needs_upgrade = bool(day and day["complete"] and RATING_RANK[coverage] < RATING_RANK[required])
-        archive_complete = bool(day and day["complete"])
+        archive_complete = bool(day and day["complete"] and feed_complete)
         complete = archive_complete and not needs_upgrade and job.get("state") not in {"loading", "error"}
         started = job.get("startedMonotonic")
         # Freeze completed durations at the persisted database value. Keeping the live
@@ -486,8 +546,11 @@ class HistoryArchive:
             return current
         with self.connect() as db:
             existing = db.execute(
-                "SELECT scan_cursor,elapsed_seconds FROM days WHERE day=?", (key,)).fetchone()
-        resuming = bool(existing and existing["scan_cursor"])
+                "SELECT elapsed_seconds,collection_version FROM days WHERE day=?", (key,)).fetchone()
+            has_feed_rows = bool(db.execute("SELECT 1 FROM block_feeds WHERE block_key=? LIMIT 1",
+                                            (key,)).fetchone())
+        resuming = bool(existing and int(existing["collection_version"] or 0) >= COLLECTION_VERSION
+                        and has_feed_rows)
         prior_elapsed = float(existing["elapsed_seconds"] or 0) if resuming else 0.0
         with self.lock:
             self.jobs[key] = {"state": "loading", "phase": "locating", "progress": 0, "pages": 0,
@@ -496,11 +559,16 @@ class HistoryArchive:
                 "priorElapsedSeconds": prior_elapsed}
             self.cancel_events[key] = threading.Event()
         with self.connect() as db:
-            db.execute("""INSERT INTO days(day,complete,timezone,start_utc,end_utc,content_rating,updated_at) VALUES(?,0,?,?,?,?,?)
+            db.execute("""INSERT INTO days(day,complete,timezone,start_utc,end_utc,content_rating,
+                        collection_version,updated_at) VALUES(?,0,?,?,?,?,?,?)
                 ON CONFLICT(day) DO UPDATE SET complete=0,timezone=excluded.timezone,start_utc=excluded.start_utc,
-                end_utc=excluded.end_utc,content_rating=CASE WHEN days.scan_cursor IS NOT NULL
-                    THEN days.content_rating ELSE excluded.content_rating END,updated_at=excluded.updated_at""",
-                (key, timezone_name[:100], start.isoformat(), end.isoformat(), requested_rating, utcnow()))
+                end_utc=excluded.end_utc,content_rating=excluded.content_rating,
+                collection_version=excluded.collection_version,updated_at=excluded.updated_at""",
+                (key, timezone_name[:100], start.isoformat(), end.isoformat(), requested_rating,
+                 COLLECTION_VERSION, utcnow()))
+            db.executemany("""INSERT OR IGNORE INTO block_feeds(
+                    block_key,browsing_mask,complete,updated_at) VALUES(?,?,0,?)""",
+                [(key, mask, utcnow()) for mask in COLLECTION_FEEDS[requested_rating]])
             if not resuming:
                 db.execute("""UPDATE days SET seek_pages=0,seek_bytes=0,collect_pages=0,collect_bytes=0,
                     api_seconds=0,retry_seconds=0,retry_count=0,pace_seconds=0,response_seconds=0,
@@ -539,7 +607,7 @@ class HistoryArchive:
             listing_requests = math.ceil(benchmark["listing_requests"] / 2)
         else:
             images = listing_requests = 0
-        seek_requests = BENCHMARK_SEEK_REQUESTS_PER_HALF * half_count
+        seek_requests = BENCHMARK_SEEK_REQUESTS_PER_HALF * half_count * len(COLLECTION_FEEDS[rating])
         requests = listing_requests + seek_requests
         low = requests * BENCHMARK_CLEAN_REQUEST_SECONDS
         high = requests * BENCHMARK_DELAYED_REQUEST_SECONDS
@@ -560,6 +628,23 @@ class HistoryArchive:
             raise ValueError("Build this day before rebuilding it")
         if current["state"] == "loading":
             return current
+        with self.connect() as db:
+            day_row = db.execute(
+                "SELECT content_rating,collection_version,top_cursor FROM days WHERE day=?",
+                (key,)).fetchone()
+            rating = content_rating(day_row["content_rating"] or self.content_rating)
+            saved_feed_cursors = {
+                int(row["browsing_mask"]): row["top_cursor"]
+                for row in db.execute(
+                    "SELECT browsing_mask,top_cursor FROM block_feeds WHERE block_key=?",
+                    (key,))
+            }
+            # Soft legacy archives used the same PG/PG-13 feed represented by mask 3.
+            # Reusing that known day-start cursor avoids an unnecessary history seek
+            # when the archive is upgraded to boundary-verified collection.
+            if (int(day_row["collection_version"] or 0) < COLLECTION_VERSION
+                    and rating == "Soft" and day_row["top_cursor"]):
+                saved_feed_cursors.setdefault(3, day_row["top_cursor"])
         with self.lock:
             self.jobs[key] = {"state": "loading", "phase": "locating", "progress": 0, "pages": 0,
                 "startedMonotonic": time.monotonic(), "etaLowSeconds": None, "etaHighSeconds": None,
@@ -570,8 +655,13 @@ class HistoryArchive:
                 "collect_pages=0,collect_bytes=0,api_seconds=0,retry_seconds=0,retry_count=0,elapsed_seconds=0,"
                 "seek_seconds=0,organize_seconds=0,pace_seconds=0,response_seconds=0,rate_limit_count=0,"
                 "service_retry_count=0,network_retry_count=0,final_pacer_interval=0,wire_bytes=0,"
-                "decoded_bytes=0,updated_at=? WHERE day=?",
-                (timezone_name[:100], start.isoformat(), end.isoformat(), utcnow(), key))
+                "decoded_bytes=0,collection_version=?,updated_at=? WHERE day=?",
+                (timezone_name[:100], start.isoformat(), end.isoformat(), COLLECTION_VERSION, utcnow(), key))
+            db.execute("DELETE FROM block_feeds WHERE block_key=?", (key,))
+            db.executemany("""INSERT INTO block_feeds(
+                    block_key,browsing_mask,complete,top_cursor,updated_at) VALUES(?,?,0,?,?)""",
+                [(key, mask, saved_feed_cursors.get(mask), utcnow())
+                 for mask in COLLECTION_FEEDS[rating]])
         self._invalidate_artist_cache(key)
         threading.Thread(target=self._collect, args=(key, value, start, end, True), daemon=True, name=f"rebuild-{key}").start()
         return self.status(key)
@@ -697,7 +787,7 @@ class HistoryArchive:
                     time.sleep(delay)
 
     def _seek_cursor(self, value: str, end: datetime, cancel_event: threading.Event,
-                     request_rating: str,
+                     browsing_mask: int,
                      report_delay: Callable[[str, float, int, int], None]) -> tuple[str | None, int, int]:
         """Jump close to a day boundary using Civitai's offset cursor.
 
@@ -715,7 +805,7 @@ class HistoryArchive:
             if cancel_event.is_set():
                 return None, None
             params = {"limit": PAGE_SIZE, "sort": "Newest", "period": "AllTime",
-                "nsfw": request_rating, "withMeta": "false",
+                "browsingLevel": browsing_mask, "withMeta": "false",
                 "cursor": f"{offset}|{timestamp_ms}"}
             timing = {"pace": 0.0, "response": 0.0, "wire": 0, "decoded": 0}
             def record_timing(kind: str, seconds: float) -> None:
@@ -729,11 +819,11 @@ class HistoryArchive:
             request_seconds = time.monotonic() - request_started
             pages += 1; transferred += size
             with self.connect() as db:
-                db.execute("""UPDATE days SET seek_pages=?,seek_bytes=?,api_seconds=api_seconds+?,
+                db.execute("""UPDATE days SET seek_pages=seek_pages+1,seek_bytes=seek_bytes+?,api_seconds=api_seconds+?,
                            pace_seconds=pace_seconds+?,response_seconds=response_seconds+?,
                            wire_bytes=wire_bytes+?,decoded_bytes=decoded_bytes+?,
                            final_pacer_interval=? WHERE day=?""",
-                    (pages, transferred, request_seconds, timing["pace"], timing["response"],
+                    (size, request_seconds, timing["pace"], timing["response"],
                      timing["wire"], timing["decoded"], self.api_pacer.interval, value))
             timestamps = [parse_timestamp(row["createdAt"]) for row in payload.get("items", []) if row.get("createdAt")]
             oldest = min(timestamps) if timestamps else None
@@ -752,42 +842,37 @@ class HistoryArchive:
             if oldest is None or oldest < end:
                 break
             lower, upper = upper, upper * 2
-        if cancel_event.is_set() or oldest is None:
+        if cancel_event.is_set():
             return None, pages, transferred
         while upper - lower > PAGE_SIZE and not cancel_event.is_set():
             span_pages = (upper - lower) // PAGE_SIZE
             middle = lower + max(1, span_pages // 2) * PAGE_SIZE
             oldest, _ = probe(middle)
-            if oldest is None:
-                break
-            if oldest < end:
+            # Civitai returns an empty page once a cursor probe passes its deep
+            # traversal ceiling. Treat that as an upper bound and binary-search
+            # back toward the last valid page. Returning None here used to restart
+            # sequential collection from the newest image, wasting hundreds of
+            # requests and producing a wildly incorrect ETA.
+            if oldest is None or oldest < end:
                 upper = middle
             else:
                 lower = middle
         return f"{upper}|{timestamp_ms}", pages, transferred
 
-    def _collect(self, key: str, value: str, start: datetime, end: datetime, rebuilding: bool = False) -> None:
-        target = parse_day(value); cursor = self._rebuild_cursor_for_key(key) if rebuilding else self._cursor_for_key(key)
+    def _collect(self, key: str, value: str, start: datetime, end: datetime,
+                 rebuilding: bool = False) -> None:
+        """Collect every non-overlapping browsing-level feed before publishing a block."""
         with self.connect() as db:
-            stored = db.execute("SELECT content_rating,elapsed_seconds FROM days WHERE day=?", (key,)).fetchone()
+            stored = db.execute("SELECT content_rating,elapsed_seconds FROM days WHERE day=?",
+                                (key,)).fetchone()
+        request_rating = content_rating(stored["content_rating"] if stored else self.content_rating)
         prior_elapsed = float(stored["elapsed_seconds"] or 0) if stored else 0.0
-        # A cursor belongs to the listing feed that produced it. A user may lower the
-        # visible level while a block is partial; continue that original feed and filter
-        # its saved rows locally rather than applying its cursor to a different feed.
-        request_rating = self.content_rating if rebuilding else content_rating(
-            stored[0] if stored and stored[0] else self.content_rating)
-        top_cursor = cursor
+        masks = COLLECTION_FEEDS[request_rating]
         cancel_event = self.cancel_events[key]
-        pages = transferred = 0
         scan_started = time.monotonic()
-        newest_seen = None
-        reached_target_day = False
-        eta_samples: list[float] = []
-        displayed_eta: tuple[int, int] | None = None
-        last_eta_update = 0.0
+        total_pages = 0
+
         def report_delay(reason: str, wait: float, attempt: int, attempts: int) -> None:
-            # Record when the wait ends so the status can count down live, and how
-            # many attempts have failed in a row so the UI can stay calm at first.
             with self.lock:
                 self.jobs[key].update({"delayReason": reason, "retryInSeconds": round(wait),
                     "retryUntilMonotonic": time.monotonic() + wait,
@@ -799,114 +884,178 @@ class HistoryArchive:
                            network_retry_count=network_retry_count+? WHERE day=?""",
                     (wait, int(reason == "rate_limited"), int(reason == "service_retry"),
                      int(reason == "network_retry"), key))
+
         try:
-            if cursor is None:
-                seek_started = time.monotonic()
-                cursor, seek_pages, seek_bytes = self._seek_cursor(
-                    key, end, cancel_event, request_rating, report_delay)
+            for feed_index, mask in enumerate(masks):
                 with self.connect() as db:
-                    db.execute("UPDATE days SET seek_seconds=seek_seconds+? WHERE day=?", (time.monotonic() - seek_started, key))
-                pages += seek_pages; transferred += seek_bytes
+                    feed = db.execute("SELECT * FROM block_feeds WHERE block_key=? AND browsing_mask=?",
+                                      (key, mask)).fetchone()
+                if feed and feed["complete"]:
+                    continue
+                cursor = feed["top_cursor"] if rebuilding and feed else feed["scan_cursor"] if feed else None
                 top_cursor = cursor
-                if cancel_event.is_set():
-                    return
-            while True:
-                if cancel_event.is_set():
-                    return
-                params = {"limit": PAGE_SIZE, "sort": "Newest", "period": "AllTime", "nsfw": request_rating, "withMeta": "false"}
-                if cursor: params["cursor"] = cursor
-                timing = {"pace": 0.0, "response": 0.0, "wire": 0, "decoded": 0}
-                def record_timing(kind: str, seconds: float) -> None:
-                    timing[kind] += seconds
-                def record_transfer(wire: int, decoded: int) -> None:
-                    timing["wire"] += wire; timing["decoded"] += decoded
-                request_started = time.monotonic()
-                payload, size = self._request(params, on_delay=report_delay,
-                                              cancel_event=cancel_event, on_timing=record_timing,
-                                              on_transfer=record_transfer)
-                request_seconds = time.monotonic() - request_started
-                if cancel_event.is_set():
-                    return
-                rows = payload.get("items", []); next_cursor = (payload.get("metadata") or {}).get("nextCursor")
-                normalized = [normalize(row) for row in rows if row.get("type") == "image" and row.get("url") and row.get("createdAt")
-                    and start <= parse_timestamp(row["createdAt"]) < end]
-                image_ids = self._upsert_normalized(normalized, forced_date=value)
-                with self.connect() as db:
-                    db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)", [(key, image_id) for image_id in image_ids])
-                pages += 1; transferred += size
-                with self.connect() as db:
-                    db.execute("""INSERT INTO days(day,complete,scan_cursor,pages,metadata_bytes,collect_pages,collect_bytes,api_seconds,pace_seconds,response_seconds,wire_bytes,decoded_bytes,final_pacer_interval,elapsed_seconds,updated_at) VALUES(?,0,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(day) DO UPDATE SET scan_cursor=excluded.scan_cursor,pages=days.pages+1,
-                        metadata_bytes=days.metadata_bytes+excluded.metadata_bytes,collect_pages=days.collect_pages+1,
-                        collect_bytes=days.collect_bytes+excluded.collect_bytes,api_seconds=days.api_seconds+excluded.api_seconds,
-                        pace_seconds=days.pace_seconds+excluded.pace_seconds,
-                        response_seconds=days.response_seconds+excluded.response_seconds,
-                        wire_bytes=days.wire_bytes+excluded.wire_bytes,
-                        decoded_bytes=days.decoded_bytes+excluded.decoded_bytes,
-                        final_pacer_interval=excluded.final_pacer_interval,
-                        elapsed_seconds=excluded.elapsed_seconds,updated_at=excluded.updated_at""",
-                        (key, next_cursor, 1, size, 1, size, request_seconds, timing["pace"],
-                         timing["response"], timing["wire"], timing["decoded"], self.api_pacer.interval,
-                         prior_elapsed + time.monotonic() - scan_started, utcnow()))
-                timestamps = [parse_timestamp(row["createdAt"]) for row in rows if row.get("createdAt")]
-                oldest = min(timestamps) if timestamps else start
-                newest = max(timestamps) if timestamps else oldest
-                newest_seen = max(newest_seen, newest) if newest_seen else newest
-                covered = max(0.0, min(1.0, (end - oldest).total_seconds() / (end - start).total_seconds()))
-                if not reached_target_day and oldest < end:
+                newest_seen = None
+                reached_target_day = False
+                eta_samples: list[float] = []
+                displayed_eta: tuple[int, int] | None = None
+                last_eta_update = 0.0
+
+                if cursor is None:
+                    seek_started = time.monotonic()
+                    cursor, seek_pages, _ = self._seek_cursor(
+                        key, end, cancel_event, mask, report_delay)
+                    with self.connect() as db:
+                        db.execute("UPDATE days SET seek_seconds=seek_seconds+? WHERE day=?",
+                                   (time.monotonic() - seek_started, key))
+                    total_pages += seek_pages
                     top_cursor = cursor
-                reached_target_day = reached_target_day or oldest < end
-                phase = "collecting" if reached_target_day else "locating"
-                scanned_seconds = max(0.0, (newest_seen - oldest).total_seconds())
-                remaining_seconds = max(0.0, ((oldest - end) if phase == "locating" else (oldest - start)).total_seconds())
-                elapsed = max(0.001, time.monotonic() - scan_started)
-                eta = round(elapsed * remaining_seconds / scanned_seconds) if pages >= 2 and scanned_seconds > 0 else None
-                if eta is not None:
-                    eta_samples.append(float(eta))
-                    eta_samples = eta_samples[-5:]
-                now = time.monotonic()
-                if elapsed >= 10 and pages >= 5 and eta_samples and (displayed_eta is None or now - last_eta_update >= 10):
-                    displayed_eta = conservative_eta_range(sorted(eta_samples)[len(eta_samples) // 2])
-                    last_eta_update = now
-                with self.lock: self.jobs[key].update({"pages": pages, "phase": phase,
-                    "progress": round(covered * 100, 1), "etaSeconds": eta,
-                    "searchReachedAt": oldest.isoformat(),
-                    "etaLowSeconds": displayed_eta[0] if displayed_eta else None,
-                    "etaHighSeconds": displayed_eta[1] if displayed_eta else None,
-                    "delayReason": None, "retryInSeconds": None,
-                        "retryUntilMonotonic": None, "retryAttempt": 0})
-                if oldest < start or not next_cursor:
+                    if cancel_event.is_set():
+                        return
+
+                while True:
+                    if cancel_event.is_set():
+                        return
+                    params = {"limit": PAGE_SIZE, "sort": "Newest", "period": "AllTime",
+                              "browsingLevel": mask, "withMeta": "false"}
+                    if cursor:
+                        params["cursor"] = cursor
+                    timing = {"pace": 0.0, "response": 0.0, "wire": 0, "decoded": 0}
+
+                    def record_timing(kind: str, seconds: float) -> None:
+                        timing[kind] += seconds
+
+                    def record_transfer(wire: int, decoded: int) -> None:
+                        timing["wire"] += wire
+                        timing["decoded"] += decoded
+
+                    request_started = time.monotonic()
+                    payload, size = self._request(params, on_delay=report_delay,
+                        cancel_event=cancel_event, on_timing=record_timing,
+                        on_transfer=record_transfer)
+                    # A request may finish just after Stop loading was pressed. Do not
+                    # save that response into the previously published gallery.
+                    if cancel_event.is_set():
+                        return
+                    request_seconds = time.monotonic() - request_started
+                    rows = payload.get("items", [])
+                    next_cursor = (payload.get("metadata") or {}).get("nextCursor")
+                    timestamps = [parse_timestamp(row["createdAt"]) for row in rows
+                                  if row.get("createdAt")]
+                    oldest = min(timestamps) if timestamps else None
+                    newest = max(timestamps) if timestamps else None
+                    normalized = [normalize(row) for row in rows
+                        if row.get("type") == "image" and row.get("url") and row.get("createdAt")
+                        and start <= parse_timestamp(row["createdAt"]) < end]
+                    image_ids = self._upsert_normalized(normalized, forced_date=value)
                     with self.connect() as db:
-                        # Re-fetch the crossing page for the next older day so
-                        # records on both sides of a timezone boundary are kept.
-                        db.execute("UPDATE days SET complete=1,scan_cursor=NULL,older_cursor=?,top_cursor=?,content_rating=?,elapsed_seconds=?,updated_at=? WHERE day=?", (cursor, top_cursor, request_rating, prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
-                    with self.lock: self.jobs[key].update({"phase": "organizing", "progress": 100,
-                        "etaSeconds": None, "etaLowSeconds": None, "etaHighSeconds": None})
-                    organize_started = time.monotonic()
-                    self.build_artist_index(key)
-                    merged = self.merge_completed_halves(key)
-                    if self.on_block_complete:
-                        try: self.on_block_complete(key, merged)
-                        except Exception: pass  # Preparation is optional; the day is built.
-                    with self.connect() as db:
-                        db.execute("UPDATE days SET organize_seconds=organize_seconds+?,elapsed_seconds=? WHERE day=?",
-                            (time.monotonic() - organize_started,
-                             prior_elapsed + time.monotonic() - scan_started, key))
-                    with self.lock: self.jobs[key].update({"state": "complete", "phase": "complete", "progress": 100, "etaSeconds": 0})
-                    return
-                cursor = next_cursor
+                        db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)",
+                                       [(key, image_id) for image_id in image_ids])
+                        db.execute("""UPDATE block_feeds SET scan_cursor=?,pages=pages+1,
+                                   updated_at=? WHERE block_key=? AND browsing_mask=?""",
+                                   (next_cursor, utcnow(), key, mask))
+                        db.execute("""UPDATE days SET scan_cursor=?,pages=pages+1,
+                                   metadata_bytes=metadata_bytes+?,collect_pages=collect_pages+1,
+                                   collect_bytes=collect_bytes+?,api_seconds=api_seconds+?,
+                                   pace_seconds=pace_seconds+?,response_seconds=response_seconds+?,
+                                   wire_bytes=wire_bytes+?,decoded_bytes=decoded_bytes+?,
+                                   final_pacer_interval=?,elapsed_seconds=?,updated_at=? WHERE day=?""",
+                            (next_cursor, size, size, request_seconds, timing["pace"], timing["response"],
+                             timing["wire"], timing["decoded"], self.api_pacer.interval,
+                             prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
+                    total_pages += 1
+
+                    if oldest is not None:
+                        newest_seen = max(newest_seen, newest) if newest_seen and newest else newest
+                        covered = max(0.0, min(1.0,
+                            (end - oldest).total_seconds() / (end - start).total_seconds()))
+                        if not reached_target_day and oldest < end:
+                            top_cursor = cursor
+                        reached_target_day = reached_target_day or oldest < end
+                    else:
+                        covered = 0.0
+                    phase = "collecting" if reached_target_day else "locating"
+                    if oldest is not None and newest_seen is not None:
+                        scanned_seconds = max(0.0, (newest_seen - oldest).total_seconds())
+                        remaining_seconds = max(0.0,
+                            ((oldest - end) if phase == "locating" else (oldest - start)).total_seconds())
+                    else:
+                        scanned_seconds = remaining_seconds = 0.0
+                    elapsed = max(0.001, time.monotonic() - scan_started)
+                    eta = round(elapsed * remaining_seconds / scanned_seconds) \
+                        if total_pages >= 2 and scanned_seconds > 0 else None
+                    if eta is not None:
+                        eta_samples = (eta_samples + [float(eta)])[-5:]
+                    now = time.monotonic()
+                    if elapsed >= 10 and total_pages >= 5 and eta_samples and \
+                            (displayed_eta is None or now - last_eta_update >= 10):
+                        displayed_eta = conservative_eta_range(
+                            sorted(eta_samples)[len(eta_samples) // 2])
+                        last_eta_update = now
+                    overall = (feed_index + covered) / len(masks) * 100
+                    with self.lock:
+                        self.jobs[key].update({"pages": total_pages, "phase": phase,
+                            "progress": round(overall, 1), "etaSeconds": eta,
+                            "searchReachedAt": oldest.isoformat() if oldest else None,
+                            "feedIndex": feed_index + 1, "feedCount": len(masks),
+                            "browsingMask": mask,
+                            "etaLowSeconds": displayed_eta[0] if displayed_eta else None,
+                            "etaHighSeconds": displayed_eta[1] if displayed_eta else None,
+                            "delayReason": None, "retryInSeconds": None,
+                            "retryUntilMonotonic": None, "retryAttempt": 0})
+
+                    if oldest is not None and oldest < start:
+                        with self.connect() as db:
+                            db.execute("""UPDATE block_feeds SET complete=1,scan_cursor=NULL,
+                                       older_cursor=?,top_cursor=?,updated_at=?
+                                       WHERE block_key=? AND browsing_mask=?""",
+                                       (cursor, top_cursor, utcnow(), key, mask))
+                        break
+                    if not next_cursor:
+                        raise RuntimeError(
+                            f"Civitai ended browsing-level feed {mask} before the requested "
+                            "time boundary was reached")
+                    cursor = next_cursor
+
+            with self.connect() as db:
+                db.execute("""UPDATE days SET complete=1,scan_cursor=NULL,content_rating=?,
+                           collection_version=?,elapsed_seconds=?,updated_at=? WHERE day=?""",
+                    (request_rating, COLLECTION_VERSION,
+                     prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
+            with self.lock:
+                self.jobs[key].update({"phase": "organizing", "progress": 100,
+                    "etaSeconds": None, "etaLowSeconds": None, "etaHighSeconds": None})
+            organize_started = time.monotonic()
+            self._invalidate_artist_cache(key)
+            self.build_artist_index(key)
+            merged = self.merge_completed_halves(key)
+            if self.on_block_complete:
+                try:
+                    self.on_block_complete(key, merged)
+                except Exception:
+                    pass
+            with self.connect() as db:
+                db.execute("UPDATE days SET organize_seconds=organize_seconds+?,elapsed_seconds=? WHERE day=?",
+                    (time.monotonic() - organize_started,
+                     prior_elapsed + time.monotonic() - scan_started, key))
+            with self.lock:
+                self.jobs[key].update({"state": "complete", "phase": "complete",
+                    "progress": 100, "etaSeconds": 0})
         except CollectionCancelled:
             return
         except Exception as error:
             with self.connect() as db:
-                db.execute("UPDATE days SET elapsed_seconds=?,updated_at=? WHERE day=?",
+                db.execute("UPDATE days SET complete=0,elapsed_seconds=?,updated_at=? WHERE day=?",
                     (prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
             try:
                 with (self.root.parent / "error.log").open("a", encoding="utf-8") as output:
-                    output.write(f"\n[{utcnow()}] Daily history collection: {type(error).__name__}\n{traceback.format_exc()}")
+                    output.write(f"\n[{utcnow()}] Daily history collection: {type(error).__name__}\n"
+                                 f"{traceback.format_exc()}")
             except OSError:
                 pass
-            with self.lock: self.jobs[key].update({"state": "error", "error": "Civitai history could not be loaded. Details were saved to the local error log."})
+            with self.lock:
+                self.jobs[key].update({"state": "error", "error":
+                    "Civitai stopped before the full time range was collected. Your progress "
+                    "was saved; Continue building will resume it."})
 
     def _publish_completed_days(self) -> None:
         """Backfill all-day archives for days whose halves were completed earlier."""
@@ -957,13 +1106,15 @@ class HistoryArchive:
                 COALESCE(SUM(network_retry_count),0),COALESCE(MAX(final_pacer_interval),0),
                 COALESCE(SUM(wire_bytes),0),COALESCE(SUM(decoded_bytes),0)
                 FROM days WHERE day IN (?,?)""", (f"{day}#morning", f"{day}#evening")).fetchone()
-            db.execute("""INSERT INTO days(day,complete,content_rating,seek_pages,seek_bytes,collect_pages,
+            db.execute("""INSERT INTO days(day,complete,content_rating,collection_version,
+                          seek_pages,seek_bytes,collect_pages,
                           collect_bytes,api_seconds,retry_seconds,retry_count,elapsed_seconds,seek_seconds,
                           organize_seconds,pace_seconds,response_seconds,rate_limit_count,
                           service_retry_count,network_retry_count,final_pacer_interval,wire_bytes,
                           decoded_bytes,updated_at)
-                          VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(day) DO UPDATE SET complete=1,
+                          VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(day) DO UPDATE SET complete=1,
                           content_rating=excluded.content_rating,seek_pages=excluded.seek_pages,seek_bytes=excluded.seek_bytes,
+                          collection_version=excluded.collection_version,
                           collect_pages=excluded.collect_pages,collect_bytes=excluded.collect_bytes,
                           api_seconds=excluded.api_seconds,retry_seconds=excluded.retry_seconds,
                           retry_count=excluded.retry_count,elapsed_seconds=excluded.elapsed_seconds,
@@ -975,7 +1126,7 @@ class HistoryArchive:
                           final_pacer_interval=excluded.final_pacer_interval,
                           wire_bytes=excluded.wire_bytes,decoded_bytes=excluded.decoded_bytes,
                           updated_at=excluded.updated_at""",
-                       (day, coverage, *totals, utcnow()))
+                       (day, coverage, COLLECTION_VERSION, *totals, utcnow()))
         self._invalidate_artist_cache(day)
         self.build_artist_index(day)
         return day
