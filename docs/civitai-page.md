@@ -1,4 +1,4 @@
-# Civitai page copy for 1.0.0
+# Civitai page copy for 1.0.1
 
 Canonical model: https://civitai.red/models/2829529/civitai-artist-discovery
 
@@ -40,17 +40,20 @@ https://github.com/theevildarkmage-hue/Civitai-Artist-Discovery
 
 ## Version name
 
-`Red-1.0.0`
+`Red-1.0.1`
 
 ## Version notes
 
-Civitai Artist Discovery 1.0.0 is the first stable release. Its headline feature is
+Civitai Artist Discovery 1.0.1 is the current stable release. Its headline feature is
 secure in-app updating: the app shows its installed version, presents release notes,
 downloads only after approval, verifies GitHub's SHA-256 digest, preserves the portable
 `data` folder, rolls back a failed replacement, and restarts automatically.
 
-Long gallery builds now use boundary-verified, resumable collection and bounded outage
-recovery. Failed Civitai API responses are recorded going forward in a size-limited,
+The 1.0.1 hotfix separates PG and PG-13 collection so older dates do not exhaust one
+combined cursor window. It retries unexpected empty locator pages, caps cursor seeking,
+and distinguishes an unavailable Civitai history window from a device or connection
+problem. Long gallery builds use boundary-verified, resumable collection and bounded
+outage recovery. Failed Civitai API responses are recorded in a size-limited,
 rotating diagnostic journal with status codes, safe headers, redacted request context,
 and truncated response excerpts. This release also retains listing visual hashes for
 request-free duplicate metrics and includes the complete artist-first discovery,
@@ -60,4 +63,4 @@ Manual beta upgrade: close the old app, extract the entire new portable folder, 
 the old folder's `data` directory into the new `CivitaiArtistDiscovery` folder before
 first launch. Keep a backup until the new build opens successfully.
 
-SHA-256: `e568244e3883c61d840eb010402e4c40a0ef0283b19e035da4b7b6f4576ec604`
+SHA-256: `d9425fb005ef609036195f1fa52cbd96d8c44b47921d5858cef1a7785fac9fc1`

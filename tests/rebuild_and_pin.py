@@ -47,7 +47,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-rebuild-") as temporary:
     state = archive.rebuild(DAY, START, END, "America/Chicago")
     assert state["archiveComplete"] and state["rebuilding"]
     wait_done(archive)
-    assert captured[0]["cursor"] == "saved-day-start"
+    assert all(call.get("cursor") != "saved-day-start" for call in captured)
+    assert {call["browsingLevel"] for call in captured} == {1, 2}
     assert [row["id"] for row in archive.artist_images(DAY, "owner")] == [2, 1]
     assert archive.artists_page(DAY, 0, 1, "owner")[0]["username"] == "owner"
     assert archive.artists_page(DAY, 1, 1, "owner")[0]["username"] != "owner"
@@ -67,4 +68,5 @@ with tempfile.TemporaryDirectory(prefix="civitai-rebuild-") as temporary:
     assert (before["imageCount"], before["artistCount"]) == (after["imageCount"], after["artistCount"])
     assert not archive.artist_images(DAY, "cancelled-addition")
 
-print({"savedCursorUsed": True, "cancelPreservedGallery": True, "connectedCreatorFirst": True})
+print({"legacyCombinedCursorNotReusedAcrossShards": True,
+       "cancelPreservedGallery": True, "connectedCreatorFirst": True})

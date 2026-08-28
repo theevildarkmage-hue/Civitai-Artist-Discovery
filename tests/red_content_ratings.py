@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory() as temporary:
         time.sleep(.01)
     assert API_URL == f"{SITE_ORIGIN}/api/v1/images"
     assert captured and all(call["withMeta"] == "false" for call in captured)
-    assert all(call["browsingLevel"] == 3 for call in captured)
+    assert {call["browsingLevel"] for call in captured} == {1, 2}
     assert all("nsfw" not in call for call in captured)
     assert archive.status(DAY)["archiveContentRating"] == "Soft"
     archive.set_content_rating("Mature")
@@ -82,10 +82,10 @@ with tempfile.TemporaryDirectory() as temporary:
     deadline = time.monotonic() + 5
     while archive.status(partial)["state"] == "loading" and time.monotonic() < deadline:
         time.sleep(.01)
-    assert captured and captured[0]["cursor"] == "saved-cursor", captured
-    assert captured[0]["browsingLevel"] == 3, captured[0]
+    assert captured and all(call.get("cursor") != "saved-cursor" for call in captured), captured
+    assert captured[0]["browsingLevel"] == 1, captured[0]
 
 print({"redApi": API_URL, "metadataLight": True, "safeDefault": True,
        "higherCoverageRequiresUpgrade": True, "loweringHidesMature": True,
-       "loweringUsesSavedData": True, "partialCursorKeepsOriginalFeed": True,
+       "loweringUsesSavedData": True, "partialCursorStaysWithOriginalFeed": True,
        "individualRAndExplicitLevels": True})

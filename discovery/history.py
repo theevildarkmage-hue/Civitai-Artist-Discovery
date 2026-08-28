@@ -31,6 +31,8 @@ RATE_LIMIT_RETRIES = 8
 # checkpointed. It must still stop after a sustained outage instead of resetting the
 # visible counter forever and continuing to call an unhealthy service indefinitely.
 CHECKPOINTED_RETRY_ATTEMPTS = RATE_LIMIT_RETRIES * 2
+EMPTY_PROBE_ATTEMPTS = 3
+MAX_CURSOR_OFFSET = 50_000
 API_FAILURE_BODY_BYTES = 4096
 API_FAILURE_LOG_BYTES = 1024 * 1024
 
@@ -40,11 +42,11 @@ API_FAILURE_LOG_BYTES = 1024 * 1024
 # time boundary.  The saved image rows still retain their individual level and are
 # filtered precisely when displayed.
 COLLECTION_FEEDS = {
-    "Soft": (3,),       # PG | PG-13
-    "Mature": (3, 4),  # safe feed + R
-    "X": (3, 4, 8, 16),  # safe feed + R + separate X and XXX feeds
+    "Soft": (1, 2),
+    "Mature": (1, 2, 4),
+    "X": (1, 2, 4, 8, 16),
 }
-COLLECTION_VERSION = 3
+COLLECTION_VERSION = 4
 
 # Fixed planning benchmarks from the preserved completed runs. These are intentionally
 # not updated from runtime rows: later rows can represent partial/resumed work and caused
@@ -76,6 +78,18 @@ class RetryBudgetExhausted(RuntimeError):
         self.attempts = attempts
         self.last_failure = last_failure
         super().__init__(f"Civitai did not respond successfully after {attempts} attempts")
+
+
+class HistoryWindowUnavailable(RuntimeError):
+    """The public feed ended before its cursor window reached the requested date."""
+
+    def __init__(self, browsing_mask: int, target: datetime,
+                 oldest_seen: datetime | None = None):
+        self.browsing_mask = browsing_mask
+        self.target = target
+        self.oldest_seen = oldest_seen
+        super().__init__(
+            f"Civitai feed {browsing_mask} ended before reaching {target.isoformat()}")
 
 
 class AdaptivePacer:
@@ -668,12 +682,8 @@ class HistoryArchive:
                     "SELECT browsing_mask,top_cursor FROM block_feeds WHERE block_key=?",
                     (key,))
             }
-            # Soft legacy archives used the same PG/PG-13 feed represented by mask 3.
-            # Reusing that known day-start cursor avoids an unnecessary history seek
-            # when the archive is upgraded to boundary-verified collection.
-            if (int(day_row["collection_version"] or 0) < COLLECTION_VERSION
-                    and rating == "Soft" and day_row["top_cursor"]):
-                saved_feed_cursors.setdefault(3, day_row["top_cursor"])
+            # Format 3 used one combined PG/PG-13 cursor. It cannot safely seed either
+            # format-4 shard, so rebuilding an older archive locates both exact feeds.
         with self.lock:
             self.jobs[key] = {"state": "loading", "phase": "locating", "progress": 0, "pages": 0,
                 "startedMonotonic": time.monotonic(), "etaLowSeconds": None, "etaHighSeconds": None,
@@ -890,35 +900,50 @@ class HistoryArchive:
         """
         timestamp_ms = int(end.timestamp() * 1000)
         pages = transferred = 0
+        boundary_found = False
+        oldest_valid: datetime | None = None
 
         def probe(offset: int) -> tuple[datetime | None, datetime | None]:
-            nonlocal pages, transferred
+            nonlocal pages, transferred, boundary_found, oldest_valid
             if cancel_event.is_set():
                 return None, None
             params = {"limit": PAGE_SIZE, "sort": "Newest", "period": "AllTime",
                 "browsingLevel": browsing_mask, "withMeta": "false",
                 "cursor": f"{offset}|{timestamp_ms}"}
-            timing = {"pace": 0.0, "response": 0.0, "wire": 0, "decoded": 0}
-            def record_timing(kind: str, seconds: float) -> None:
-                timing[kind] += seconds
-            def record_transfer(wire: int, decoded: int) -> None:
-                timing["wire"] += wire; timing["decoded"] += decoded
-            request_started = time.monotonic()
-            payload, size = self._request(params, on_delay=report_delay,
-                                          cancel_event=cancel_event, on_timing=record_timing,
-                                          on_transfer=record_transfer)
-            request_seconds = time.monotonic() - request_started
-            pages += 1; transferred += size
-            with self.connect() as db:
-                db.execute("""UPDATE days SET seek_pages=seek_pages+1,seek_bytes=seek_bytes+?,api_seconds=api_seconds+?,
-                           pace_seconds=pace_seconds+?,response_seconds=response_seconds+?,
-                           wire_bytes=wire_bytes+?,decoded_bytes=decoded_bytes+?,
-                           final_pacer_interval=? WHERE day=?""",
-                    (size, request_seconds, timing["pace"], timing["response"],
-                     timing["wire"], timing["decoded"], self.api_pacer.interval, value))
-            timestamps = [parse_timestamp(row["createdAt"]) for row in payload.get("items", []) if row.get("createdAt")]
+            timestamps = []
+            for empty_attempt in range(1, EMPTY_PROBE_ATTEMPTS + 1):
+                timing = {"pace": 0.0, "response": 0.0, "wire": 0, "decoded": 0}
+                def record_timing(kind: str, seconds: float) -> None:
+                    timing[kind] += seconds
+                def record_transfer(wire: int, decoded: int) -> None:
+                    timing["wire"] += wire; timing["decoded"] += decoded
+                request_started = time.monotonic()
+                payload, size = self._request(params, on_delay=report_delay,
+                                              cancel_event=cancel_event, on_timing=record_timing,
+                                              on_transfer=record_transfer)
+                request_seconds = time.monotonic() - request_started
+                pages += 1; transferred += size
+                with self.connect() as db:
+                    db.execute("""UPDATE days SET seek_pages=seek_pages+1,seek_bytes=seek_bytes+?,api_seconds=api_seconds+?,
+                               pace_seconds=pace_seconds+?,response_seconds=response_seconds+?,
+                               wire_bytes=wire_bytes+?,decoded_bytes=decoded_bytes+?,
+                               final_pacer_interval=? WHERE day=?""",
+                        (size, request_seconds, timing["pace"], timing["response"],
+                         timing["wire"], timing["decoded"], self.api_pacer.interval, value))
+                timestamps = [parse_timestamp(row["createdAt"])
+                              for row in payload.get("items", []) if row.get("createdAt")]
+                if timestamps:
+                    break
+                self._record_api_failure(params, "premature_empty_page", status=200,
+                    reason=f"Empty locator response {empty_attempt} of {EMPTY_PROBE_ATTEMPTS}",
+                    body=json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                if empty_attempt < EMPTY_PROBE_ATTEMPTS:
+                    report_delay("service_retry", 0, empty_attempt, EMPTY_PROBE_ATTEMPTS)
             oldest = min(timestamps) if timestamps else None
             newest = max(timestamps) if timestamps else None
+            if oldest is not None:
+                oldest_valid = min(oldest_valid, oldest) if oldest_valid else oldest
+                boundary_found = boundary_found or oldest < end
             with self.lock:
                 job = self.jobs.get(value)
                 if job is not None:
@@ -932,7 +957,9 @@ class HistoryArchive:
             oldest, _ = probe(upper)
             if oldest is None or oldest < end:
                 break
-            lower, upper = upper, upper * 2
+            if upper >= MAX_CURSOR_OFFSET:
+                raise HistoryWindowUnavailable(browsing_mask, end, oldest_valid)
+            lower, upper = upper, min(MAX_CURSOR_OFFSET, upper * 2)
         if cancel_event.is_set():
             return None, pages, transferred
         while upper - lower > PAGE_SIZE and not cancel_event.is_set():
@@ -948,6 +975,8 @@ class HistoryArchive:
                 upper = middle
             else:
                 lower = middle
+        if not boundary_found:
+            raise HistoryWindowUnavailable(browsing_mask, end, oldest_valid)
         return f"{upper}|{timestamp_ms}", pages, transferred
 
     def _collect(self, key: str, value: str, start: datetime, end: datetime,
@@ -1102,9 +1131,10 @@ class HistoryArchive:
                                        (cursor, top_cursor, utcnow(), key, mask))
                         break
                     if not next_cursor:
-                        raise RuntimeError(
-                            f"Civitai ended browsing-level feed {mask} before the requested "
-                            "time boundary was reached")
+                        self._record_api_failure(params, "premature_feed_end", status=200,
+                            reason="No next cursor before the requested time boundary",
+                            body=json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                        raise HistoryWindowUnavailable(mask, start, oldest)
                     cursor = next_cursor
 
             with self.connect() as db:
@@ -1144,6 +1174,7 @@ class HistoryArchive:
             except OSError:
                 pass
             outage = isinstance(error, RetryBudgetExhausted)
+            window = isinstance(error, HistoryWindowUnavailable)
             last_failure = (f" Last response: {error.last_failure}." if outage and
                             error.last_failure else "")
             message = (f"Civitai is still unavailable after {error.attempts} attempts."
@@ -1151,11 +1182,18 @@ class HistoryArchive:
                        "Everything collected so far is saved; Continue building will "
                        "resume from the last successful page. Details are in "
                        "data/api-failures.jsonl." if outage else
+                       "Civitai's public image feed ended before it could reach this "
+                       "date. The selected day is outside the API's current pagination "
+                       "window or the feed is temporarily incomplete; this is not a "
+                       "problem with your device or connection. Choose a newer day or "
+                       "try again later. Details are in data/api-failures.jsonl."
+                       if window else
                        "Civitai stopped before the full time range was collected. Your "
                        "progress was saved; Continue building will resume it.")
             with self.lock:
                 self.jobs[key].update({"state": "error", "error": message,
-                    "errorKind": "service_unavailable" if outage else "collection_failed",
+                    "errorKind": "service_unavailable" if outage else
+                                 "history_window" if window else "collection_failed",
                     "delayReason": None, "retryUntilMonotonic": None})
 
     def _publish_completed_days(self) -> None:

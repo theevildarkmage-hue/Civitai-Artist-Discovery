@@ -47,14 +47,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-collection-metrics-") as tempor
     while archive.status(key)["state"] == "loading" and time.monotonic() < deadline:
         time.sleep(.01)
     metrics = archive.status(key)["metrics"]
-    assert metrics["paceSeconds"] == 1.0, metrics
-    assert metrics["responseSeconds"] == .5, metrics
-    assert metrics["retrySeconds"] == 7.0 and metrics["retryCount"] == 2, metrics
-    assert metrics["rateLimitCount"] == 1 and metrics["networkRetryCount"] == 1, metrics
+    assert metrics["paceSeconds"] == 2.0, metrics
+    assert metrics["responseSeconds"] == 1.0, metrics
+    assert metrics["retrySeconds"] == 11.0 and metrics["retryCount"] == 4, metrics
+    assert metrics["rateLimitCount"] == 1 and metrics["networkRetryCount"] == 3, metrics
     assert metrics["serviceRetryCount"] == 0, metrics
-    assert metrics["seekPages"] == 1 and metrics["collectPages"] == 1, metrics
-    assert metrics["seekBytes"] == 1234 and metrics["collectBytes"] == 1234, metrics
-    assert metrics["wireBytes"] == 800 and metrics["decodedBytes"] == 2468, metrics
+    assert metrics["seekPages"] == 2 and metrics["collectPages"] == 2, metrics
+    assert metrics["seekBytes"] == 2468 and metrics["collectBytes"] == 2468, metrics
+    assert metrics["wireBytes"] == 1600 and metrics["decodedBytes"] == 4936, metrics
 
 with tempfile.TemporaryDirectory(prefix="civitai-resumed-metrics-") as temporary:
     archive = HistoryArchive(Path(temporary) / "history")
@@ -86,11 +86,11 @@ with tempfile.TemporaryDirectory(prefix="civitai-resumed-metrics-") as temporary
     while archive.status(key)["state"] == "loading" and time.monotonic() < deadline:
         time.sleep(.01)
     metrics = archive.status(key)["metrics"]
-    assert metrics["collectPages"] == 4, metrics
-    assert metrics["paceSeconds"] == 10.5 and metrics["responseSeconds"] == 20.25, metrics
+    assert metrics["collectPages"] == 5, metrics
+    assert metrics["paceSeconds"] == 12 and metrics["responseSeconds"] == 21, metrics
     assert metrics["retrySeconds"] == 30 and metrics["retryCount"] == 2, metrics
     assert metrics["rateLimitCount"] == 2, metrics
-    assert metrics["wireBytes"] == 1400 and metrics["decodedBytes"] == 3234, metrics
+    assert metrics["wireBytes"] == 2600 and metrics["decodedBytes"] == 6936, metrics
     assert metrics["elapsedSeconds"] >= 100, metrics
 
 print({"pacingSeparated": True, "responseSeparated": True,

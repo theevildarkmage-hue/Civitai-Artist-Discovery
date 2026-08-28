@@ -14,7 +14,7 @@ sponsored by Civitai.
 
 ## Project status
 
-Version `1.0.0` is the first stable release. The 1.x line focuses on compatibility and
+Version `1.0.1` is the current stable release. The 1.x line focuses on compatibility and
 bug fixes; a broader interface redesign is planned separately for 2.x. Windows is the
 primary and only routinely tested platform.
 
@@ -251,8 +251,8 @@ coverage filters the local database immediately.
 
 Collection time depends heavily on rating level, posting volume, latency, and rate
 limiting. The fixed all-ratings benchmark contains 82,050 retained images and 458
-collection pages. The boundary-verified collector budgets up to 136 date-seeking requests
-across four feeds and two halves, producing an estimated range of roughly 50 to 72 minutes.
+collection pages. The boundary-verified collector budgets up to 170 date-seeking requests
+across five feeds and two halves, producing an estimated range of roughly 52 to 77 minutes.
 Preserved
 PG/PG-13 measurements required 69–84 collection pages for a half day and 140–147 for a
 full day, so even a clean safe half is a multi-minute operation.

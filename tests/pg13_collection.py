@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-pg13-") as temporary:
         time.sleep(0.01)
 
     assert archive.status("2026-07-31")["complete"]
-    assert captured_params[0]["browsingLevel"] == 3
+    assert {call["browsingLevel"] for call in captured_params} == {1, 2}
     assert "nsfw" not in captured_params[0]
     retained = archive.artist_images("2026-07-31", "rating-test")
     assert [entry["id"] for entry in retained] == [5, 4, 3, 2, 1]

@@ -938,7 +938,9 @@ const observer = new IntersectionObserver(entries => { if (entries.some(entry =>
 new MutationObserver(() => { const sentinel = $("loadSentinel"); if (sentinel) observer.observe(sentinel); }).observe($("gallery"), { childList: true });
 $("close").onclick = () => $("details").close(); $("details").onclick = event => { if (event.target === $("details")) $("details").close(); }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
   const outage = error.kind === "service_unavailable";
-  $("loadingTitle").textContent = outage ? "Civitai is unavailable" : "History failed to load";
+  const historyWindow = error.kind === "history_window";
+  $("loadingTitle").textContent = outage ? "Civitai is unavailable" :
+    historyWindow ? "Date unavailable from Civitai" : "History failed to load";
   $("loadingMessage").textContent = error.message;
   // Nothing here used to clear the progress line or the bar's retry animation, so a
   // retry-exhausted failure kept showing the last "Retrying now · attempt 8 of 8" text
@@ -952,7 +954,7 @@ $("close").onclick = () => $("details").close(); $("details").onclick = event =>
     : "Everything collected so far has been saved.";
   $("progressBar").classList.remove("indeterminate", "waiting");
   $("stopLoading").classList.add("hidden");
-  $("startLoading").textContent = "Continue building";
+  $("startLoading").textContent = historyWindow ? "Try again" : "Continue building";
   $("startLoading").classList.remove("hidden");
   $("startLoading").disabled = false;
   setNavigationBusy(false);

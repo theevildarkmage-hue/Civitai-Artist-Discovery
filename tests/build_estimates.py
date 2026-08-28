@@ -46,10 +46,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-build-estimates-") as temporary
     assert safe < mature < explicit, (safe, mature, explicit)
     evidence = archive.build_estimate("all", "X", TARGET)
     assert evidence["fixedBenchmark"] and evidence["benchmarkImages"] == 82050, evidence
-    assert evidence["listingRequests"] == 458 and evidence["seekRequests"] == 136, evidence
-    assert evidence["lowSeconds"] == 2970 and evidence["highSeconds"] == 4346, evidence
+    assert evidence["listingRequests"] == 458 and evidence["seekRequests"] == 170, evidence
+    assert evidence["lowSeconds"] == 3140 and evidence["highSeconds"] == 4595, evidence
     half_safe = archive.build_estimate("morning", "Soft", TARGET)
-    assert half_safe["listingRequests"] == 70 and half_safe["seekRequests"] == 17, half_safe
+    assert half_safe["listingRequests"] == 70 and half_safe["seekRequests"] == 34, half_safe
     assert half_safe["lowSeconds"] >= 6 * 60, half_safe
 
     # A Soft morning is complete. A Soft full-day estimate now includes only evening,

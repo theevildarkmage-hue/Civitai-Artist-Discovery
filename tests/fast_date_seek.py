@@ -9,7 +9,7 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from discovery.history import HistoryArchive, PAGE_SIZE
+from discovery.history import HistoryArchive, HistoryWindowUnavailable, PAGE_SIZE
 
 
 with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
@@ -65,5 +65,16 @@ with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
     assert any(offset // PAGE_SIZE >= ceiling_page for offset in offsets)
     assert ceiling_pages == len(offsets) < 20
 
+    # If every valid page is still newer than the target and the feed repeatedly ends,
+    # report the public API window instead of handing collection a known-empty cursor.
+    offsets.clear()
+    crossing_page = 200
+    try:
+        archive._seek_cursor(value, target_end, threading.Event(), 16, lambda *_: None)
+        raise AssertionError("an unreachable date returned an empty collection cursor")
+    except HistoryWindowUnavailable as error:
+        assert error.browsing_mask == 16 and error.oldest_seen is not None
+
 print({"linearPagesAvoided": selected // PAGE_SIZE, "seekRequests": pages,
-       "boundaryPreserved": True, "emptyCeilingRecovered": True})
+       "boundaryPreserved": True, "emptyCeilingRecovered": True,
+       "unreachableWindowNamed": True})

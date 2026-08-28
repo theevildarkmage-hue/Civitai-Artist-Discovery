@@ -115,13 +115,26 @@ with tempfile.TemporaryDirectory(prefix="civitai-load-error-", ignore_cleanup_er
             page.wait_for_timeout(300)
             assert started["count"] == 2, started
 
+            # A repeatedly truncated 200 response is not described as a generic crash or
+            # device problem. It identifies Civitai's public history window and keeps the
+            # retry plus day-navigation paths available.
+            current["status"] = response({"state": "error", "errorKind": "history_window",
+                "error": "Civitai's public image feed ended before it could reach this date. Choose a newer day or try again later."})
+            page.click("#startLoading")
+            page.wait_for_selector("#loadingTitle:has-text('Date unavailable from Civitai')",
+                                   timeout=10000)
+            assert page.inner_text("#startLoading") == "Try again"
+            assert page.eval_on_selector("#olderDay", "n => n.disabled") is False
+            assert started["count"] == 3, started
+
             assert not errors, errors
             browser.close()
 
         print({"outageNamedAccurately": True, "savedCountShown": True,
                "midRetryTextConfirmedFirst": True, "staleRetryTextClearedOnFailure": True,
                "barAnimationCleared": True, "navigationReenabled": True,
-               "continueBuildingOffered": True, "retryReachable": True})
+               "continueBuildingOffered": True, "retryReachable": True,
+               "historyWindowNamedAccurately": True})
     finally:
         process.terminate()
         try:
