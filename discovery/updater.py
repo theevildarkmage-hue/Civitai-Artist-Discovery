@@ -81,6 +81,12 @@ def is_newer(candidate: str, current: str) -> bool:
         return False
 
 
+def is_prerelease(value: str) -> bool:
+    """Return whether *value* is a valid prerelease version."""
+    match = VERSION_PATTERN.fullmatch(str(value or "").strip())
+    return bool(match and match.group("pre"))
+
+
 def _safe_download_url(value: str) -> str:
     parsed = urllib.parse.urlparse(str(value or ""))
     expected_prefix = f"/{REPOSITORY}/releases/download/"
@@ -93,10 +99,15 @@ def _safe_download_url(value: str) -> str:
 def select_release(releases: object, current_version: str) -> dict | None:
     """Choose the newest published release containing this app's verified ZIP."""
     choices = []
+    current_is_prerelease = is_prerelease(current_version)
     for release in releases if isinstance(releases, list) else []:
         if not isinstance(release, dict) or release.get("draft"):
             continue
         tag = str(release.get("tag_name") or "").removeprefix("v")
+        # Stable installs stay on the stable channel. Prerelease installs may see both
+        # prereleases and the eventual stable build so beta users can graduate normally.
+        if not current_is_prerelease and (release.get("prerelease") or is_prerelease(tag)):
+            continue
         if not is_newer(tag, current_version):
             continue
         expected = f"CivitaiArtistDiscovery-{tag}.zip"

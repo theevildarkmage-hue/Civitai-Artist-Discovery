@@ -1,7 +1,8 @@
 # Contributing
 
-Thanks for helping improve Civitai Artist Discovery. The project is an active beta, so
-small, focused changes are easier to review and less likely to disrupt working behavior.
+Thanks for helping improve Civitai Artist Discovery. The 1.x line prioritizes stable,
+backward-compatible bug fixes, so small, focused changes are easiest to review and least
+likely to disrupt working behavior.
 
 ## Before submitting a change
 

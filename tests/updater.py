@@ -39,6 +39,16 @@ picked = updater.select_release([
 ], "0.3.1-beta.1")
 assert picked["version"] == "0.3.2-beta.10" and picked["sha256"] == "a" * 64, picked
 
+stable_pick = updater.select_release([
+    release("1.0.1"), release("2.0.0-beta.1"),
+], "1.0.0")
+assert stable_pick["version"] == "1.0.1", stable_pick
+assert updater.select_release([release("2.0.0-beta.1")], "1.0.0") is None
+beta_pick = updater.select_release([
+    release("1.0.0"), release("1.1.0-beta.1"),
+], "1.0.0-beta.2")
+assert beta_pick["version"] == "1.1.0-beta.1", beta_pick
+
 try:
     bad = release("0.3.3")
     bad["assets"][0]["browser_download_url"] = "https://example.com/update.zip"
@@ -147,6 +157,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-updater-zip-") as temporary:
         assert "unsafe path" in str(error)
 
 print({"semverPrereleases": True, "signedAssetRequired": True,
+       "stableChannelIgnoresPrereleases": True,
        "portableDataPreserved": True, "unknownFilesPreserved": True,
        "rollbackRestoresOldBuild": True, "zipTraversalRejected": True,
        "downloadHashCalculated": True, "temporaryFilesCleaned": True})

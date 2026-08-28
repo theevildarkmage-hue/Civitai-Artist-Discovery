@@ -46,6 +46,10 @@ def normalize(item: dict) -> dict:
         "username": item.get("username") or "Unknown",
         "createdAt": item.get("createdAt"),
         "url": original,
+        # Civitai includes this visual placeholder hash in listing responses.  It is
+        # stable when the same artwork is reposted under a different image id or CDN
+        # URL, which makes it useful for measuring duplicates without another request.
+        "visualHash": str(item.get("hash") or "").strip() or None,
         "thumbnailUrl": thumbnail_url(original),
         "civitaiUrl": image_url(image_id),
         "width": item.get("width"),

@@ -40,7 +40,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "0.3.3-beta.2"
+APP_VERSION = "1.0.0"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
@@ -1024,6 +1024,15 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Day models", error)
             return
+        if parsed.path == "/api/history/duplicates":
+            try:
+                value = query.get("date", [None])[0]
+                key = (HISTORY.archive_key(value, query.get("segment", ["all"])[0])
+                       if value else None)
+                self.json_response(HISTORY.duplicate_report(key))
+            except ValueError as error: self.json_response({"error": str(error)}, 400)
+            except Exception as error: self.internal_error("Duplicate report", error)
+            return
         if parsed.path == "/api/history/estimate":
             try:
                 segment = query.get("segment", ["all"])[0]
@@ -1384,9 +1393,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not SETTINGS.load()["checkForUpdates"]:
                     self.json_response({"error": "Update checks are disabled in My Profile."}, 409)
                     return
+                if not UPDATES.supported:
+                    self.json_response({"error": "One-click installation is only available in packaged builds; update this source checkout through Git."}, 409)
+                    return
                 self.json_response({**UPDATES.start_download(), "enabled": True}, 202)
                 return
             if parsed.path == "/api/update/install":
+                if not UPDATES.supported:
+                    self.json_response({"error": "One-click installation is only available in packaged builds; update this source checkout through Git."}, 409)
+                    return
                 reason = update_busy_reason()
                 if reason:
                     self.json_response({"error": reason}, 409)

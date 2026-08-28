@@ -111,6 +111,9 @@
 .pill.lift{background:#2c2a3f;color:#b7abf0;border-color:#4a4468}
 .empty-note{color:var(--muted);font-size:13px;padding:6px 0}
 
+.app-title-row{display:flex;align-items:baseline;gap:9px}
+.app-version{flex:none;padding:2px 7px;border:1px solid #34363d;border-radius:999px;background:#202227;color:#aeb1ba;font-size:10px;font-weight:750;line-height:1.35;letter-spacing:.025em;white-space:nowrap;font-variant-numeric:tabular-nums}
+
 @media(max-width:700px){
   .view-tabs{padding:8px 8px 0}
   .view-tabs button{flex:1;padding:9px 8px;font-size:13px}

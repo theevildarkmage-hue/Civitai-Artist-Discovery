@@ -89,12 +89,13 @@ with tempfile.TemporaryDirectory(prefix="civitai-load-error-", ignore_cleanup_er
                 "navigation should be busy while a build is genuinely in progress"
 
             # The retry budget is exhausted: the next poll reports a terminal failure.
-            current["status"] = response({"state": "error",
-                "error": "Civitai history could not be loaded. Details were saved to the local error log."})
-            page.wait_for_selector("#loadingTitle:has-text('History failed to load')", timeout=10000)
+            current["status"] = response({"state": "error", "errorKind": "service_unavailable",
+                "error": "Civitai is still unavailable after 16 attempts. Everything collected so far is saved; Continue building will resume from the last successful page."})
+            page.wait_for_selector("#loadingTitle:has-text('Civitai is unavailable')", timeout=10000)
             page.wait_for_timeout(500)
 
             after = page.inner_text("#progressText")
+            assert after == "14,057 images saved in this block.", after
             assert "Retrying" not in after and "attempt" not in after, after
             assert not page.eval_on_selector("#progressBar", "n => n.classList.contains('waiting')")
             assert not page.eval_on_selector("#progressBar", "n => n.classList.contains('indeterminate')")
@@ -117,7 +118,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-load-error-", ignore_cleanup_er
             assert not errors, errors
             browser.close()
 
-        print({"midRetryTextConfirmedFirst": True, "staleRetryTextClearedOnFailure": True,
+        print({"outageNamedAccurately": True, "savedCountShown": True,
+               "midRetryTextConfirmedFirst": True, "staleRetryTextClearedOnFailure": True,
                "barAnimationCleared": True, "navigationReenabled": True,
                "continueBuildingOffered": True, "retryReachable": True})
     finally:

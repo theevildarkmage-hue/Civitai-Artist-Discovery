@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import discovery.history as history
-from discovery.history import CollectionCancelled, HistoryArchive, RATE_LIMIT_RETRIES
+from discovery.history import (CHECKPOINTED_RETRY_ATTEMPTS, CollectionCancelled,
+                               HistoryArchive, RATE_LIMIT_RETRIES)
 
 
 class Event:
@@ -62,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-outage-recovery-") as temporary
                 delays.append((reason, wait, attempt, attempts)), cancel_event=Event())
         assert payload["items"] == []
         assert calls == RATE_LIMIT_RETRIES + 1, calls
-        assert delays[-1][2:] == (RATE_LIMIT_RETRIES, RATE_LIMIT_RETRIES), delays[-1]
+        assert delays[-1][2:] == (RATE_LIMIT_RETRIES, CHECKPOINTED_RETRY_ATTEMPTS), delays[-1]
 
         calls = 0
         try:
@@ -76,12 +77,25 @@ with tempfile.TemporaryDirectory(prefix="civitai-outage-recovery-") as temporary
             archive._request({"limit": 1})
             raise AssertionError("a one-off request retried forever")
         except RuntimeError as error:
-            assert "retry budget" in str(error), error
+            assert "8 attempts" in str(error), error
         assert calls == RATE_LIMIT_RETRIES, calls
+
+        calls = 0
+        def outage(*_args, **_kwargs):
+            global calls
+            calls += 1
+            raise urllib.error.URLError("persistent outage")
+        history.urllib.request.urlopen = outage
+        try:
+            archive._request({"limit": 1}, cancel_event=Event())
+            raise AssertionError("a checkpointed request retried forever")
+        except RuntimeError as error:
+            assert "16 attempts" in str(error), error
+        assert calls == CHECKPOINTED_RETRY_ATTEMPTS, calls
     finally:
         history.urllib.request.urlopen = real_urlopen
         history.random.uniform = real_uniform
         history.time.sleep = real_sleep
 
 print({"historySurvivesRetryCycle": True, "cancelInterruptsWait": True,
-       "oneOffRequestsRemainBounded": True})
+       "oneOffRequestsRemainBounded": True, "checkpointedRequestsRemainBounded": True})

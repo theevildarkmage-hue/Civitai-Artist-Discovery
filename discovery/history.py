@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 import random
+import re
 import sqlite3
 import threading
 import time
@@ -26,6 +27,12 @@ from .site import (DEFAULT_CONTENT_RATING, RATING_RANK,
 
 PAGE_SIZE = 200
 RATE_LIMIT_RETRIES = 8
+# A resumable build gets one extra retry cycle because every successful page is
+# checkpointed. It must still stop after a sustained outage instead of resetting the
+# visible counter forever and continuing to call an unhealthy service indefinitely.
+CHECKPOINTED_RETRY_ATTEMPTS = RATE_LIMIT_RETRIES * 2
+API_FAILURE_BODY_BYTES = 4096
+API_FAILURE_LOG_BYTES = 1024 * 1024
 
 # Civitai's browsing-level parameter is a bitmask.  Collect the cumulative build
 # choices as non-overlapping feeds so a busy all-ratings day cannot exhaust the
@@ -59,6 +66,16 @@ POPULAR_INDEX_VERSION = 2
 
 class CollectionCancelled(RuntimeError):
     """Internal control flow used to leave a retry wait when the user stops a build."""
+
+
+class RetryBudgetExhausted(RuntimeError):
+    """A checkpointed request stopped after a sustained upstream outage."""
+
+    def __init__(self, reason: str, attempts: int, last_failure: str | None = None):
+        self.reason = reason
+        self.attempts = attempts
+        self.last_failure = last_failure
+        super().__init__(f"Civitai did not respond successfully after {attempts} attempts")
 
 
 class AdaptivePacer:
@@ -195,6 +212,7 @@ class HistoryArchive:
                  selected_browsing_levels: object = None):
         self.root = root
         self.db_path = root / "history.sqlite3"
+        self.api_failure_log = root.parent / "api-failures.jsonl"
         self.jobs: dict[str, dict] = {}
         self.cancel_events: dict[str, threading.Event] = {}
         self.lock = threading.RLock()
@@ -238,7 +256,8 @@ class HistoryArchive:
                     nsfw_level TEXT, browsing_level INTEGER, base_model TEXT,
                     model_version_ids TEXT NOT NULL DEFAULT '[]', stats TEXT NOT NULL DEFAULT '{}',
                     prompt TEXT NOT NULL DEFAULT '', negative_prompt TEXT NOT NULL DEFAULT '',
-                    resources TEXT NOT NULL DEFAULT '[]', details_loaded INTEGER NOT NULL DEFAULT 0
+                    resources TEXT NOT NULL DEFAULT '[]', details_loaded INTEGER NOT NULL DEFAULT 0,
+                    visual_hash TEXT
                 );
                 CREATE INDEX IF NOT EXISTS images_day_creator ON images(local_date, username_key);
                 CREATE INDEX IF NOT EXISTS images_day_created ON images(local_date, created_at DESC);
@@ -303,6 +322,11 @@ class HistoryArchive:
             columns = {row[1] for row in db.execute("PRAGMA table_info(days)")}
             if "collection_version" not in columns:
                 db.execute("ALTER TABLE days ADD COLUMN collection_version INTEGER NOT NULL DEFAULT 0")
+            image_columns = {row[1] for row in db.execute("PRAGMA table_info(images)")}
+            if "visual_hash" not in image_columns:
+                db.execute("ALTER TABLE images ADD COLUMN visual_hash TEXT")
+            db.execute("CREATE INDEX IF NOT EXISTS images_visual_hash "
+                       "ON images(visual_hash,width,height) WHERE visual_hash IS NOT NULL")
             db.execute("INSERT OR IGNORE INTO block_images(block_key,image_id) SELECT local_date,id FROM images")
             # Popular v2 ranks by total daily reactions and uses the most-reacted image.
             # Cached indexes are derived data, so invalidate the old hash-ranked version
@@ -379,15 +403,17 @@ class HistoryArchive:
                 item["url"], item.get("width"), item.get("height"), item.get("type"), item.get("nsfwLevel"),
                 item.get("browsingLevel"), item.get("baseModel"), json.dumps(item.get("modelVersionIds") or []),
                 json.dumps(item.get("stats") or {}), item.get("prompt") or "", item.get("negativePrompt") or "",
-                json.dumps(item.get("resources") or []), int(bool(item.get("prompt") or item.get("resources")))))
+                json.dumps(item.get("resources") or []), int(bool(item.get("prompt") or item.get("resources"))),
+                str(item.get("visualHash") or "").strip() or None))
         with self.connect() as db:
             # Name every column: archives written by older versions carry columns this
             # schema no longer declares, and a positional insert breaks against them.
             db.executemany("""INSERT INTO images(
                     id, local_date, post_id, username, username_key, created_at,
                     url, width, height, type, nsfw_level, browsing_level, base_model,
-                    model_version_ids, stats, prompt, negative_prompt, resources, details_loaded)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    model_version_ids, stats, prompt, negative_prompt, resources, details_loaded,
+                    visual_hash)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET local_date=excluded.local_date,post_id=excluded.post_id,
                 username=excluded.username,username_key=excluded.username_key,created_at=excluded.created_at,
                 url=excluded.url,width=excluded.width,height=excluded.height,type=excluded.type,
@@ -396,7 +422,8 @@ class HistoryArchive:
                 stats=excluded.stats,prompt=CASE WHEN excluded.prompt!='' THEN excluded.prompt ELSE images.prompt END,
                 negative_prompt=CASE WHEN excluded.negative_prompt!='' THEN excluded.negative_prompt ELSE images.negative_prompt END,
                 resources=CASE WHEN excluded.resources!='[]' THEN excluded.resources ELSE images.resources END,
-                details_loaded=MAX(images.details_loaded,excluded.details_loaded)""", rows)
+                details_loaded=MAX(images.details_loaded,excluded.details_loaded),
+                visual_hash=COALESCE(excluded.visual_hash,images.visual_hash)""", rows)
             db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)",
                 [(row[1], row[0]) for row in rows])
         return [row[0] for row in rows]
@@ -406,7 +433,8 @@ class HistoryArchive:
             "url": row["url"], "thumbnailUrl": preview_url(row["url"]), "civitaiUrl": image_url(row["id"]),
             "width": row["width"], "height": row["height"], "type": row["type"], "nsfwLevel": row["nsfw_level"],
             "browsingLevel": row["browsing_level"], "baseModel": row["base_model"] or "Unknown",
-            "modelVersionIds": json.loads(row["model_version_ids"]), "stats": json.loads(row["stats"])}
+            "modelVersionIds": json.loads(row["model_version_ids"]), "stats": json.loads(row["stats"]),
+            "visualHash": row["visual_hash"]}
         if details:
             item.update({"prompt": row["prompt"], "negativePrompt": row["negative_prompt"], "resources": json.loads(row["resources"]), "detailsLoaded": bool(row["details_loaded"]), "detailImageUrl": preview_url(row["url"], 1280)})
         return item
@@ -477,7 +505,8 @@ class HistoryArchive:
             "retryAttempts": job.get("retryAttempts") or RATE_LIMIT_RETRIES,
             "listingsChecked": int(job.get("pages", 0)) * PAGE_SIZE,
             "searchReachedAt": job.get("searchReachedAt"),
-            "error": job.get("error"), "complete": complete, "archiveComplete": archive_complete,
+            "error": job.get("error"), "errorKind": job.get("errorKind"),
+            "complete": complete, "archiveComplete": archive_complete,
             "rebuilding": bool(job.get("rebuilding")), "contentRating": self.content_rating,
             "browsingLevels": list(self.visible_levels),
             "metrics": metrics,
@@ -716,6 +745,58 @@ class HistoryArchive:
             return time.monotonic() - started
         return 0.0
 
+    def _record_api_failure(self, params: dict, kind: str, *, status: int | None = None,
+                            reason: object = None, headers: object = None,
+                            body: bytes = b"") -> None:
+        """Keep bounded, credential-free upstream diagnostics for later support."""
+        safe_headers = {}
+        for name in ("Content-Type", "Content-Encoding", "Retry-After", "CF-Ray",
+                     "X-Request-Id", "X-Correlation-Id", "Server"):
+            try:
+                value = headers.get(name) if headers else None
+            except (AttributeError, TypeError):
+                value = None
+            if value:
+                safe_headers[name] = str(value)[:300]
+        encoding = safe_headers.get("Content-Encoding", "").casefold()
+        if body and encoding == "gzip":
+            excerpt = f"[gzip-compressed response; {len(body)} bytes captured]"
+        else:
+            excerpt = body.decode("utf-8", errors="replace") if body else ""
+            excerpt = "".join(character if character in "\r\n\t" or ord(character) >= 32 else " "
+                              for character in excerpt)
+            # The public image endpoint should not return credentials, but redact common
+            # secret-shaped fields before anything reaches disk as a defense in depth.
+            excerpt = re.sub(
+                r'(?i)(access[_-]?token|refresh[_-]?token|authorization|client_secret)'
+                r'(["\']?\s*[:=]\s*["\']?)[^"\'\s,}]+', r'\1\2[redacted]', excerpt)
+            excerpt = excerpt[:API_FAILURE_BODY_BYTES]
+        context = {name: params.get(name) for name in
+                   ("limit", "sort", "period", "browsingLevel", "withMeta")
+                   if params.get(name) is not None}
+        if params.get("cursor"):
+            context["cursor"] = str(params["cursor"])[:160]
+        record = {"timestamp": utcnow(), "kind": kind, "status": status,
+                  "reason": str(reason or "")[:500], "request": context,
+                  "headers": safe_headers, "bodyExcerpt": excerpt,
+                  "bodyTruncated": len(body) > API_FAILURE_BODY_BYTES}
+        line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+        try:
+            self.api_failure_log.parent.mkdir(parents=True, exist_ok=True)
+            if self.api_failure_log.exists() and \
+                    self.api_failure_log.stat().st_size + len(line) > API_FAILURE_LOG_BYTES:
+                previous = self.api_failure_log.with_name(self.api_failure_log.name + ".1")
+                try:
+                    previous.unlink()
+                except FileNotFoundError:
+                    pass
+                self.api_failure_log.replace(previous)
+            with self.api_failure_log.open("ab") as output:
+                output.write(line)
+        except OSError:
+            # Diagnostics must never turn a recoverable API outage into a local failure.
+            pass
+
     def _request(self, params: dict, minimum_interval: float | None = None,
                  on_delay: Callable[[str, float, int, int], None] | None = None,
                  cancel_event: threading.Event | None = None,
@@ -730,6 +811,7 @@ class HistoryArchive:
             headers={"Accept": "application/json", "Accept-Encoding": "gzip", "User-Agent": USER_AGENT})
         with self.api_lock:
             attempt = 0
+            last_failure = None
             while True:
                 if cancel_event and cancel_event.is_set():
                     raise CollectionCancelled()
@@ -754,36 +836,45 @@ class HistoryArchive:
                 except urllib.error.HTTPError as error:
                     if on_timing:
                         on_timing("response", time.monotonic() - started)
+                    try:
+                        error_body = error.read(API_FAILURE_BODY_BYTES + 1)
+                    except Exception:
+                        error_body = b""
+                    last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
+                    self._record_api_failure(params, "http", status=error.code,
+                        reason=error.reason, headers=error.headers, body=error_body)
                     if error.code != 429 and error.code < 500:
                         raise
                     reason = "rate_limited" if error.code == 429 else "service_retry"
                     self.api_pacer.failure(reason)
                     retry = error.headers.get("Retry-After")
+                    backoff_attempt = attempt % RATE_LIMIT_RETRIES
                     if error.code == 429:
-                        try: wait = max(60.0, float(retry)) if retry else min(600.0, 60.0 * (2**attempt))
-                        except ValueError: wait = min(600.0, 60.0 * (2**attempt))
-                    else: wait = min(60.0, 2.0**attempt)
+                        try: wait = max(60.0, float(retry)) if retry else min(600.0, 60.0 * (2**backoff_attempt))
+                        except ValueError: wait = min(600.0, 60.0 * (2**backoff_attempt))
+                    else: wait = min(60.0, 2.0**backoff_attempt)
                     delay = wait + random.uniform(0, 2)
-                except (TimeoutError, urllib.error.URLError):
+                except (TimeoutError, urllib.error.URLError) as error:
                     if on_timing:
                         on_timing("response", time.monotonic() - started)
                     self.api_pacer.failure("network_retry")
                     reason = "network_retry"
-                    wait = min(60, 2**attempt)
+                    last_failure = f"{type(error).__name__}: {error}"
+                    self._record_api_failure(params, "network", reason=error)
+                    wait = min(60, 2**(attempt % RATE_LIMIT_RETRIES))
                     delay = wait + random.uniform(0, 1)
+                attempts = (CHECKPOINTED_RETRY_ATTEMPTS
+                            if cancel_event and reason != "rate_limited"
+                            else RATE_LIMIT_RETRIES)
+                attempt += 1
+                if attempt >= attempts:
+                    raise RetryBudgetExhausted(reason, attempts, last_failure)
                 if on_delay:
-                    on_delay(reason, delay, attempt + 1, RATE_LIMIT_RETRIES)
+                    on_delay(reason, delay, attempt, attempts)
                 if cancel_event:
                     if cancel_event.wait(delay):
                         raise CollectionCancelled()
-                    # A long, checkpointed build should survive a prolonged transient
-                    # outage. After one visible retry cycle, start another instead of
-                    # making the user manually press Continue building.
-                    attempt = (attempt + 1) % RATE_LIMIT_RETRIES
                 else:
-                    attempt += 1
-                    if attempt >= RATE_LIMIT_RETRIES:
-                        raise RuntimeError("Civitai request exhausted its retry budget")
                     time.sleep(delay)
 
     def _seek_cursor(self, value: str, end: datetime, cancel_event: threading.Event,
@@ -1052,10 +1143,20 @@ class HistoryArchive:
                                  f"{traceback.format_exc()}")
             except OSError:
                 pass
+            outage = isinstance(error, RetryBudgetExhausted)
+            last_failure = (f" Last response: {error.last_failure}." if outage and
+                            error.last_failure else "")
+            message = (f"Civitai is still unavailable after {error.attempts} attempts."
+                       f"{last_failure} "
+                       "Everything collected so far is saved; Continue building will "
+                       "resume from the last successful page. Details are in "
+                       "data/api-failures.jsonl." if outage else
+                       "Civitai stopped before the full time range was collected. Your "
+                       "progress was saved; Continue building will resume it.")
             with self.lock:
-                self.jobs[key].update({"state": "error", "error":
-                    "Civitai stopped before the full time range was collected. Your progress "
-                    "was saved; Continue building will resume it."})
+                self.jobs[key].update({"state": "error", "error": message,
+                    "errorKind": "service_unavailable" if outage else "collection_failed",
+                    "delayReason": None, "retryUntilMonotonic": None})
 
     def _publish_completed_days(self) -> None:
         """Backfill all-day archives for days whose halves were completed earlier."""
@@ -1386,6 +1487,52 @@ class HistoryArchive:
                         "COUNT(*) AS n FROM block_images b JOIN images i ON i.id=b.image_id "
                         f"WHERE b.block_key=?{rating_clause} GROUP BY base_model ORDER BY n DESC", (value, *rating_params))]
 
+    def duplicate_report(self, value: str | None = None) -> dict:
+        """Summarize saved visual hashes without fetching or decoding artwork.
+
+        Civitai image ids and CDN URLs change when an unchanged file is reposted.  Its
+        listing hash remains stable, so grouping that hash with the source dimensions
+        gives us a conservative, inexpensive duplicate signal.  Older archive rows do
+        not have a hash and remain explicitly visible in the coverage count.
+        """
+        if value is not None:
+            # Besides validating the segment suffix, archive_key rejects malformed dates.
+            day, separator, segment = value.partition("#")
+            value = self.archive_key(day, segment if separator else "all")
+            source = ("SELECT i.visual_hash,i.width,i.height,i.username_key,i.local_date "
+                      "FROM block_images b JOIN images i ON i.id=b.image_id "
+                      "WHERE b.block_key=?")
+            params = (value,)
+            total_source = ("SELECT COUNT(*) FROM block_images WHERE block_key=?", params)
+        else:
+            source = ("SELECT visual_hash,width,height,username_key,local_date FROM images")
+            params = ()
+            total_source = ("SELECT COUNT(*) FROM images", params)
+        with self.connect() as db:
+            total = int(db.execute(total_source[0], total_source[1]).fetchone()[0])
+            hashed = int(db.execute(
+                f"SELECT COUNT(*) FROM ({source}) WHERE visual_hash IS NOT NULL AND visual_hash!=''",
+                params).fetchone()[0])
+            row = db.execute(f"""
+                WITH hashed AS ({source}), duplicate_groups AS (
+                    SELECT visual_hash,width,height,COUNT(*) AS copies,
+                           COUNT(DISTINCT username_key) AS creators,
+                           COUNT(DISTINCT local_date) AS dates
+                    FROM hashed WHERE visual_hash IS NOT NULL AND visual_hash!=''
+                    GROUP BY visual_hash,width,height HAVING COUNT(*) > 1
+                )
+                SELECT COUNT(*) AS groups,
+                       COALESCE(SUM(copies-1),0) AS uploads,
+                       COALESCE(SUM(CASE WHEN creators>1 THEN 1 ELSE 0 END),0) AS cross_creators,
+                       COALESCE(SUM(CASE WHEN dates>1 THEN 1 ELSE 0 END),0) AS cross_days
+                FROM duplicate_groups""", params).fetchone()
+        return {"scope": value or "all", "imageCount": total, "hashedImages": hashed,
+                "hashCoveragePercent": round((hashed * 100 / total) if total else 0, 2),
+                "duplicateGroups": int(row["groups"] or 0),
+                "duplicateUploads": int(row["uploads"] or 0),
+                "crossCreatorGroups": int(row["cross_creators"] or 0),
+                "crossDayGroups": int(row["cross_days"] or 0)}
+
     def creators_using_models(self, value: str, models: list[str]) -> dict[str, int]:
         """Creator keys with at least one image from the chosen models, and a matching image."""
         clause, params = _model_clause(models)
@@ -1430,9 +1577,10 @@ class HistoryArchive:
                 # Enrichment must never move an image between archived days.
                 with self.connect() as db:
                     db.execute("""UPDATE images SET prompt=?,negative_prompt=?,resources=?,
-                        base_model=COALESCE(?,base_model),model_version_ids=?,details_loaded=1 WHERE id=?""",
+                        base_model=COALESCE(?,base_model),model_version_ids=?,
+                        visual_hash=COALESCE(?,visual_hash),details_loaded=1 WHERE id=?""",
                         (item.get("prompt") or "", item.get("negativePrompt") or "",
                          json.dumps(item.get("resources") or []), item.get("baseModel"),
-                         json.dumps(item.get("modelVersionIds") or []), image_id))
+                         json.dumps(item.get("modelVersionIds") or []), item.get("visualHash"), image_id))
                 with self.connect() as db: row = db.execute("SELECT * FROM images WHERE id=?", (image_id,)).fetchone()
         return self._row_item(row, details=True)

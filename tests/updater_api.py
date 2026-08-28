@@ -52,8 +52,13 @@ with tempfile.TemporaryDirectory(prefix="civitai-update-api-") as temporary:
         assert status == 200 and value["checkForUpdates"] is True
         status, value = request("/api/update/status")
         assert status == 200 and value["enabled"] is True
+        status, value = request("/api/update/download", "POST", {})
+        assert status == 409 and "packaged builds" in value["error"]
+        status, value = request("/api/update/install", "POST", {})
+        assert status == 409 and "packaged builds" in value["error"]
         print({"preferencePersists": True, "disabledCheckRejected": True,
-               "sourceInstallIdentified": True, "statusShapeValid": True})
+               "sourceInstallIdentified": True, "sourceInstallRejectedClearly": True,
+               "statusShapeValid": True})
     finally:
         process.terminate()
         try:

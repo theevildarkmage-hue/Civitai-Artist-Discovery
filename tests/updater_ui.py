@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-update-ui-") as temporary:
             page = browser.new_page(viewport={"width": 1200, "height": 800})
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
-            phase = {"value": "available", "checks": 0, "installs": 0}
+            phase = {"value": "available", "checks": 0, "installs": 0, "supported": True}
             release = {"version": "0.4.0-beta.2", "name": "Civitai Artist Discovery 0.4 Beta 2",
                        "notes": "A safer updater.\n\n<img src=x onerror=alert(1)>",
                        "assetSize": 31_457_280, "prerelease": True,
@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-update-ui-") as temporary:
             def state():
                 job = {"phase": phase["value"], "downloaded": 31_457_280 if phase["value"] == "ready" else 0,
                        "total": 31_457_280, "error": None}
-                return {"enabled": True, "supported": True, "currentVersion": "0.3.1-beta.1",
+                return {"enabled": True, "supported": phase["supported"], "currentVersion": "0.3.1-beta.1",
                         "available": True, "release": release, "job": job,
                         "lastResult": None, "busyReason": None}
 
@@ -64,6 +64,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-update-ui-") as temporary:
 
             page.route("**/api/update/**", updates)
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="networkidle")
+            assert page.locator("#appVersion").inner_text() == "v0.3.1-beta.1"
             page.locator("#updateAvailable").wait_for(state="visible")
             assert page.locator("#updateAvailable").inner_text() == "Update 0.4.0-beta.2"
             page.locator("#updateAvailable").click()
@@ -80,9 +81,16 @@ with tempfile.TemporaryDirectory(prefix="civitai-update-ui-") as temporary:
             assert phase["installs"] == 1
             page.locator("#laterUpdate").click()
             assert not page.locator("#updateDialog").is_visible()
+            phase["supported"] = False
+            page.reload(wait_until="networkidle")
+            assert page.locator("#appVersion").inner_text() == "v0.3.1-beta.1"
+            assert not page.locator("#updateAvailable").is_visible()
+            assert not page.locator("#runUpdate").is_visible()
+            assert "source checkout" in page.locator("#updatePreferenceStatus").inner_text().lower()
             browser.close()
         assert not errors, errors
-        print({"notificationVisible": True, "changelogPlainText": True,
+        print({"versionAlwaysVisible": True, "sourceInstallActionHidden": True,
+               "notificationVisible": True, "changelogPlainText": True,
                "downloadProgress": True, "installHandoff": True,
                "dialogDismisses": True, "scriptInjectionBlocked": True})
     finally:

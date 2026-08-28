@@ -13,6 +13,11 @@ checkpointed through overloads, restarts, and retries, while legacy galleries wh
 timestamps reveal incomplete coverage are reopened for a resumable repair instead of
 continuing to present a truncated artist count.
 
+New collections also retain Civitai's visual listing hash. A request-free local duplicate
+report measures hash coverage, repeated uploads, cross-creator copies, and cross-day
+copies. Existing archive rows remain valid and are reported as unhashed until Civitai
+returns those listings again.
+
 This migration was validated end to end against August 23, 2026. Both half-days crossed
 all four required boundaries, SQLite passed its integrity check, and the merged gallery
 contained 84,020 distinct day memberships. The run also recovered from temporary Civitai

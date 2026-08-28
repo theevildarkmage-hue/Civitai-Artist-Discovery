@@ -182,11 +182,14 @@ function renderUpdateState(state) {
   updateChecksEnabled = state.enabled !== false;
   $("updateChecks").checked = updateChecksEnabled;
   const release = state.release, phase = state.job?.phase || "idle";
-  $("updateAvailable").classList.toggle("hidden", !updateChecksEnabled || !state.available);
+  $("appVersion").textContent = `v${state.currentVersion}`;
+  $("appVersion").title = state.supported ? "Packaged application" : "Source checkout";
+  $("updateAvailable").classList.toggle("hidden", !state.supported || !updateChecksEnabled || !state.available);
   if (release) $("updateAvailable").textContent = `Update ${release.version}`;
   const preference = $("updatePreferenceStatus");
   if (!updateChecksEnabled) preference.textContent = `Automatic checks are off. Current version: ${state.currentVersion}.`;
-  else if (!state.supported) preference.textContent = `Current source version: ${state.currentVersion}. One-click installation is available in packaged builds.`;
+  else if (!state.supported && release) preference.textContent = `Source checkout version ${state.currentVersion}. Packaged release ${release.version} is available, but source checkouts are updated through Git.`;
+  else if (!state.supported) preference.textContent = `Source checkout version ${state.currentVersion}. One-click installation is only available in packaged builds.`;
   else if (phase === "checking") preference.textContent = `Checking GitHub… Current version: ${state.currentVersion}.`;
   else if (release) preference.textContent = `Version ${release.version} is available. Nothing downloads without your approval.`;
   else preference.textContent = `Up to date on version ${state.currentVersion}. GitHub is checked at most once per day.`;
@@ -214,8 +217,10 @@ function renderUpdateState(state) {
   $("updateError").textContent = error || "";
   $("updateError").classList.toggle("hidden", !error);
   const action = $("runUpdate");
+  action.classList.toggle("hidden", !state.supported);
+  $("laterUpdate").textContent = state.supported ? "Remind me later" : "Close";
   action.textContent = phase === "ready" ? "Install and restart" : phase === "error" ? "Try download again" : "Download and install";
-  action.disabled = !release || active || phase === "checking" || (phase === "ready" && !!state.busyReason);
+  action.disabled = !state.supported || !release || active || phase === "checking" || (phase === "ready" && !!state.busyReason);
   action.title = phase === "ready" && state.busyReason ? state.busyReason : "";
   if (phase === "ready" && state.busyReason) {
     $("updateError").textContent = state.busyReason;
@@ -827,7 +832,8 @@ function showReady(status) {
 }
 function showStopped() { $("loadingTitle").textContent = "Loading stopped"; $("loadingMessage").textContent = "Everything collected so far has been saved. Press Continue building whenever you are ready."; $("progressText").textContent = "Safe to close the app"; $("progressBar").classList.remove("indeterminate"); $("stopLoading").classList.add("hidden"); $("startLoading").textContent = "Continue building"; $("startLoading").classList.remove("hidden"); $("startLoading").disabled = false; setNavigationBusy(false); }
 async function showCompletedDay(value, token) { const [day, auth] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), api("/api/auth-status")]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; applyAuth(auth); const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); $("gallery").classList.remove("hidden"); segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); const needs = { emerging: "followers", foryou: "tags" }[selectedView]; if (needs === "tags") showPreliminaryPlaceholder(); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); if (needs) ensureViewData(needs); }
-async function beginSelectedDay(rebuild = false) { const value = selectedDate, token = ++activeLoadToken; activeBuildSegment = selectedSegment; activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases(); showBuildSetup(false); $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery(); $("startLoading").disabled = true; $("startLoading").classList.add("hidden"); $("stopLoading").classList.remove("hidden"); $("stopLoading").disabled = false; $("elapsedText").classList.remove("hidden"); $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} ${displayDate(value)}`; setNavigationBusy(true); updateProgress({ phase: "locating", elapsedSeconds: 0, itemCount: 0, creatorCount: 0 }); const request = { ...dayRequest(value), contentRating: buildCoverageRating }; let status = await api(rebuild ? "/api/history/rebuild" : "/api/history/start", { method: "POST", body: JSON.stringify(request) }); while (!status.complete) { if (token !== activeLoadToken) return; if (loadCancelled || status.state === "cancelled") return; if (status.state === "error") throw new Error(status.error || "Daily import failed"); updateProgress(status); await new Promise(resolve => setTimeout(resolve, 750)); if (loadCancelled || token !== activeLoadToken) return; status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`); } activeBuildSegment = null; setLoadingPhase("complete"); await showCompletedDay(value, token); refreshBlockLabels(value); }
+function buildStatusError(status) { const error = new Error(status.error || "Daily import failed"); error.kind = status.errorKind; error.savedItems = safeCount(status.itemCount); return error; }
+async function beginSelectedDay(rebuild = false) { const value = selectedDate, token = ++activeLoadToken; activeBuildSegment = selectedSegment; activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases(); showBuildSetup(false); $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery(); $("startLoading").disabled = true; $("startLoading").classList.add("hidden"); $("stopLoading").classList.remove("hidden"); $("stopLoading").disabled = false; $("elapsedText").classList.remove("hidden"); $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} ${displayDate(value)}`; setNavigationBusy(true); updateProgress({ phase: "locating", elapsedSeconds: 0, itemCount: 0, creatorCount: 0 }); const request = { ...dayRequest(value), contentRating: buildCoverageRating }; let status = await api(rebuild ? "/api/history/rebuild" : "/api/history/start", { method: "POST", body: JSON.stringify(request) }); while (!status.complete) { if (token !== activeLoadToken) return; if (loadCancelled || status.state === "cancelled") return; if (status.state === "error") throw buildStatusError(status); updateProgress(status); await new Promise(resolve => setTimeout(resolve, 750)); if (loadCancelled || token !== activeLoadToken) return; status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`); } activeBuildSegment = null; setLoadingPhase("complete"); await showCompletedDay(value, token); refreshBlockLabels(value); }
 async function beginFullDay(rebuild = false) {
   const value = selectedDate, token = ++activeLoadToken;
   activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases();
@@ -855,7 +861,7 @@ async function beginFullDay(rebuild = false) {
         ...dayRequest(value, segment), contentRating: buildCoverageRating }) });
       while (!status.complete) {
         if (token !== activeLoadToken || loadCancelled || status.state === "cancelled") return;
-        if (status.state === "error") throw new Error(status.error || "Daily import failed");
+        if (status.state === "error") throw buildStatusError(status);
         updateProgress({ ...status, overallBase: index * 50, overallSpan: 50,
           itemCount: completedItems + safeCount(status.itemCount), creatorCount: completedCreators + safeCount(status.creatorCount),
           elapsedSeconds: completedElapsed + safeCount(status.elapsedSeconds) });
@@ -931,7 +937,8 @@ async function showDetails(image, artist, artistCard) { showArtwork($("detailIma
 const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) loadMore().catch(error => toast(error.message)); }, { rootMargin: "800px" });
 new MutationObserver(() => { const sentinel = $("loadSentinel"); if (sentinel) observer.observe(sentinel); }).observe($("gallery"), { childList: true });
 $("close").onclick = () => $("details").close(); $("details").onclick = event => { if (event.target === $("details")) $("details").close(); }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
-  $("loadingTitle").textContent = "History failed to load";
+  const outage = error.kind === "service_unavailable";
+  $("loadingTitle").textContent = outage ? "Civitai is unavailable" : "History failed to load";
   $("loadingMessage").textContent = error.message;
   // Nothing here used to clear the progress line or the bar's retry animation, so a
   // retry-exhausted failure kept showing the last "Retrying now · attempt 8 of 8" text
@@ -940,7 +947,9 @@ $("close").onclick = () => $("details").close(); $("details").onclick = event =>
   // saved incrementally, so recovery is the same "Continue building" as a manual stop,
   // not a dead end — and navigation was left disabled the whole time, with no way off
   // this screen except reloading.
-  $("progressText").textContent = "Everything collected so far has been saved.";
+  $("progressText").textContent = outage && error.savedItems
+    ? `${displayCount(error.savedItems)} images saved in this block.`
+    : "Everything collected so far has been saved.";
   $("progressBar").classList.remove("indeterminate", "waiting");
   $("stopLoading").classList.add("hidden");
   $("startLoading").textContent = "Continue building";

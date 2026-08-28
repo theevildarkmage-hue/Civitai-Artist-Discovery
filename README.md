@@ -14,11 +14,11 @@ sponsored by Civitai.
 
 ## Project status
 
-Version `0.3.3-beta.2` is the current public beta and remains under active development. Data formats, UI
-behavior, and Civitai integration details may still change. Windows is the primary and
-only routinely tested platform.
+Version `1.0.0` is the first stable release. The 1.x line focuses on compatibility and
+bug fixes; a broader interface redesign is planned separately for 2.x. Windows is the
+primary and only routinely tested platform.
 
-See the [beta release notes](docs/beta-release.md) for the release highlights.
+See the [1.0 release notes](docs/release-notes.md) for the release highlights.
 
 The underlying application is Python, SQLite, HTML, CSS, and JavaScript. Running from
 source on desktop Linux is experimental: secure OAuth storage is implemented through the
@@ -68,6 +68,8 @@ Windows-only.
 - Stops and resumes long collections from SQLite checkpoints.
 - Collects lightweight listing data first; full prompts and generation resources are read
   only when an image's detail view is opened.
+- Retains Civitai's listing-provided visual hash for newly collected images, allowing
+  duplicate and cross-creator repost rates to be measured locally without extra API calls.
 - Retries the original artwork when a generated Civitai CDN preview is unavailable.
 - Includes a local **My Profile** dashboard for the creative fingerprint, dominant model
   signals, reaction mix, distinctive tags, favorite creators, and creators worth following.
@@ -208,19 +210,23 @@ portable plaintext.
 
 It can include:
 
-- `history/history.sqlite3`: daily image and creator listings, checkpoints, and metrics;
+- `history/history.sqlite3`: daily image and creator listings, visual hashes, checkpoints,
+  and collection metrics;
 - `discovery/taste.sqlite3`: reaction-derived taste analysis, seen state, tags, and
   mirrored Content Controls;
 - `oauth_tokens.dpapi`: Windows-only DPAPI-encrypted OAuth credentials;
 - `oauth_client.json` and `settings.json`: local configuration, including Gallery preferences;
-- creator/follow caches, the single-instance marker, and `error.log`.
+- creator/follow caches, the single-instance marker, and `error.log`;
+- `api-failures.jsonl`: a size-limited, rotating journal of failed Civitai API status
+  codes, safe response headers, request context, and truncated response excerpts. Common
+  credential-shaped fields are redacted before the entry is written.
 - `update/`: the cached daily release check and, only while an approved update is being
   prepared, its verified archive, staging folder, rollback copy, and result receipt.
 
 The application does not create Registry settings. These files can contain account
-identifiers, creator names, reaction history, browsing
-preferences, image metadata, and diagnostic paths. Do not attach or commit the data
-folder when filing an issue.
+identifiers, creator names, reaction history, browsing preferences, image metadata, API
+response excerpts, and diagnostic paths. Do not attach or commit the data folder when
+filing an issue; review and share only the specific diagnostic entries that are needed.
 
 For isolated development or testing, redirect all runtime data to another directory:
 
@@ -318,7 +324,7 @@ One-file builds are intentionally disabled: they extract their runtime into the 
 temporary folder and therefore do not meet this project's portable-only behavior. Windows
 packages include the tray libraries' license texts and [third-party notices](THIRD_PARTY_NOTICES.md).
 
-Beta packages are unsigned, so Windows SmartScreen or managed-device policy may warn or
+Windows packages are unsigned, so Windows SmartScreen or managed-device policy may warn or
 block them. Review the source and build locally if preferred.
 
 ## Contributing and license

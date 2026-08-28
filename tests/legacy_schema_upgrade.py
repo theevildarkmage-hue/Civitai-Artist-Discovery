@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-legacy-schema-", ignore_cleanup
         db.execute("ALTER TABLE images ADD COLUMN stats_observed_at TEXT")
     with sqlite3.connect(database) as db:
         legacy = [row[1] for row in db.execute("PRAGMA table_info(images)")]
-    assert "stats_observed_at" in legacy and len(legacy) == 20, legacy
+    assert "stats_observed_at" in legacy and "visual_hash" in legacy and len(legacy) >= 21, legacy
 
     # Re-opening must not repair or drop it, and collection must still write.
     archive = HistoryArchive(root)

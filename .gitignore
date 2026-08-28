@@ -48,4 +48,11 @@ tests/*
 docs/*
 !docs/content-controls.md
 !docs/beta-release.md
+!docs/release-notes.md
+!docs/civitai-page.md
 !docs/updates.md
+
+# Deliberately published release artwork
+!assets/
+assets/*
+!assets/civitai-artist-discovery-v1-cover.png

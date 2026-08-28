@@ -12,7 +12,8 @@ uses GitHub's public release API, so a GitHub account and access token are not r
 The preference can be disabled under **My Profile**, and **Check now** remains available
 there when checks are enabled.
 
-When a newer beta or stable version exists, an **Update** button appears in the header.
+The running version is always shown beside the application name. When a newer compatible
+version exists in a packaged build, an **Update** button appears in the header.
 It opens a dialog containing the release name, plain-text changelog, download size, and a
 link to the GitHub release. Nothing is downloaded or installed until the user approves
 it. Download and verification progress remain visible in the dialog.
@@ -21,6 +22,11 @@ Installation waits if a gallery build, profile synchronization, follower scan, o
 preparation job is active. After the conflict ends, **Install and restart** closes the
 local server, applies the update, and reopens the application. A success or recovery
 message is shown after restart.
+
+Source checkouts identify themselves in the update settings and never show an install
+button. They can still check which packaged release is current, but must be updated
+through Git; the server also rejects direct source-build download or install requests
+with a clear conflict response.
 
 ## Verification and portable storage
 
@@ -38,9 +44,10 @@ the helper restores them and records the failure. Once the new version starts
 successfully, the archive, staging folder, and rollback copy are removed; the small
 result receipt remains only until the UI acknowledges it.
 
-The checker includes prereleases because Civitai Artist Discovery is currently published
-as a beta. Invalid versions, drafts, releases without the exact portable ZIP, and assets
-without GitHub digest metadata are ignored.
+Stable builds accept only newer stable releases. Prerelease builds can accept newer
+prereleases or the eventual stable release, allowing beta users to graduate without
+putting stable users onto a preview channel. Invalid versions, drafts, releases without
+the exact portable ZIP, and assets without GitHub digest metadata are ignored.
 
 ## Publishing a compatible release
 
