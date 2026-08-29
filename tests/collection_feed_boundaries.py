@@ -8,7 +8,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from discovery.history import COLLECTION_VERSION, HistoryArchive
+from discovery.history import (COLLECTION_VERSION, FEED_FLOOR_PROBE_OFFSET,
+                               HistoryArchive)
 
 
 DAY = "2026-07-31"
@@ -31,10 +32,18 @@ def wait(archive, key):
     return archive.status(key)
 
 
+ANCIENT = ({"items": [{"id": 0, "createdAt": "2020-01-01T00:00:00Z"}]}, 60)
+
+
+def is_floor_probe(params) -> bool:
+    """The collector asks each feed how far back it reaches before collecting anything."""
+    return str((params or {}).get("cursor", "")).startswith(f"{FEED_FLOOR_PROBE_OFFSET}|")
+
+
 with tempfile.TemporaryDirectory(prefix="civitai-feed-ceiling-") as temporary:
     archive = HistoryArchive(Path(temporary) / "history")
     archive._seek_cursor = lambda *a, **k: (None, 0, 0)
-    archive._request = lambda *a, **k: ({
+    archive._request = lambda params=None, *a, **k: ANCIENT if is_floor_probe(params) else ({
         "items": [image(1, f"{DAY}T16:00:00Z")], "metadata": {"nextCursor": None}}, 100)
     archive.start(DAY, START, END, "America/Chicago", "morning", "Soft")
     status = wait(archive, f"{DAY}#morning")
@@ -54,6 +63,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-feed-shards-") as temporary:
     masks = []
 
     def request(params, **_kwargs):
+        if is_floor_probe(params):
+            return ANCIENT
         mask = int(params["browsingLevel"])
         masks.append(mask)
         level = {1: 1, 2: 2, 4: 4, 8: 8, 16: 16}[mask]

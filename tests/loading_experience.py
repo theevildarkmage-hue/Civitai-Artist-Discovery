@@ -32,7 +32,7 @@ PORT = 8879
 def response(status: dict) -> str:
     return json.dumps({"date": "2026-07-31", "state": "loading", "progress": 0,
         "pages": 0, "phase": "locating", "itemCount": 0, "creatorCount": 0,
-        "elapsedSeconds": 0, "complete": False, **status})
+        "elapsedSeconds": 0, "complete": False, "collectionBackend": "search", **status})
 
 
 with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_errors=True) as temporary:
@@ -62,7 +62,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                     route.fulfill(status=202, content_type="application/json", body=response({"elapsedSeconds": 0}))
                 page.route("**/api/history/start", responsive_start)
                 def responsive_status(route):
-                    value = {"elapsedSeconds": 18} if starts["count"] else {"state": "not_started", "elapsedSeconds": None}
+                    value = ({"elapsedSeconds": 18, "plannedImages": 3400} if starts["count"]
+                             else {"state": "not_started", "elapsedSeconds": None})
                     route.fulfill(status=200, content_type="application/json", body=response(value))
                 page.route("**/api/history/status**", responsive_status)
                 page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
@@ -80,11 +81,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                 page.screenshot(path=str(SCREENSHOTS / f"ready-{label}.png"), full_page=True)
                 page.locator("#startLoading").click()
                 page.wait_for_selector("#phaseFinding.active")
+                page.locator("#progressText", has_text="3,400 images to collect").wait_for(timeout=10000)
                 body = page.locator("body").inner_text()
                 assert "API pages" not in body
                 assert "No images are being downloaded" not in body  # replaced by the more precise preview wording
                 assert "Artwork previews load later" in body
-                assert "artwork listings checked" in body
+                assert "3,400 images to collect" in body
                 assert starts["count"] == 1
                 assert page.locator("#stopLoading").is_visible() and page.locator("#closeLoading").is_visible()
                 page.screenshot(path=str(SCREENSHOTS / f"finding-{label}.png"), full_page=True)
@@ -99,6 +101,23 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                 {"phase": "collecting", "progress": 40, "itemCount": 2800, "creatorCount": 620, "elapsedSeconds": 30, "delayReason": "rate_limited"},
                 {"phase": "organizing", "progress": 100, "itemCount": 8160, "creatorCount": 1649, "elapsedSeconds": 45},
             ]
+            # The v1 feed remains the recovery backend, and it is the only one that pages
+            # backward to reach a date. Its planning step must keep saying so.
+            legacy = browser.new_page(viewport={"width": 1440, "height": 900})
+            legacy.route("**/api/auth-status", lambda route: route.fulfill(status=200, content_type="application/json", body='{"connected":true,"socialWrite":true,"username":"tester","id":7}'))
+            legacy.route("**/api/discovery/summary", lambda route: route.fulfill(status=200, content_type="application/json", body='{"hasData":true}'))
+            legacy.route("**/api/history/start", lambda route: route.fulfill(status=202,
+                content_type="application/json", body=response({"collectionBackend": "v1-feed", "listingsChecked": 9000})))
+            legacy.route("**/api/history/status**", lambda route: route.fulfill(status=200,
+                content_type="application/json", body=response({"collectionBackend": "v1-feed", "listingsChecked": 9000})))
+            legacy.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            legacy.wait_for_selector("#startLoading:not(.hidden)")
+            legacy.locator("#startLoading").click()
+            legacy.wait_for_selector("#phaseFinding.active")
+            legacy.locator("#progressText", has_text="9,000 artwork listings checked").wait_for(timeout=10000)
+            assert "Searching backward" in legacy.locator("#loadingMessage").inner_text()
+            legacy.close()
+
             calls = {"status": 0, "cancelled": False, "started": False, "startRequests": 0}
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             page.route("**/api/auth-status", lambda route: route.fulfill(status=200, content_type="application/json", body='{"connected":true,"socialWrite":true,"username":"tester","id":7}'))

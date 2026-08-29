@@ -29,7 +29,8 @@ SHOTS.mkdir(parents=True, exist_ok=True)
 def response(status: dict) -> str:
     return json.dumps({"date": "2026-07-31", "state": "loading", "progress": 0, "pages": 0,
         "phase": "locating", "itemCount": 0, "creatorCount": 0, "elapsedSeconds": 0,
-        "listingsChecked": 0, "complete": False, "retryAttempt": 0, "retryAttempts": 8, **status})
+        "plannedImages": 0, "complete": False, "collectionBackend": "search",
+        "retryAttempt": 0, "retryAttempts": 8, **status})
 
 
 with tempfile.TemporaryDirectory(prefix="civitai-retry-", ignore_cleanup_errors=True) as temporary:
@@ -77,18 +78,18 @@ with tempfile.TemporaryDirectory(prefix="civitai-retry-", ignore_cleanup_errors=
                     title: document.getElementById('loadingTitle').textContent,
                 })""")
 
-            current["status"] = response({"elapsedSeconds": 4, "listingsChecked": 400})
+            current["status"] = response({"elapsedSeconds": 4, "plannedImages": 400})
             page.click("#startLoading")
             page.wait_for_selector("#phaseFinding.active")
 
             # A first hiccup stays calm and never uses failure language.
-            first = show({"elapsedSeconds": 20, "listingsChecked": 1200, "pages": 6,
+            first = show({"elapsedSeconds": 20, "plannedImages": 1200, "pages": 6,
                           "delayReason": "service_retry", "retryInSeconds": 4, "retryAttempt": 1})
             assert "busy" in first["message"], first
             assert "did not respond" not in first["message"], first
             assert "failed" not in first["title"].lower(), first
             # The real counter survives, so the user can see nothing was lost.
-            assert "1,200 artwork listings checked" in first["progress"], first
+            assert "1,200 images to collect" in first["progress"], first
             assert "Retrying in 4s" in first["progress"], first
             # No attempt count while it is still routine.
             assert "attempt" not in first["progress"], first
@@ -96,12 +97,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-retry-", ignore_cleanup_errors=
             page.screenshot(path=str(SHOTS / "retry-first.png"), full_page=True)
 
             # The countdown moves between polls rather than sitting frozen.
-            second = show({"elapsedSeconds": 23, "listingsChecked": 1200, "pages": 6,
+            second = show({"elapsedSeconds": 23, "plannedImages": 1200, "pages": 6,
                            "delayReason": "service_retry", "retryInSeconds": 1, "retryAttempt": 1})
             assert "Retrying in 1s" in second["progress"], second
 
             # Only a persistent outage escalates, and it says which attempt it is on.
-            persistent = show({"elapsedSeconds": 90, "listingsChecked": 1200, "pages": 6,
+            persistent = show({"elapsedSeconds": 90, "plannedImages": 1200, "pages": 6,
                                "delayReason": "service_retry", "retryInSeconds": 16, "retryAttempt": 4})
             assert "not responding" in persistent["message"], persistent
             assert "attempt 4 of 8" in persistent["progress"], persistent
@@ -111,12 +112,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-retry-", ignore_cleanup_errors=
             page.screenshot(path=str(SHOTS / "retry-persistent.png"), full_page=True)
 
             # Rate limiting keeps its own explanation at every attempt.
-            limited = show({"elapsedSeconds": 120, "listingsChecked": 1200, "pages": 6,
+            limited = show({"elapsedSeconds": 120, "plannedImages": 1200, "pages": 6,
                             "delayReason": "rate_limited", "retryInSeconds": 60, "retryAttempt": 5})
             assert "slow down" in limited["message"], limited
 
             # Recovery clears the retry wording completely.
-            recovered = show({"elapsedSeconds": 140, "listingsChecked": 2000, "pages": 10,
+            recovered = show({"elapsedSeconds": 140, "plannedImages": 2000, "pages": 10,
                               "phase": "collecting", "progress": 30, "itemCount": 5000,
                               "creatorCount": 700, "etaLowSeconds": 60, "etaHighSeconds": 180})
             assert "Retrying" not in recovered["progress"], recovered

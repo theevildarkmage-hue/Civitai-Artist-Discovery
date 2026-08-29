@@ -4,6 +4,31 @@ Version **0.3.3-beta.2** is the current public beta of Civitai Artist Discovery.
 the existing local Python/SQLite architecture while incorporating the fixes and features
 validated during alpha testing.
 
+Daily collection continues to use Civitai's public v1 image API. A faster collector built
+on the search index behind Civitai's own image browser was written and measured -- a Soft
+half-day fell from an estimated six minutes to 13 seconds across 13 requests -- but it was
+not shipped. Civitai's Terms of Service (11.4) allow automated access only through
+interfaces expressly provided for it and only with the caller's own credentials, and that
+index is reached with the search key Civitai's frontend ships to browsers. It stays behind
+`CIVITAI_HISTORY_BACKEND=search`, off by default, for local diagnosis only.
+
+That problem turned out not to be a defect. Measured against the public API on
+2026-08-28: it exposes no date filter (`period` changes sort metrics, not which rows come
+back), the timestamp half of its cursor is ignored, and cursor traversal stops at roughly
+offset 49,000. Because that ceiling counts rows rather than time, each browsing level
+reaches a different depth -- PG about 5 days, XXX about 2 -- and a block needs every
+required level, so all-ratings days are reachable for barely two days. Partitioning by
+`baseModels` was measured as a way around it and rejected: 12.3% of listings carry no
+usable base model and would be dropped silently.
+
+So the window is a property of Civitai's API, not a bug, and the app now treats it as one.
+Each unfinished feed is asked how far back it reaches before any collecting starts -- one
+1-row request per level, under a kilobyte each -- and an out-of-reach date now fails in
+well under a second instead of after a full date-location sweep. The message names the
+oldest day that can still be built and makes clear that days already archived are
+unaffected. The build screen shows the same boundary before the button is pressed, so the
+limit is visible in advance rather than discovered by failing.
+
 The 0.3.3 Beta 2 collector no longer trusts an early end-of-feed response as proof that a
 large gallery is complete. Each half-day now records independent PG/PG-13, R, X, and XXX
 checkpoints and becomes ready only after every required feed crosses the requested time

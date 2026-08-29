@@ -632,9 +632,18 @@ function updateProgress(status) {
   $("progressBar").classList.toggle("waiting", Boolean(delay));
   if (phase === "finding") {
     $("progressBar").style.width = `${barWidth(28)}%`;
+    // Search asks Civitai for an exact date range, so step 1 measures how much that
+    // range holds. The old feed had to page backward from today to reach the date, and
+    // still does when the recovery backend is in use — the two report different things.
+    const seeking = status.collectionBackend === "v1-feed";
     const reached = status.searchReachedAt ? new Date(status.searchReachedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
-    $("loadingMessage").textContent = delay ? retryMessage(status) : "Searching backward through newer artwork to reach this day.";
-    const found_so_far = `${displayCount(checked)} artwork listings checked${reached ? ` · Reached ${reached}` : ""}`;
+    const planned = safeCount(status.plannedImages);
+    $("loadingMessage").textContent = delay ? retryMessage(status) : seeking
+      ? "Searching backward through newer artwork to reach this day."
+      : "Measuring how much artwork this date holds.";
+    const found_so_far = seeking
+      ? `${displayCount(checked)} artwork listings checked${reached ? ` · Reached ${reached}` : ""}`
+      : planned ? `${displayCount(planned)} image${planned === 1 ? "" : "s"} to collect` : "Planning the range…";
     $("progressText").textContent = delay ? `${found_so_far} · ${retryNote(status)}` : found_so_far;
     return;
   }
@@ -745,13 +754,35 @@ async function refreshBuildEstimate() {
     if (token !== estimateToken) return;
     $("buildEstimate").textContent = `${friendlyDuration(estimate.lowSeconds)}–${friendlyDuration(estimate.highSeconds)}`;
     if (estimate.fixedBenchmark) {
-      $("buildEstimateSource").textContent = `Fixed benchmark: about ${displayCount(estimate.benchmarkImages)} images, ${displayCount(estimate.listingRequests)} listing requests + ${displayCount(estimate.seekRequests)} date-location requests, up to ${displayCount(estimate.pageSize)} listings each. Range compares ${estimate.cleanRequestSeconds}s clean cycles with the observed ${estimate.delayedRequestSeconds}s delayed cycles; connection speed is not the limiter.`;
+      // The two collectors spend their requests differently, so the benchmark has to say
+      // which one it is describing rather than quoting a shape the run will not have.
+      $("buildEstimateSource").textContent = estimate.backend === "search"
+        ? `Fixed benchmark: about ${displayCount(estimate.benchmarkImages)} images, ${displayCount(estimate.listingRequests)} listing requests of up to ${displayCount(estimate.pageSize)} listings each, plus ${displayCount(estimate.planningRequests)} range-planning request${estimate.planningRequests === 1 ? "" : "s"}. Range compares ${estimate.cleanRequestSeconds}s clean listing cycles with the observed ${estimate.delayedRequestSeconds}s delayed cycles; connection speed is not the limiter.`
+        : `Fixed benchmark: about ${displayCount(estimate.benchmarkImages)} images, ${displayCount(estimate.listingRequests)} listing requests + ${displayCount(estimate.seekRequests)} date-location requests, up to ${displayCount(estimate.pageSize)} listings each. Range compares ${estimate.cleanRequestSeconds}s clean cycles with the observed ${estimate.delayedRequestSeconds}s delayed cycles; connection speed is not the limiter.`;
     } else if (estimate.measured) {
       $("buildEstimateSource").textContent = "Based on a completed build on this computer";
     } else {
       $("buildEstimateSource").textContent = "Starting estimate until this computer has comparable completed-build measurements";
     }
   } catch (_) { if (token === estimateToken) $("buildEstimate").textContent = "Estimate unavailable"; }
+  refreshBuildReach(token).catch(() => {});
+}
+// Civitai caps how deep its public image list can be paged, so days pass out of reach as
+// new artwork is posted. Asking once here costs one small request per coverage level and
+// replaces a failure that used to arrive only after a full date-location sweep.
+async function refreshBuildReach(token) {
+  const note = $("buildReach");
+  try {
+    const window_ = await api(`/api/history/window?contentRating=${buildCoverageRating}`);
+    if (token !== estimateToken) return;
+    if (!window_.measured || !window_.oldestBuildableDay) { note.classList.add("hidden"); return; }
+    const oldest = window_.oldestBuildableDay;
+    note.classList.remove("hidden");
+    note.classList.toggle("unreachable", selectedDate < oldest);
+    note.textContent = selectedDate < oldest
+      ? `Civitai can no longer reach ${displayDate(selectedDate)} at this coverage. Its public feed pages back only as far as ${displayDate(oldest)}, and that limit moves forward as new artwork is posted. Days already in your archive stay viewable.`
+      : `Civitai can currently reach back to ${displayDate(oldest)} at this coverage.`;
+  } catch (_) { note.classList.add("hidden"); }
 }
 function refreshBuildChoices() {
   const morningReady = blockReadyForBuild("morning");
@@ -939,8 +970,14 @@ new MutationObserver(() => { const sentinel = $("loadSentinel"); if (sentinel) o
 $("close").onclick = () => $("details").close(); $("details").onclick = event => { if (event.target === $("details")) $("details").close(); }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
   const outage = error.kind === "service_unavailable";
   const historyWindow = error.kind === "history_window";
+  // A rejected search service is not something retrying fixes, so it offers "Try again"
+  // rather than "Continue building", which would promise resumed progress it cannot make.
+  const searchChanged = error.kind === "search_configuration";
+  const unverified = error.kind === "search_incomplete";
   $("loadingTitle").textContent = outage ? "Civitai is unavailable" :
-    historyWindow ? "Date unavailable from Civitai" : "History failed to load";
+    historyWindow ? "Date unavailable from Civitai" :
+    searchChanged ? "Civitai changed its search service" :
+    unverified ? "This date could not be verified" : "History failed to load";
   $("loadingMessage").textContent = error.message;
   // Nothing here used to clear the progress line or the bar's retry animation, so a
   // retry-exhausted failure kept showing the last "Retrying now · attempt 8 of 8" text
@@ -954,7 +991,7 @@ $("close").onclick = () => $("details").close(); $("details").onclick = event =>
     : "Everything collected so far has been saved.";
   $("progressBar").classList.remove("indeterminate", "waiting");
   $("stopLoading").classList.add("hidden");
-  $("startLoading").textContent = historyWindow ? "Try again" : "Continue building";
+  $("startLoading").textContent = historyWindow || searchChanged ? "Try again" : "Continue building";
   $("startLoading").classList.remove("hidden");
   $("startLoading").disabled = false;
   setNavigationBusy(false);

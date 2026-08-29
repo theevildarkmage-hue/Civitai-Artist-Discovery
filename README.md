@@ -160,19 +160,45 @@ Python process.
 
 ## Civitai connection and configuration
 
-Public image collection uses `https://civitai.red/api/v1/images`. The endpoint returns at
-most 200 listings per request, so a full all-ratings day can require hundreds of
-serialized requests. Collection is deliberately sequential, adaptively paced, retried
-with backoff, and checkpointed after every page. The app collects each required Civitai
-browsing-level feed separately, combines duplicate image IDs locally, and marks a block
-ready only after every feed has crossed the requested time boundary. If Civitai stops a
-feed early, the block remains unfinished with saved progress instead of publishing a
-truncated gallery.
+Public image collection uses `https://civitai.red/api/v1/images`, the public API Civitai
+expressly provides for automated access. The endpoint returns at most 200 listings per
+request, so a full all-ratings day can require hundreds of serialized requests.
+Collection is deliberately sequential, adaptively paced, retried with backoff, and
+checkpointed after every page. The app collects each required Civitai browsing-level feed
+separately, combines duplicate image IDs locally, and marks a block ready only after
+every feed has crossed the requested time boundary. If Civitai stops a feed early, the
+block remains unfinished with saved progress instead of publishing a truncated gallery.
 
 Bulk collection always requests lightweight listings with `withMeta=false`. Full prompts
 and generation resources are fetched lazily for the image whose detail dialog is opened.
 This keeps a large day practical and avoids downloading full metadata for tens of
 thousands of images a user may never inspect.
+
+### How far back a day can be built
+
+Civitai's public API caps cursor traversal at roughly offset 49,000 and offers no date
+filter, so the reachable history is bounded by row count rather than by time. A
+high-volume browsing level therefore reaches back only about two days while a quiet one
+reaches five, and because a block requires every level it needs, the most restrictive one
+decides. `HistoryArchive.feed_floor` probes each required level with a single one-row
+request before collecting, and `history_window` reports the binding floor and the oldest
+day still buildable; `GET /api/history/window` exposes it to the build screen. Days
+already collected stay viewable regardless -- the limit applies only to new collection.
+
+### Why not Civitai's search service
+
+The site's own image browser is backed by a search index that accepts an exact date range
+and returns 1,000 listings per request, which would make collection roughly seven times
+faster. The app does not use it. Civitai's Terms of Service (11.4) permit automated access
+only through "interfaces we expressly provide for automated access, such as our public API
+or official Model Context Protocol (MCP) server, in each case accessed with your own valid
+credentials." That index is neither expressly provided for automated access nor reachable
+with the user's own credentials -- it is reached with the search key Civitai's frontend
+ships to browsers. Speed is not a reason to use a credential that was not issued to you.
+
+`discovery/search.py` and `CIVITAI_HISTORY_BACKEND=search` remain in the tree for local
+diagnosis of the v1 collector only. They are not a supported configuration, are off by
+default, and should not be enabled in a distributed build.
 
 Sign-in uses OAuth 2.0 Authorization Code with PKCE. The source contains a public OAuth
 client identifier, not a client secret. Developers can use their own public Civitai OAuth

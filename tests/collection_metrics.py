@@ -7,7 +7,8 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from discovery.history import COLLECTION_VERSION, HistoryArchive
+from discovery.history import (COLLECTION_VERSION, FEED_FLOOR_PROBE_OFFSET,
+                               HistoryArchive)
 
 
 DAY = "2026-07-31"
@@ -19,13 +20,23 @@ def image(image_id, created):
         "type": "image", "nsfwLevel": "Soft", "browsingLevel": 2, "stats": {}}
 
 
+ANCIENT = ({"items": [{"id": 0, "createdAt": "2020-01-01T00:00:00Z"}]}, 60)
+
+
+def is_floor_probe(params) -> bool:
+    """The collector asks each feed how far back it reaches before collecting anything."""
+    return str((params or {}).get("cursor", "")).startswith(f"{FEED_FLOOR_PROBE_OFFSET}|")
+
+
 with tempfile.TemporaryDirectory(prefix="civitai-collection-metrics-") as temporary:
     archive = HistoryArchive(Path(temporary) / "history")
     calls = 0
 
-    def request(_params, minimum_interval=None, on_delay=None, cancel_event=None, on_timing=None,
-                on_transfer=None):
+    def request(_params=None, minimum_interval=None, on_delay=None, cancel_event=None,
+                on_timing=None, on_transfer=None):
         global calls
+        if is_floor_probe(_params):
+            return ANCIENT
         calls += 1
         if on_timing:
             on_timing("pace", .5)
@@ -69,8 +80,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-resumed-metrics-") as temporary
                     pages,updated_at) VALUES(?,3,0,?,3,?)""",
                    (key, "saved-cursor", "2026-07-31T00:00:00Z"))
 
-    def resumed_request(_params, minimum_interval=None, on_delay=None, cancel_event=None,
+    def resumed_request(_params=None, minimum_interval=None, on_delay=None, cancel_event=None,
                         on_timing=None, on_transfer=None):
+        if is_floor_probe(_params):
+            return ANCIENT
         if on_timing:
             on_timing("pace", .5)
             on_timing("response", .25)

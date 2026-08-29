@@ -1,36 +1,47 @@
-# Civitai Artist Discovery 1.0.1
+# Civitai Artist Discovery 1.0.2
 
-Version 1.0.1 is a collection-reliability hotfix for the first stable release.
+Version 1.0.2 makes the app honest about how far back Civitai can be collected, and fails
+fast instead of failing late when a date is out of reach.
 
 ## Fixed
 
-- PG and PG-13 are now collected as independent feeds. Keeping each high-volume stream
-  below Civitai's public cursor traversal window lets the locator reach older dates that
-  failed immediately when both levels shared one cursor.
-- The date locator retries an unexpected empty HTTP 200 response three times. Each empty
-  response is recorded in the rotating `data/api-failures.jsonl` journal, including its
-  safe request context and response excerpt.
-- Cursor seeking has an explicit 50,000-result ceiling. A feed that ends or stops
-  advancing now exits predictably instead of returning a known-empty cursor or expanding
-  offsets without a bound.
-- When the selected date is outside Civitai's currently accessible public history, the
-  app says **Date unavailable from Civitai**, explains that the device and connection are
-  not the cause, and keeps both day navigation and a later retry available.
+- A date Civitai can no longer reach now fails in under a second instead of after a full
+  date-location sweep. Each unfinished browsing-level feed is asked how far back it
+  reaches before any collecting starts -- one single-row request per level, under a
+  kilobyte each.
+- The failure now names the oldest day that can still be built at the selected coverage,
+  and states plainly that days already in the archive are unaffected and stay viewable.
+  It previously said only "choose a newer day", which gave no way to know which.
+- The build screen shows the reachable boundary before the build button is pressed, via a
+  new `GET /api/history/window`. The limit is visible in advance rather than discovered by
+  failing.
+- The estimated build time now describes the collector that will actually run, instead of
+  quoting request counts and page sizes from a different one.
 
-The original report was captured as HTTP 503 with `Retry-After: 2` and the Civitai body
-`Image search is temporarily overloaded — please retry.` The API then returned a
-successful but empty locator page before the requested boundary. Version 1.0.1 handles
-the overload and the premature empty-page condition separately.
+## Why days pass out of reach
+
+Civitai's public API offers no date filter, ignores the timestamp half of its cursor, and
+stops cursor traversal near offset 49,000. Because that ceiling counts rows rather than
+time, each browsing level reaches a different depth -- PG about five days, XXX about two
+-- and a block needs every level it requires, so the most restrictive one decides. The
+boundary also moves forward as new artwork is posted.
+
+This is a property of the API rather than a defect, and no documented parameter changes
+it. Collecting through the search index behind Civitai's own image browser would lift the
+limit, but its Terms of Service (11.4) permit automated access only through interfaces
+expressly provided for it and only with the caller's own credentials, so the app does not
+use it. Days already collected remain viewable regardless; the limit applies only to new
+collection.
 
 ## Updating
 
-Version 1.0.0 can install this release from its in-app update dialog. The update remains
-user-approved, verifies GitHub's SHA-256 asset digest, preserves the portable `data/`
-folder, rolls back a failed replacement, and restarts automatically.
+Version 1.0.0 and 1.0.1 can install this release from the in-app update dialog. The
+update remains user-approved, verifies GitHub's SHA-256 asset digest, preserves the
+portable `data/` folder, rolls back a failed replacement, and restarts automatically.
 
-The exact release asset is `CivitaiArtistDiscovery-1.0.1.zip`. Its SHA-256 is
-`d9425fb005ef609036195f1fa52cbd96d8c44b47921d5858cef1a7785fac9fc1`; it is also
-recorded in the accompanying checksum file and verified automatically by the app.
+The exact release asset is `CivitaiArtistDiscovery-1.0.2.zip`. Its SHA-256 is recorded in
+the accompanying checksum file when the package is built, and is verified automatically
+by the app.
 
 Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
 unsigned, so Windows SmartScreen or managed-device policy may warn or block it.

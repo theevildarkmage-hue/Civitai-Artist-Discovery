@@ -7,6 +7,7 @@ from datetime import date, datetime, time as day_time, timedelta, timezone, tzin
 import gzip
 import json
 import math
+import os
 from pathlib import Path
 import random
 import re
@@ -20,6 +21,8 @@ import urllib.request
 from typing import Callable
 
 from .civitai import API_URL, USER_AGENT, normalize, utcnow
+from .search import (SEARCH_CLIENT_KEY, SEARCH_PAGE_SIZE, SEARCH_SLICE_RESULT_LIMIT,
+                     SEARCH_URL, normalize_hit, search_body)
 from .site import (DEFAULT_CONTENT_RATING, RATING_RANK,
                    browsing_levels, content_rating, image_url, levels_for_rating,
                    rating_for_levels)
@@ -46,7 +49,7 @@ COLLECTION_FEEDS = {
     "Mature": (1, 2, 4),
     "X": (1, 2, 4, 8, 16),
 }
-COLLECTION_VERSION = 4
+COLLECTION_VERSION = 5
 
 # Fixed planning benchmarks from the preserved completed runs. These are intentionally
 # not updated from runtime rows: later rows can represent partial/resumed work and caused
@@ -58,6 +61,11 @@ BUILD_BENCHMARK = {
     "Mature": {"images": 39_712, "listing_requests": 212},
     "X": {"images": 82_050, "listing_requests": 458},
 }
+# Civitai caps cursor traversal, so every feed has a floor that moves forward in real
+# time. 49,000 is the deepest offset measured to still return rows (50,000 is empty).
+FEED_FLOOR_PROBE_OFFSET = 49_000
+FEED_FLOOR_CACHE_SECONDS = 300
+
 BENCHMARK_SEEK_REQUESTS_PER_HALF = 17
 # Even a perfect pull observes the known five-second API request cadence. The delayed
 # value reproduces the trusted hour-long all-ratings run across its 492 total requests.
@@ -90,6 +98,28 @@ class HistoryWindowUnavailable(RuntimeError):
         self.oldest_seen = oldest_seen
         super().__init__(
             f"Civitai feed {browsing_mask} ended before reaching {target.isoformat()}")
+
+
+def active_backend() -> str:
+    """Return the collection backend to use.
+
+    Civitai's Terms of Service (11.4) permit automated access only through interfaces
+    they expressly provide for it -- their public API or MCP server -- and only with the
+    caller's own credentials. The browser search index is neither: it backs their own web
+    UI and is reached with the search key their frontend ships. So the documented v1
+    endpoint is the default, and the search collector stays opt-in for local diagnosis of
+    the v1 path, never for distributed use.
+    """
+    requested = os.environ.get("CIVITAI_HISTORY_BACKEND", "v1").strip().casefold()
+    return "search" if requested == "search" else "v1-feed"
+
+
+class SearchBackendUnavailable(RuntimeError):
+    """Civitai's browser search service could not serve a compatible response."""
+
+
+class SearchCompletenessError(RuntimeError):
+    """A bounded search slice did not yield its advertised unique result count."""
 
 
 class AdaptivePacer:
@@ -168,6 +198,19 @@ def parse_day(value: str) -> date:
     return date.fromisoformat(value)
 
 
+def oldest_buildable_day(floor: datetime) -> date:
+    """Return the oldest local day whose block still starts at or after ``floor``.
+
+    A block is collected back to its own local midnight, so a day is only buildable when
+    that midnight is still reachable -- the floor's own date usually is not.
+    """
+    local = floor.astimezone(LOCAL_ZONE)
+    midnight = datetime.combine(local.date(), day_time.min, LOCAL_ZONE)
+    if midnight < floor:
+        midnight += timedelta(days=1)
+    return midnight.date()
+
+
 def parse_bounds(value: str, start_utc: str, end_utc: str) -> tuple[datetime, datetime]:
     parse_day(value)
     start = parse_timestamp(start_utc); end = parse_timestamp(end_utc)
@@ -235,6 +278,9 @@ class HistoryArchive:
         self.api_lock = threading.Lock()
         self.last_api_request = 0.0
         self.api_pacer = AdaptivePacer()
+        # Feed floors move forward continuously; a short cache keeps the build screen
+        # responsive without re-probing Civitai on every status poll.
+        self._floor_cache: dict[int, tuple[float, datetime | None]] = {}
         self.content_rating = content_rating(selected_content_rating)
         self.visible_levels = browsing_levels(selected_browsing_levels) \
             if selected_browsing_levels is not None else levels_for_rating(self.content_rating)
@@ -517,11 +563,17 @@ class HistoryArchive:
             "etaHighSeconds": job.get("etaHighSeconds"), "delayReason": job.get("delayReason"),
             "retryInSeconds": retry_in, "retryAttempt": job.get("retryAttempt") or 0,
             "retryAttempts": job.get("retryAttempts") or RATE_LIMIT_RETRIES,
-            "listingsChecked": int(job.get("pages", 0)) * PAGE_SIZE,
+            "listingsChecked": int(job.get("listingsChecked",
+                int(job.get("pages", 0)) * (SEARCH_PAGE_SIZE
+                    if job.get("collectionBackend") == "search" else PAGE_SIZE))),
+            "plannedImages": job.get("plannedImages"),
             "searchReachedAt": job.get("searchReachedAt"),
             "error": job.get("error"), "errorKind": job.get("errorKind"),
             "complete": complete, "archiveComplete": archive_complete,
-            "rebuilding": bool(job.get("rebuilding")), "contentRating": self.content_rating,
+            "rebuilding": bool(job.get("rebuilding")),
+            "collectionBackend": job.get("collectionBackend") or
+                ("search" if day and int(day["collection_version"] or 0) >= COLLECTION_VERSION else "v1-feed"),
+            "contentRating": self.content_rating,
             "browsingLevels": list(self.visible_levels),
             "metrics": metrics,
             "archiveContentRating": coverage if day else None, "needsUpgrade": needs_upgrade}
@@ -589,7 +641,7 @@ class HistoryArchive:
             return current
         with self.connect() as db:
             existing = db.execute(
-                "SELECT elapsed_seconds,collection_version FROM days WHERE day=?", (key,)).fetchone()
+                "SELECT complete,elapsed_seconds,collection_version FROM days WHERE day=?", (key,)).fetchone()
             has_feed_rows = bool(db.execute("SELECT 1 FROM block_feeds WHERE block_key=? LIMIT 1",
                                             (key,)).fetchone())
         resuming = bool(existing and int(existing["collection_version"] or 0) >= COLLECTION_VERSION
@@ -599,7 +651,8 @@ class HistoryArchive:
             self.jobs[key] = {"state": "loading", "phase": "locating", "progress": 0, "pages": 0,
                 "startedMonotonic": time.monotonic(), "etaLowSeconds": None, "etaHighSeconds": None,
                 "delayReason": None, "contentRating": requested_rating,
-                "priorElapsedSeconds": prior_elapsed}
+                "priorElapsedSeconds": prior_elapsed,
+                "collectionBackend": "search" if active_backend() == "search" else "v1-feed"}
             self.cancel_events[key] = threading.Event()
         with self.connect() as db:
             db.execute("""INSERT INTO days(day,complete,timezone,start_utc,end_utc,content_rating,
@@ -613,6 +666,13 @@ class HistoryArchive:
                     block_key,browsing_mask,complete,updated_at) VALUES(?,?,0,?)""",
                 [(key, mask, utcnow()) for mask in COLLECTION_FEEDS[requested_rating]])
             if not resuming:
+                # Preserve proven feeds when upgrading a completed lower-coverage archive.
+                # An unfinished older collector carries incompatible offset cursors and
+                # must restart its feeds under the exact-range format.
+                if not (existing and existing["complete"]):
+                    db.execute("""UPDATE block_feeds SET complete=0,scan_cursor=NULL,
+                               older_cursor=NULL,top_cursor=NULL,pages=0,updated_at=?
+                               WHERE block_key=?""", (utcnow(), key))
                 db.execute("""UPDATE days SET seek_pages=0,seek_bytes=0,collect_pages=0,collect_bytes=0,
                     api_seconds=0,retry_seconds=0,retry_count=0,pace_seconds=0,response_seconds=0,
                     rate_limit_count=0,service_retry_count=0,network_retry_count=0,
@@ -650,17 +710,30 @@ class HistoryArchive:
             listing_requests = math.ceil(benchmark["listing_requests"] / 2)
         else:
             images = listing_requests = 0
-        seek_requests = BENCHMARK_SEEK_REQUESTS_PER_HALF * half_count * len(COLLECTION_FEEDS[rating])
-        requests = listing_requests + seek_requests
-        low = requests * BENCHMARK_CLEAN_REQUEST_SECONDS
-        high = requests * BENCHMARK_DELAYED_REQUEST_SECONDS
-        return {"segment": segment, "contentRating": rating,
+        backend = active_backend()
+        if backend == "search":
+            # Search returns up to 1,000 documents and accepts exact creation-time ranges.
+            # One fast count request per rating feed and half plans safe bounded slices.
+            listing_requests = math.ceil(images / SEARCH_PAGE_SIZE) if images else 0
+            planning_requests = half_count * len(COLLECTION_FEEDS[rating])
+            seek_requests = 0
+            low = listing_requests * 3.0 + planning_requests * .5
+            high = listing_requests * 5.0 + planning_requests * 1.0
+            page_size, clean, delayed = SEARCH_PAGE_SIZE, 3.0, 5.0
+        else:
+            planning_requests = 0
+            seek_requests = BENCHMARK_SEEK_REQUESTS_PER_HALF * half_count * len(COLLECTION_FEEDS[rating])
+            requests = listing_requests + seek_requests
+            low = requests * BENCHMARK_CLEAN_REQUEST_SECONDS
+            high = requests * BENCHMARK_DELAYED_REQUEST_SECONDS
+            page_size = PAGE_SIZE
+            clean, delayed = BENCHMARK_CLEAN_REQUEST_SECONDS, BENCHMARK_DELAYED_REQUEST_SECONDS
+        return {"segment": segment, "contentRating": rating, "backend": backend,
                 "seconds": round((low + high) / 2), "lowSeconds": round(low),
                 "highSeconds": round(high), "benchmarkImages": images,
-                "listingRequests": listing_requests, "seekRequests": seek_requests,
-                "pageSize": PAGE_SIZE,
-                "cleanRequestSeconds": round(BENCHMARK_CLEAN_REQUEST_SECONDS, 2),
-                "delayedRequestSeconds": round(BENCHMARK_DELAYED_REQUEST_SECONDS, 2),
+                "listingRequests": listing_requests, "planningRequests": planning_requests,
+                "seekRequests": seek_requests, "pageSize": page_size,
+                "cleanRequestSeconds": round(clean, 2), "delayedRequestSeconds": round(delayed, 2),
                 "measured": True, "fixedBenchmark": True}
 
     def rebuild(self, value: str, start_utc: str, end_utc: str, timezone_name: str, segment: str = "all") -> dict:
@@ -687,7 +760,8 @@ class HistoryArchive:
         with self.lock:
             self.jobs[key] = {"state": "loading", "phase": "locating", "progress": 0, "pages": 0,
                 "startedMonotonic": time.monotonic(), "etaLowSeconds": None, "etaHighSeconds": None,
-                "delayReason": None, "rebuilding": True}
+                "delayReason": None, "rebuilding": True,
+                "collectionBackend": "search" if active_backend() == "search" else "v1-feed"}
             self.cancel_events[key] = threading.Event()
         with self.connect() as db:
             db.execute("UPDATE days SET timezone=?,start_utc=?,end_utc=?,seek_pages=0,seek_bytes=0,"
@@ -782,8 +856,10 @@ class HistoryArchive:
                 r'(["\']?\s*[:=]\s*["\']?)[^"\'\s,}]+', r'\1\2[redacted]', excerpt)
             excerpt = excerpt[:API_FAILURE_BODY_BYTES]
         context = {name: params.get(name) for name in
-                   ("limit", "sort", "period", "browsingLevel", "withMeta")
+                   ("backend", "limit", "offset", "sort", "period", "browsingLevel", "withMeta")
                    if params.get(name) is not None}
+        if params.get("filter"):
+            context["filter"] = [str(value)[:200] for value in params["filter"][:8]]
         if params.get("cursor"):
             context["cursor"] = str(params["cursor"])[:160]
         record = {"timestamp": utcnow(), "kind": kind, "status": status,
@@ -887,6 +963,421 @@ class HistoryArchive:
                 else:
                     time.sleep(delay)
 
+    def _search_request(self, body: dict,
+                        on_delay: Callable[[str, float, int, int], None] | None = None,
+                        cancel_event: threading.Event | None = None,
+                        on_timing: Callable[[str, float], None] | None = None,
+                        on_transfer: Callable[[int, int], None] | None = None) -> tuple[dict, int]:
+        """POST one bounded query to the search-only endpoint used by Civitai's UI."""
+        encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
+        request = urllib.request.Request(SEARCH_URL, data=encoded, method="POST", headers={
+            "Accept": "application/json", "Accept-Encoding": "gzip",
+            "Authorization": f"Bearer {SEARCH_CLIENT_KEY}",
+            "Content-Type": "application/json", "User-Agent": USER_AGENT,
+        })
+        diagnostic = {**body, "backend": "browser-search"}
+        with self.api_lock:
+            attempt = 0
+            last_failure = None
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    raise CollectionCancelled()
+                started = time.monotonic()
+                try:
+                    paced = self._wait_api_lane(.25)
+                    if on_timing and paced:
+                        on_timing("pace", paced)
+                    self.last_api_request = time.monotonic()
+                    started = time.monotonic()
+                    with urllib.request.urlopen(request, timeout=60) as response:
+                        raw = response.read()
+                        wire_size = len(raw)
+                        if response.headers.get("Content-Encoding") == "gzip":
+                            raw = gzip.decompress(raw)
+                    if on_transfer:
+                        on_transfer(wire_size, len(raw))
+                    response_seconds = time.monotonic() - started
+                    if on_timing:
+                        on_timing("response", response_seconds)
+                    self.api_pacer.success(response_seconds)
+                    payload = json.loads(raw)
+                    if not isinstance(payload, dict):
+                        raise SearchBackendUnavailable("Civitai search returned an invalid response")
+                    return payload, len(raw)
+                except urllib.error.HTTPError as error:
+                    if on_timing:
+                        on_timing("response", time.monotonic() - started)
+                    try:
+                        error_body = error.read(API_FAILURE_BODY_BYTES + 1)
+                    except Exception:
+                        error_body = b""
+                    last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
+                    self._record_api_failure(diagnostic, "search_http", status=error.code,
+                        reason=error.reason, headers=error.headers, body=error_body)
+                    if error.code in {400, 401, 403, 404}:
+                        raise SearchBackendUnavailable(
+                            f"Civitai browser search rejected the app (HTTP {error.code})") from error
+                    if error.code != 429 and error.code < 500:
+                        raise
+                    reason = "rate_limited" if error.code == 429 else "service_retry"
+                    self.api_pacer.failure(reason)
+                    retry = error.headers.get("Retry-After")
+                    backoff_attempt = attempt % RATE_LIMIT_RETRIES
+                    if error.code == 429:
+                        try:
+                            wait = max(30.0, float(retry)) if retry else min(300.0, 30.0 * 2**backoff_attempt)
+                        except ValueError:
+                            wait = min(300.0, 30.0 * 2**backoff_attempt)
+                    else:
+                        wait = min(60.0, 2.0**backoff_attempt)
+                    delay = wait + random.uniform(0, 2)
+                except (TimeoutError, urllib.error.URLError) as error:
+                    if on_timing:
+                        on_timing("response", time.monotonic() - started)
+                    self.api_pacer.failure("network_retry")
+                    reason = "network_retry"
+                    last_failure = f"{type(error).__name__}: {error}"
+                    self._record_api_failure(diagnostic, "search_network", reason=error)
+                    delay = min(60, 2**(attempt % RATE_LIMIT_RETRIES)) + random.uniform(0, 1)
+                attempt += 1
+                attempts = CHECKPOINTED_RETRY_ATTEMPTS if cancel_event else RATE_LIMIT_RETRIES
+                if attempt >= attempts:
+                    raise RetryBudgetExhausted(reason, attempts, last_failure)
+                if on_delay:
+                    on_delay(reason, delay, attempt, attempts)
+                if cancel_event:
+                    if cancel_event.wait(delay):
+                        raise CollectionCancelled()
+                else:
+                    time.sleep(delay)
+
+    @staticmethod
+    def _search_checkpoint(start: datetime, end: datetime, offset: int, expected: int) -> str:
+        return "search-v1|{}|{}|{}|{}".format(
+            int(start.timestamp() * 1000), int(end.timestamp() * 1000), int(offset), int(expected))
+
+    @staticmethod
+    def _parse_search_checkpoint(value: object) -> tuple[int, int, int, int] | None:
+        try:
+            parts = str(value or "").split("|")
+            if len(parts) != 5 or parts[0] != "search-v1":
+                return None
+            parsed = tuple(int(part) for part in parts[1:])
+            return parsed if parsed[0] <= parsed[1] and parsed[2] >= 0 and parsed[3] >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _collect(self, key: str, value: str, start: datetime, end: datetime,
+                 rebuilding: bool = False) -> None:
+        """Use exact date-range search by default; retain the old feed for recovery."""
+        # Instance-level request replacement is the collector's established test and
+        # diagnostic injection seam; keep those deterministic legacy simulations local.
+        injected_legacy_request = "_request" in self.__dict__ and "_search_request" not in self.__dict__
+        if active_backend() != "search" or injected_legacy_request:
+            with self.lock:
+                self.jobs[key]["collectionBackend"] = "v1-feed"
+                self.jobs[key]["phase"] = "locating"
+            return self._collect_v1(key, value, start, end, rebuilding)
+        return self._collect_search(key, value, start, end, rebuilding)
+
+    def _collect_search(self, key: str, value: str, start: datetime, end: datetime,
+                        rebuilding: bool = False) -> None:
+        """Collect exact bounded time ranges from Civitai's browser image index."""
+        with self.connect() as db:
+            stored = db.execute("SELECT content_rating,elapsed_seconds FROM days WHERE day=?",
+                                (key,)).fetchone()
+        request_rating = content_rating(stored["content_rating"] if stored else self.content_rating)
+        prior_elapsed = float(stored["elapsed_seconds"] or 0) if stored else 0.0
+        masks = COLLECTION_FEEDS[request_rating]
+        cancel_event = self.cancel_events[key]
+        scan_started = time.monotonic()
+        total_pages = 0
+        planned_images = 0
+        eta_samples: list[float] = []
+        displayed_eta: tuple[int, int] | None = None
+        last_eta_update = 0.0
+
+        def report_delay(reason: str, wait: float, attempt: int, attempts: int) -> None:
+            with self.lock:
+                self.jobs[key].update({"delayReason": reason, "retryInSeconds": round(wait),
+                    "retryUntilMonotonic": time.monotonic() + wait,
+                    "retryAttempt": attempt, "retryAttempts": attempts,
+                    "etaLowSeconds": None, "etaHighSeconds": None})
+            with self.connect() as db:
+                db.execute("""UPDATE days SET retry_seconds=retry_seconds+?,retry_count=retry_count+1,
+                           rate_limit_count=rate_limit_count+?,service_retry_count=service_retry_count+?,
+                           network_retry_count=network_retry_count+? WHERE day=?""",
+                    (wait, int(reason == "rate_limited"), int(reason == "service_retry"),
+                     int(reason == "network_retry"), key))
+
+        def fetch(body: dict, checkpoint: str | None) -> dict:
+            nonlocal total_pages
+            timing = {"pace": 0.0, "response": 0.0, "wire": 0, "decoded": 0}
+
+            def record_timing(kind: str, seconds: float) -> None:
+                timing[kind] += seconds
+
+            def record_transfer(wire: int, decoded: int) -> None:
+                timing["wire"] += wire
+                timing["decoded"] += decoded
+
+            request_started = time.monotonic()
+            payload, size = self._search_request(body, on_delay=report_delay,
+                cancel_event=cancel_event, on_timing=record_timing, on_transfer=record_transfer)
+            if cancel_event.is_set():
+                raise CollectionCancelled()
+            request_seconds = time.monotonic() - request_started
+            total_pages += 1
+            with self.connect() as db:
+                db.execute("""UPDATE days SET scan_cursor=?,pages=pages+1,
+                           metadata_bytes=metadata_bytes+?,collect_pages=collect_pages+1,
+                           collect_bytes=collect_bytes+?,api_seconds=api_seconds+?,
+                           pace_seconds=pace_seconds+?,response_seconds=response_seconds+?,
+                           wire_bytes=wire_bytes+?,decoded_bytes=decoded_bytes+?,
+                           final_pacer_interval=?,elapsed_seconds=?,updated_at=? WHERE day=?""",
+                    (checkpoint, size, size, request_seconds, timing["pace"], timing["response"],
+                     timing["wire"], timing["decoded"], self.api_pacer.interval,
+                     prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
+            return payload
+
+        def plan_range(mask: int, range_start: datetime, range_end: datetime,
+                       checkpoint: str | None, depth: int = 0) -> list[tuple[datetime, datetime, int]]:
+            body = search_body(range_start, range_end, mask, limit=0)
+            payload = fetch(body, checkpoint)
+            try:
+                expected = int(payload["estimatedTotalHits"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise SearchBackendUnavailable(
+                    "Civitai search did not report a result count") from error
+            if expected < 0:
+                raise SearchBackendUnavailable("Civitai search reported an invalid result count")
+            if expected > SEARCH_SLICE_RESULT_LIMIT or expected >= 100_000:
+                if depth >= 12 or (range_end - range_start) <= timedelta(minutes=1):
+                    raise SearchCompletenessError(
+                        f"A one-minute Civitai search range still contains {expected:,} images")
+                middle = range_start + (range_end - range_start) / 2
+                return (plan_range(mask, range_start, middle, checkpoint, depth + 1) +
+                        plan_range(mask, middle, range_end, checkpoint, depth + 1))
+            # Report the planned size as each leaf range is measured: the planning step
+            # is several requests long for a full day, and would otherwise sit silent.
+            nonlocal planned_images
+            planned_images += expected
+            with self.lock:
+                self.jobs[key].update({"phase": "locating", "pages": total_pages,
+                    "plannedImages": planned_images, "feedIndex": feed_index + 1,
+                    "feedCount": len(masks), "browsingMask": mask,
+                    "collectionBackend": "search", "delayReason": None,
+                    "retryInSeconds": None, "retryUntilMonotonic": None, "retryAttempt": 0})
+            return [(range_start, range_end, expected)]
+
+        try:
+            for feed_index, mask in enumerate(masks):
+                with self.connect() as db:
+                    feed = db.execute("SELECT * FROM block_feeds WHERE block_key=? AND browsing_mask=?",
+                                      (key, mask)).fetchone()
+                if feed and feed["complete"]:
+                    continue
+                saved_cursor = (feed["top_cursor"] if rebuilding and feed else
+                                feed["scan_cursor"] if feed else None)
+                saved = self._parse_search_checkpoint(saved_cursor)
+                initial_checkpoint = saved_cursor if saved else self._search_checkpoint(start, start, 0, 0)
+                slices = plan_range(mask, start, end, initial_checkpoint)
+                feed_expected = sum(expected for _, _, expected in slices)
+                feed_done = 0
+
+                for slice_start, slice_end, expected in slices:
+                    start_ms = int(slice_start.timestamp() * 1000)
+                    end_ms = int(slice_end.timestamp() * 1000)
+                    if saved and end_ms <= saved[0]:
+                        feed_done += expected
+                        continue
+                    offset = saved[2] if saved and saved[:2] == (start_ms, end_ms) else 0
+                    if saved and saved[:2] == (start_ms, end_ms) and saved[3] != expected:
+                        # The completed-day index changed between attempts. Restart this
+                        # small idempotent slice so its count and pages share one snapshot.
+                        offset = 0
+                    while offset < expected:
+                        if cancel_event.is_set():
+                            raise CollectionCancelled()
+                        page_limit = min(SEARCH_PAGE_SIZE, expected - offset)
+                        checkpoint = self._search_checkpoint(
+                            slice_start, slice_end, offset, expected)
+                        payload = fetch(search_body(slice_start, slice_end, mask,
+                                                    limit=page_limit, offset=offset), checkpoint)
+                        hits = payload.get("hits")
+                        if not isinstance(hits, list) or len(hits) != page_limit:
+                            raise SearchCompletenessError(
+                                f"Civitai search returned {len(hits) if isinstance(hits, list) else 0:,} "
+                                f"of {page_limit:,} expected images at offset {offset:,}")
+                        normalized = [normalize_hit(hit) for hit in hits
+                                      if isinstance(hit, dict) and hit.get("id") and
+                                      hit.get("createdAt") and hit.get("url")]
+                        if len(normalized) != len(hits):
+                            raise SearchCompletenessError(
+                                "Civitai search returned an incomplete image document")
+                        image_ids = self._upsert_normalized(normalized, forced_date=value)
+                        offset += len(hits)
+                        next_checkpoint = self._search_checkpoint(
+                            slice_start, slice_end, offset, expected)
+                        with self.connect() as db:
+                            db.executemany(
+                                "INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)",
+                                [(key, image_id) for image_id in image_ids])
+                            db.execute("""UPDATE block_feeds SET scan_cursor=?,pages=pages+1,
+                                       updated_at=? WHERE block_key=? AND browsing_mask=?""",
+                                (next_checkpoint, utcnow(), key, mask))
+
+                        completed = feed_done + offset
+                        feed_fraction = completed / feed_expected if feed_expected else 1.0
+                        overall = (feed_index + feed_fraction) / len(masks)
+                        elapsed = max(.001, time.monotonic() - scan_started)
+                        eta = round(elapsed * (1 - overall) / overall) if overall > 0 else None
+                        if eta is not None:
+                            eta_samples = (eta_samples + [float(eta)])[-5:]
+                        now = time.monotonic()
+                        if elapsed >= 5 and total_pages >= 3 and eta_samples and \
+                                (displayed_eta is None or now - last_eta_update >= 10):
+                            displayed_eta = conservative_eta_range(
+                                sorted(eta_samples)[len(eta_samples) // 2])
+                            last_eta_update = now
+                        with self.lock:
+                            self.jobs[key].update({"pages": total_pages, "phase": "collecting",
+                                "progress": round(overall * 100, 1), "etaSeconds": eta,
+                                "listingsChecked": completed,
+                                "searchReachedAt": slice_end.isoformat(),
+                                "feedIndex": feed_index + 1, "feedCount": len(masks),
+                                "browsingMask": mask, "collectionBackend": "search",
+                                "etaLowSeconds": displayed_eta[0] if displayed_eta else None,
+                                "etaHighSeconds": displayed_eta[1] if displayed_eta else None,
+                                "delayReason": None, "retryInSeconds": None,
+                                "retryUntilMonotonic": None, "retryAttempt": 0})
+
+                    with self.connect() as db:
+                        slice_start_text = slice_start.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                        slice_end_text = slice_end.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                        saved_count = db.execute("""SELECT COUNT(*) FROM block_images b
+                            JOIN images i ON i.id=b.image_id WHERE b.block_key=?
+                              AND i.browsing_level=? AND i.created_at>=? AND i.created_at<?""",
+                            (key, mask, slice_start_text, slice_end_text)).fetchone()[0]
+                    if saved_count != expected:
+                        raise SearchCompletenessError(
+                            f"Civitai search advertised {expected:,} unique images for a range "
+                            f"but {saved_count:,} were saved")
+                    feed_done += expected
+                    saved = (end_ms, end_ms, 0, 0)
+                    with self.connect() as db:
+                        db.execute("UPDATE block_feeds SET scan_cursor=?,updated_at=? "
+                                   "WHERE block_key=? AND browsing_mask=?",
+                            (self._search_checkpoint(slice_end, slice_end, 0, 0),
+                             utcnow(), key, mask))
+
+                with self.connect() as db:
+                    db.execute("""UPDATE block_feeds SET complete=1,scan_cursor=NULL,
+                               older_cursor=NULL,top_cursor=NULL,updated_at=?
+                               WHERE block_key=? AND browsing_mask=?""",
+                        (utcnow(), key, mask))
+
+            with self.connect() as db:
+                db.execute("""UPDATE days SET complete=1,scan_cursor=NULL,content_rating=?,
+                           collection_version=?,elapsed_seconds=?,updated_at=? WHERE day=?""",
+                    (request_rating, COLLECTION_VERSION,
+                     prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
+            with self.lock:
+                self.jobs[key].update({"phase": "organizing", "progress": 100,
+                    "etaSeconds": None, "etaLowSeconds": None, "etaHighSeconds": None})
+            organize_started = time.monotonic()
+            self._invalidate_artist_cache(key)
+            self.build_artist_index(key)
+            merged = self.merge_completed_halves(key)
+            if self.on_block_complete:
+                try:
+                    self.on_block_complete(key, merged)
+                except Exception:
+                    pass
+            with self.connect() as db:
+                db.execute("UPDATE days SET organize_seconds=organize_seconds+?,elapsed_seconds=? WHERE day=?",
+                    (time.monotonic() - organize_started,
+                     prior_elapsed + time.monotonic() - scan_started, key))
+            with self.lock:
+                self.jobs[key].update({"state": "complete", "phase": "complete",
+                    "progress": 100, "etaSeconds": 0})
+        except CollectionCancelled:
+            return
+        except Exception as error:
+            with self.connect() as db:
+                db.execute("UPDATE days SET complete=0,elapsed_seconds=?,updated_at=? WHERE day=?",
+                    (prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
+            try:
+                with (self.root.parent / "error.log").open("a", encoding="utf-8") as output:
+                    output.write(f"\n[{utcnow()}] Daily search collection: {type(error).__name__}\n"
+                                 f"{traceback.format_exc()}")
+            except OSError:
+                pass
+            outage = isinstance(error, RetryBudgetExhausted)
+            configuration = isinstance(error, SearchBackendUnavailable)
+            incomplete = isinstance(error, SearchCompletenessError)
+            last_failure = (f" Last response: {error.last_failure}." if outage and
+                            error.last_failure else "")
+            message = (f"Civitai search is still unavailable after {error.attempts} attempts."
+                       f"{last_failure} Everything collected so far is saved; Continue building "
+                       "will resume it. Details are in data/api-failures.jsonl." if outage else
+                       "Civitai changed or rejected its browser search service, so the app cannot "
+                       "safely verify this date. No incomplete gallery was published. Details are "
+                       "in data/api-failures.jsonl." if configuration else
+                       "Civitai search changed while this range was being collected. Everything "
+                       "received is saved, but the gallery was not marked complete; Continue "
+                       "building will verify the range again." if incomplete else
+                       "Civitai stopped before the full time range was collected. Your progress "
+                       "was saved; Continue building will resume it.")
+            with self.lock:
+                self.jobs[key].update({"state": "error", "error": message,
+                    "errorKind": "service_unavailable" if outage else
+                                 "search_configuration" if configuration else
+                                 "search_incomplete" if incomplete else "collection_failed",
+                    "delayReason": None, "retryUntilMonotonic": None})
+
+    def feed_floor(self, mask: int) -> datetime | None:
+        """Return the oldest image one browsing-level feed can still reach.
+
+        A single one-row probe at the deepest reachable offset costs under a kilobyte and
+        answers in well under a second. Discovering the same limit by seeking costs tens
+        of requests and only reveals it after the user has already waited for them.
+        Returns None when the probe is inconclusive, so an unclear answer never blocks a
+        build that might have succeeded.
+        """
+        cached = self._floor_cache.get(mask)
+        if cached and time.monotonic() - cached[0] < FEED_FLOOR_CACHE_SECONDS:
+            return cached[1]
+        params = {"limit": 1, "sort": "Newest", "period": "AllTime",
+                  "browsingLevel": mask, "withMeta": "false",
+                  "cursor": f"{FEED_FLOOR_PROBE_OFFSET}|0"}
+        try:
+            payload, _ = self._request(params)
+            stamps = [parse_timestamp(row["createdAt"])
+                      for row in payload.get("items", []) if row.get("createdAt")]
+            floor = min(stamps) if stamps else None
+        except Exception:
+            floor = None
+        self._floor_cache[mask] = (time.monotonic(), floor)
+        return floor
+
+    def history_window(self, requested_content_rating: str | None = None) -> dict:
+        """Report how far back Civitai can currently be collected for a coverage level."""
+        rating = content_rating(requested_content_rating or self.content_rating)
+        floors = {mask: self.feed_floor(mask) for mask in COLLECTION_FEEDS[rating]}
+        known = {mask: value for mask, value in floors.items() if value}
+        # Every required feed must reach the boundary, so the newest floor is the binding
+        # one: the most restrictive level decides what the whole block can do.
+        binding_level = max(known, key=known.get) if known else None
+        binding = known[binding_level] if binding_level else None
+        oldest_day = oldest_buildable_day(binding).isoformat() if binding else None
+        return {"contentRating": rating,
+                "floor": binding.isoformat() if binding else None,
+                "oldestBuildableDay": oldest_day, "bindingLevel": binding_level,
+                "perLevel": {str(mask): (value.isoformat() if value else None)
+                             for mask, value in floors.items()},
+                "measured": bool(known)}
+
     def _seek_cursor(self, value: str, end: datetime, cancel_event: threading.Event,
                      browsing_mask: int,
                      report_delay: Callable[[str, float, int, int], None]) -> tuple[str | None, int, int]:
@@ -979,8 +1470,8 @@ class HistoryArchive:
             raise HistoryWindowUnavailable(browsing_mask, end, oldest_valid)
         return f"{upper}|{timestamp_ms}", pages, transferred
 
-    def _collect(self, key: str, value: str, start: datetime, end: datetime,
-                 rebuilding: bool = False) -> None:
+    def _collect_v1(self, key: str, value: str, start: datetime, end: datetime,
+                    rebuilding: bool = False) -> None:
         """Collect every non-overlapping browsing-level feed before publishing a block."""
         with self.connect() as db:
             stored = db.execute("SELECT content_rating,elapsed_seconds FROM days WHERE day=?",
@@ -991,6 +1482,10 @@ class HistoryArchive:
         cancel_event = self.cancel_events[key]
         scan_started = time.monotonic()
         total_pages = 0
+        with self.connect() as db:
+            pending_masks = [row["browsing_mask"] for row in db.execute(
+                "SELECT browsing_mask FROM block_feeds WHERE block_key=? AND complete=0",
+                (key,)).fetchall()] or list(masks)
 
         def report_delay(reason: str, wait: float, attempt: int, attempts: int) -> None:
             with self.lock:
@@ -1006,6 +1501,16 @@ class HistoryArchive:
                      int(reason == "network_retry"), key))
 
         try:
+            # Ask each unfinished feed how far back it can reach before spending a seek on
+            # it. Without this the same limit is only discovered after tens of requests,
+            # and only after the user has watched them all go by.
+            for mask in pending_masks:
+                if cancel_event.is_set():
+                    return
+                floor = self.feed_floor(mask)
+                if floor is not None and floor > start:
+                    raise HistoryWindowUnavailable(mask, start, floor)
+
             for feed_index, mask in enumerate(masks):
                 with self.connect() as db:
                     feed = db.execute("SELECT * FROM block_feeds WHERE block_key=? AND browsing_mask=?",
@@ -1177,16 +1682,22 @@ class HistoryArchive:
             window = isinstance(error, HistoryWindowUnavailable)
             last_failure = (f" Last response: {error.last_failure}." if outage and
                             error.last_failure else "")
+            window_hint = ""
+            if window and error.oldest_seen:
+                reachable = oldest_buildable_day(error.oldest_seen)
+                window_hint = (". The oldest day Civitai can currently build at this "
+                               f"coverage is {reachable:%B} {reachable.day}, {reachable.year}")
             message = (f"Civitai is still unavailable after {error.attempts} attempts."
                        f"{last_failure} "
                        "Everything collected so far is saved; Continue building will "
                        "resume from the last successful page. Details are in "
                        "data/api-failures.jsonl." if outage else
-                       "Civitai's public image feed ended before it could reach this "
-                       "date. The selected day is outside the API's current pagination "
-                       "window or the feed is temporarily incomplete; this is not a "
-                       "problem with your device or connection. Choose a newer day or "
-                       "try again later. Details are in data/api-failures.jsonl."
+                       "Civitai's public image feed cannot reach back this far. Its API "
+                       "limits how deep the image list can be paged, and that limit moves "
+                       "forward as new artwork is posted, so older days pass out of reach. "
+                       "This is not a problem with your device or connection"
+                       f"{window_hint}. Days already in your archive are unaffected and "
+                       "stay viewable. Details are in data/api-failures.jsonl."
                        if window else
                        "Civitai stopped before the full time range was collected. Your "
                        "progress was saved; Continue building will resume it.")

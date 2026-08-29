@@ -1,6 +1,7 @@
 """Build estimates scale with coverage and omit halves already ready at that coverage."""
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -46,7 +47,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-build-estimates-") as temporary
     assert safe < mature < explicit, (safe, mature, explicit)
     evidence = archive.build_estimate("all", "X", TARGET)
     assert evidence["fixedBenchmark"] and evidence["benchmarkImages"] == 82050, evidence
+    # The public v1 collector is the default, so the estimate must describe it.
+    assert evidence["backend"] == "v1-feed", evidence
     assert evidence["listingRequests"] == 458 and evidence["seekRequests"] == 170, evidence
+    assert evidence["planningRequests"] == 0 and evidence["pageSize"] == 200, evidence
     assert evidence["lowSeconds"] == 3140 and evidence["highSeconds"] == 4595, evidence
     half_safe = archive.build_estimate("morning", "Soft", TARGET)
     assert half_safe["listingRequests"] == 70 and half_safe["seekRequests"] == 34, half_safe
@@ -61,5 +65,18 @@ with tempfile.TemporaryDirectory(prefix="civitai-build-estimates-") as temporary
         archive.build_estimate("evening", "Soft", TARGET)["seconds"]
     assert archive.build_estimate("all", "X", TARGET)["seconds"] == explicit
 
+    # Opting into the diagnostic search backend must change the estimate with it, so the
+    # build screen never quotes v1 timings for a run that will not use v1.
+    os.environ["CIVITAI_HISTORY_BACKEND"] = "search"
+    try:
+        opted = archive.build_estimate("all", "X", TARGET)
+    finally:
+        del os.environ["CIVITAI_HISTORY_BACKEND"]
+    assert opted["backend"] == "search", opted
+    assert opted["listingRequests"] == 83 and opted["planningRequests"] == 10, opted
+    assert opted["seekRequests"] == 0 and opted["pageSize"] == 1000, opted
+    assert opted["highSeconds"] < evidence["lowSeconds"], (opted, evidence)
+    assert archive.build_estimate("all", "X", TARGET)["backend"] == "v1-feed"
+
 print({"coverageChangesEstimate": True, "readyHalfExcluded": True,
-       "coverageUpgradeIncluded": True})
+       "coverageUpgradeIncluded": True, "backendAwareEstimate": True})

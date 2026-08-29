@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from discovery.history import HistoryArchive
+from discovery.history import FEED_FLOOR_PROBE_OFFSET, HistoryArchive
 from discovery.site import API_URL, SITE_ORIGIN
 
 DAY = "2026-08-09"
@@ -22,11 +22,21 @@ def item(image_id, rating, browsing_level=None, created="2026-08-09T18:00:00Z"):
             "stats": {}}
 
 
+ANCIENT = ({"items": [{"id": 0, "createdAt": "2020-01-01T00:00:00Z"}]}, 60)
+
+
+def is_floor_probe(params) -> bool:
+    """The collector asks each feed how far back it reaches before collecting anything."""
+    return str((params or {}).get("cursor", "")).startswith(f"{FEED_FLOOR_PROBE_OFFSET}|")
+
+
 with tempfile.TemporaryDirectory() as temporary:
     archive = HistoryArchive(Path(temporary) / "history", "Soft")
     captured = []
 
     def request(params, **_):
+        if is_floor_probe(params):
+            return ANCIENT
         captured.append(dict(params))
         return ({"items": [item(1, "None"), item(2, "Soft"),
                             item(99, "None", created="2026-08-09T11:59:59Z")],

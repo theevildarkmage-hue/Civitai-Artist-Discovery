@@ -40,7 +40,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
@@ -1041,6 +1041,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response(HISTORY.build_estimate(segment, rating, value))
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Build estimate", error)
+            return
+        if parsed.path == "/api/history/window":
+            try:
+                rating = query.get("contentRating", [None])[0]
+                self.json_response(HISTORY.history_window(rating))
+            except ValueError as error: self.json_response({"error": str(error)}, 400)
+            except Exception as error: self.internal_error("History window", error)
             return
         if parsed.path == "/api/history/day":
             try:
