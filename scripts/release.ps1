@@ -89,7 +89,11 @@ try {
   $hash = (Get-FileHash $artifact -Algorithm SHA256).Hash.ToLower()
   $size = (Get-Item $artifact).Length
   $notes = "$artifact.sha256.txt"
-  "$hash  $(Split-Path $artifact -Leaf)" | Out-File $notes -Encoding utf8
+  # Windows PowerShell's -Encoding utf8 writes a BOM, which rides along with the digest
+  # when this file is read or copied and makes an honest hash look like a mismatch.
+  [System.IO.File]::WriteAllText(
+    $notes, "$hash  $(Split-Path $artifact -Leaf)`r`n",
+    (New-Object System.Text.UTF8Encoding($false)))
   Write-Host ''
   Write-Host "Version : $version"
   Write-Host "Artifact: $(Split-Path $artifact -Leaf)"
