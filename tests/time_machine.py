@@ -147,6 +147,26 @@ with tempfile.TemporaryDirectory(prefix="civitai-timemachine-",
     assert machine.has_image(1) and machine.has_image(9), "collected images must be known"
     assert not machine.has_image(123456), "unknown images must stay refused"
 
+    # Reacting reads and writes stats through the store that holds the row. Reading them
+    # from the daily archive returned {}, so a like wrote 1 instead of the count plus one.
+    assert machine.stats(1) == {"likeCount": 1, "reactionCount": 1}, machine.stats(1)
+    bumped = {**machine.stats(1), "likeCount": 2, "reactionCount": 2}
+    machine.update_stats(1, bumped)
+    assert machine.stats(1) == bumped, machine.stats(1)
+    assert machine.stats(123456) == {}, "an unknown image has no stats to report"
+
+    # The detail dialog needs a payload for these images too, or its controls do nothing.
+    detail = machine.detail(1)
+    assert detail["id"] == 1 and detail["username"] == "Ana", detail
+    assert detail["thumbnailUrl"] and detail["civitaiUrl"], detail
+    assert "prompt" in detail and "resources" in detail, detail
+    assert detail["stats"]["likeCount"] == 2, detail
+    try:
+        machine.detail(123456)
+        raise AssertionError("an unknown image must not produce a detail payload")
+    except ValueError:
+        pass
+
 print({"resolvedInBatches": True, "onePagePerCreator": True, "oldestFirst": True,
        "levelFiltered": True, "pointerPerCreator": True, "refillsOnDemand": True,
        "exhaustedStaysDone": True, "galleryCardShape": True, "contentCheckAccepts": True})

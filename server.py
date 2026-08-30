@@ -114,6 +114,21 @@ def profile_avatar(profile: dict | None) -> str | None:
     return f"https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/{value}/width=160/{filename}"
 
 
+def image_store(image_id: int):
+    """Which collector holds this image, or None.
+
+    Guarding on "the app collected this" is not enough on its own: the code behind the
+    guard then has to read and write through the store that actually holds the row.
+    Reading stats from the daily archive for an image it does not have returns {}, so a
+    reaction wrote 1 instead of the previous count plus one.
+    """
+    if HISTORY.has_image(image_id):
+        return HISTORY
+    if TIME_MACHINE.has_image(image_id):
+        return TIME_MACHINE
+    return None
+
+
 def collected_image(image_id: int) -> bool:
     """Whether this image came from somewhere the app collected, not just anywhere.
 
@@ -122,7 +137,7 @@ def collected_image(image_id: int) -> bool:
     such guard has to consult every collector, or a feature works in one place and fails
     in another for no reason a user could understand.
     """
-    return HISTORY.has_image(image_id) or TIME_MACHINE.has_image(image_id)
+    return image_store(image_id) is not None
 
 
 def decorate_history_artist(artist: dict, profiles: dict | None = None, follows: set[str] | None = None,
@@ -1304,7 +1319,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/history/image":
             try:
                 image_id = int(query.get("id", [0])[0])
-                detail = HISTORY.detail(image_id)
+                detail = (image_store(image_id) or HISTORY).detail(image_id)
                 # Tags are already collected for the personalised ordering; showing them
                 # here means the reason an image was ranked or hidden is inspectable.
                 try:
@@ -1622,7 +1637,8 @@ class Handler(BaseHTTPRequestHandler):
         if reaction not in REACTIONS or not isinstance(desired, bool):
             raise ValueError("Invalid reaction request")
         state = CACHE.load(); item = next((row for row in state.get("items", []) if int(row.get("id", -1)) == image_id), None)
-        in_history = collected_image(image_id)
+        store = image_store(image_id)
+        in_history = store is not None
         if item is None and not in_history:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
@@ -1643,11 +1659,11 @@ class Handler(BaseHTTPRequestHandler):
                     CACHE.save(fresh)
                     item = cached
         if in_history:
-            stats = HISTORY.stats(image_id)
+            stats = store.stats(image_id)
             if changed:
                 delta = 1 if desired else -1; key = REACTIONS[reaction]
                 stats[key] = max(0, int(stats.get(key, 0)) + delta); stats["reactionCount"] = max(0, int(stats.get("reactionCount", 0)) + delta)
-                HISTORY.update_stats(image_id, stats)
+                store.update_stats(image_id, stats)
         else: stats = item.get("stats", {})
         self.json_response({"imageId": image_id, "reactions": sorted(current), "stats": stats, "changed": changed})
 

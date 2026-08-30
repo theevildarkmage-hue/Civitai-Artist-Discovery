@@ -213,6 +213,61 @@ class TimeMachine:
             return db.execute("SELECT 1 FROM creator_images WHERE image_id=? LIMIT 1",
                               (int(image_id),)).fetchone() is not None
 
+    def stats(self, image_id: int) -> dict:
+        with self.connect() as db:
+            row = db.execute("SELECT stats FROM creator_images WHERE image_id=? LIMIT 1",
+                             (int(image_id),)).fetchone()
+        return json.loads(row["stats"]) if row else {}
+
+    def update_stats(self, image_id: int, stats: dict) -> None:
+        with self.connect() as db:
+            db.execute("UPDATE creator_images SET stats=? WHERE image_id=?",
+                       (json.dumps(stats), int(image_id)))
+
+    def detail(self, image_id: int) -> dict:
+        """The detail-dialog payload for an image collected here.
+
+        Prompts and resources are not stored: the listing does not carry them and this
+        walks whole back-catalogues, so fetching them for every image would be wasteful.
+        They are read once, on demand, exactly as the daily archive does -- and asked for
+        at this image's own browsing level, since an anonymous caller is otherwise
+        answered at the public level only and gets nothing back.
+        """
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM creator_images WHERE image_id=? LIMIT 1",
+                             (int(image_id),)).fetchone()
+        if row is None:
+            raise ValueError("Image is not in the history archive")
+        item = {"id": row["image_id"], "postId": row["post_id"], "username": row["username"],
+                "createdAt": row["created_at"], "url": row["url"],
+                "thumbnailUrl": thumbnail_url(row["url"]),
+                "detailImageUrl": thumbnail_url(row["url"], 1280),
+                "civitaiUrl": image_url(row["image_id"]),
+                "width": row["width"], "height": row["height"], "type": "image",
+                "browsingLevel": row["browsing_level"],
+                "baseModel": row["base_model"] or "Unknown",
+                "stats": json.loads(row["stats"]), "visualHash": None,
+                "modelVersionIds": [], "prompt": "", "negativePrompt": "",
+                "resources": [], "detailsLoaded": False}
+        try:
+            payload, _ = self.archive._request(
+                {"imageId": int(image_id), "withMeta": "true",
+                 "browsingLevel": int(row["browsing_level"] or 0) or self._mask()})
+            raw = next((entry for entry in payload.get("items", [])
+                        if int(entry.get("id", -1)) == int(image_id)), None)
+            if raw:
+                extra = normalize(raw)
+                item.update({"prompt": extra.get("prompt") or "",
+                             "negativePrompt": extra.get("negativePrompt") or "",
+                             "resources": extra.get("resources") or [],
+                             "modelVersionIds": extra.get("modelVersionIds") or [],
+                             "baseModel": extra.get("baseModel") or item["baseModel"],
+                             "visualHash": extra.get("visualHash"),
+                             "detailsLoaded": True})
+        except Exception:  # noqa: BLE001
+            pass   # The dialog still opens; it simply has no generation details.
+        return item
+
     def advance(self, usernames) -> int:
         """Move each named creator past the image currently shown."""
         keys = [str(name).casefold() for name in usernames if str(name).strip()]
