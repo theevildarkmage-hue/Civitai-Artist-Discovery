@@ -20,6 +20,7 @@ and throw away data already paid for.
 from __future__ import annotations
 
 from datetime import date, datetime, time as day_time, timedelta
+import json
 import threading
 import traceback
 
@@ -32,6 +33,10 @@ CAPTURE_SEGMENTS = ("morning", "evening")
 # How many recent days to consider. The feed reaches back about two, so looking four back
 # covers the reachable range with margin without ever attempting the plainly impossible.
 CAPTURE_LOOKBACK_DAYS = 4
+# Unattended work that leaves no trace cannot be diagnosed after the fact. Every run
+# appends one line here, including runs that did nothing, so "it never fired" and "it
+# fired and found nothing to do" are distinguishable days later.
+CAPTURE_LOG_BYTES = 1024 * 1024
 
 
 def day_bounds(value: date) -> tuple[datetime, datetime]:
@@ -83,9 +88,23 @@ class AutoCapture:
 
     # -- running ----------------------------------------------------------------
 
+    def _log(self, record: dict) -> None:
+        """Append one run to the rotating capture journal."""
+        try:
+            path = self.archive.root.parent / "capture-log.jsonl"
+            line = json.dumps(record, ensure_ascii=False) + chr(10)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size + len(line) > CAPTURE_LOG_BYTES:
+                path.replace(path.with_suffix(".jsonl.1"))
+            with path.open("a", encoding="utf-8") as output:
+                output.write(line)
+        except OSError:
+            pass   # Logging must never be the reason a capture fails.
+
     def run_once(self) -> dict:
         """Capture every pending block, in order. Returns what it did."""
-        captured, failed, skipped = [], [], []
+        started = self._now()
+        captured, failed, skipped, details = [], [], [], []
         for value, segment in self.pending_blocks():
             if self.stopping.is_set():
                 break
@@ -95,9 +114,10 @@ class AutoCapture:
                 self.archive.start(value, start.isoformat(), end.isoformat(),
                                    str(LOCAL_ZONE), segment,
                                    self.settings.load()["contentRating"])
-            except ValueError:
+            except ValueError as error:
                 # Out of reach or otherwise refused before any work started.
                 skipped.append(key)
+                details.append({"block": key, "outcome": "skipped", "reason": str(error)[:300]})
                 continue
             # A block is collected start to finish before the next one begins, so the
             # archive never has two feeds competing for the same paced request lane.
@@ -106,11 +126,25 @@ class AutoCapture:
                 if status["state"] not in {"loading"}:
                     break
             status = self.archive.status(key)
-            (captured if status["complete"] else failed).append(key)
+            done = bool(status["complete"])
+            (captured if done else failed).append(key)
+            details.append({"block": key, "outcome": "captured" if done else "failed",
+                            "images": status.get("itemCount"),
+                            "requests": status.get("pages"),
+                            "elapsedSeconds": status.get("elapsedSeconds"),
+                            # The reason a block did not finish is the whole point of
+                            # keeping this, so carry it rather than just the block name.
+                            "error": status.get("error"),
+                            "errorKind": status.get("errorKind")})
+        finished = self._now()
         result = {"captured": captured, "failed": failed, "skipped": skipped,
-                  "at": self._now().isoformat()}
+                  "at": finished.isoformat(),
+                  "startedAt": started.isoformat(),
+                  "durationSeconds": round((finished - started).total_seconds(), 1),
+                  "blocks": details}
         with self.lock:
             self.last_run, self.last_result = result["at"], result
+        self._log(result)
         return result
 
     def seconds_until_next(self, settings: dict | None = None) -> float:

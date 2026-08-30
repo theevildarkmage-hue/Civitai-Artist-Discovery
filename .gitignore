@@ -56,3 +56,6 @@ docs/*
 !assets/
 assets/*
 !assets/civitai-artist-discovery-v1-cover.png
+
+# Local server logs from development runs; CONTRIBUTING forbids committing logs.
+logs/
