@@ -22,6 +22,7 @@ import webbrowser
 import traceback
 
 from discovery.civitai import CandidateCache
+from discovery.capture import AutoCapture
 from discovery.history import HistoryArchive, parse_day, previous_local_day
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
@@ -52,6 +53,8 @@ HISTORY = HistoryArchive(DATA_ROOT / "history", INITIAL_SETTINGS["contentRating"
                          INITIAL_SETTINGS["browsingLevels"])
 TASTE = TasteStore(DATA_ROOT / "discovery")
 UPDATES = UpdateManager(DATA_ROOT, application_root(), APP_VERSION)
+# The listing sweep is the only step that expires, so it is the only one run unattended.
+CAPTURE = AutoCapture(HISTORY, SETTINGS)
 WRITE_LOCK = threading.Lock()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
@@ -1042,6 +1045,11 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Build estimate", error)
             return
+        if parsed.path == "/api/history/capture":
+            try:
+                self.json_response(CAPTURE.status())
+            except Exception as error: self.internal_error("Capture status", error)
+            return
         if parsed.path == "/api/history/window":
             try:
                 rating = query.get("contentRating", [None])[0]
@@ -1432,6 +1440,19 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"),
                     str(body.get("segment") or "all"), body.get("contentRating")), 202)
                 return
+            if parsed.path == "/api/history/capture":
+                enabled = body.get("enabled")
+                hours = body.get("intervalHours")
+                SETTINGS.update(auto_capture_value=enabled if isinstance(enabled, bool) else None,
+                                auto_capture_hours_value=hours if hours is not None else None)
+                if SETTINGS.load()["autoCapture"]:
+                    CAPTURE.start()
+                    if body.get("runNow"):
+                        CAPTURE.trigger()
+                else:
+                    CAPTURE.stop()
+                self.json_response(CAPTURE.status())
+                return
             if parsed.path == "/api/history/rebuild":
                 value = str(body.get("date") or previous_local_day())
                 self.json_response(HISTORY.rebuild(value, str(body.get("startUtc") or ""), str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"), str(body.get("segment") or "all")), 202)
@@ -1638,6 +1659,9 @@ def main() -> None:
     url = f"http://{display_host}:{actual_port}"
     save_instance_url(url)
     UPDATES.schedule_success_cleanup()
+    # Only starts a worker when the preference is on; otherwise nothing runs.
+    if SETTINGS.load()["autoCapture"]:
+        CAPTURE.start()
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
     tray = None

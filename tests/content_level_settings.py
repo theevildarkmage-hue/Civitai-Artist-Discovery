@@ -15,7 +15,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
     path = Path(temporary) / "settings.json"
     settings = AppSettings(path)
     gallery_defaults = {"hideHighVolumeCreators": False, "highVolumeThreshold": 100,
-                        "emergingReactionMode": "balanced", "emergingReactionLimit": 0}
+                        "emergingReactionMode": "balanced", "emergingReactionLimit": 0,
+                        "autoCapture": False, "autoCaptureHours": 12}
 
     assert settings.load() == {"contentRating": "Soft", "browsingLevels": [1, 2],
                                "dimSeenCards": True, "checkForUpdates": True,
@@ -42,7 +43,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
                             emerging_reaction_mode_value="strict",
                             emerging_reaction_limit_value=500)
     gallery_saved = {"hideHighVolumeCreators": True, "highVolumeThreshold": 200,
-                     "emergingReactionMode": "strict", "emergingReactionLimit": 500}
+                     "emergingReactionMode": "strict", "emergingReactionLimit": 500,
+                     "autoCapture": False, "autoCaptureHours": 12}
     saved = settings.update(content_rating_value="Soft")
     assert saved == {"contentRating": "Soft", "browsingLevels": [1, 2],
                      "dimSeenCards": False, "checkForUpdates": False, **gallery_saved}
