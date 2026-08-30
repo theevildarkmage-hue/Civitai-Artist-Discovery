@@ -1443,8 +1443,12 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/history/capture":
                 enabled = body.get("enabled")
                 hours = body.get("intervalHours")
+                # "keep" leaves the chosen time alone; an explicit null restores the
+                # automatic slot, so the two are not the same request.
+                minute = body["atMinute"] if "atMinute" in body else "keep"
                 SETTINGS.update(auto_capture_value=enabled if isinstance(enabled, bool) else None,
-                                auto_capture_hours_value=hours if hours is not None else None)
+                                auto_capture_hours_value=hours if hours is not None else None,
+                                auto_capture_minute_value=minute)
                 if SETTINGS.load()["autoCapture"]:
                     CAPTURE.start()
                     if body.get("runNow"):

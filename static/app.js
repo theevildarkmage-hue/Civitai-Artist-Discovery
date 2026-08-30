@@ -285,6 +285,65 @@ $("updateChecks").onchange = async () => {
   } catch (error) { $("updateChecks").checked = updateChecksEnabled; toast(error.message); }
   finally { $("updateChecks").disabled = false; }
 };
+// Automatic collection reaches Civitai on a schedule with nobody watching, so the panel
+// has to answer three things at a glance: that it happens, when it happens next, and how
+// to stop it. Off until switched on.
+let captureState = null;
+function describeNextRun(state) {
+  if (!state.enabled) return "Off. Days older than Civitai’s reach cannot be collected later.";
+  const seconds = Number(state.nextRunInSeconds);
+  const when = state.nextRunAt ? new Date(state.nextRunAt) : null;
+  if (!when || !Number.isFinite(seconds)) return "Next collection is being scheduled.";
+  const hours = Math.floor(seconds / 3600), minutes = Math.round((seconds % 3600) / 60);
+  const away = hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+  const clock = when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const automatic = state.atMinute === null || state.atMinute === undefined;
+  const twice = Number(state.intervalHours) === 12 && !automatic;
+  return `Next collection ${clock} (in ${away})` +
+    (automatic ? " · time picked automatically so installs do not all arrive at once."
+     : twice ? " · your chosen time, and again 12 hours later."
+     : " · the time you chose.");
+}
+function renderCaptureState(state) {
+  captureState = state;
+  const block = document.querySelector(".capture-preference");
+  block.classList.toggle("is-off", !state.enabled);
+  $("captureEnabled").checked = !!state.enabled;
+  $("captureInterval").value = String(state.intervalHours ?? 12);
+  const minute = state.atMinute;
+  $("captureAt").value = minute === null || minute === undefined ? ""
+    : `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+  $("captureAtClear").classList.toggle("hidden", minute === null || minute === undefined);
+  $("captureNextRun").textContent = describeNextRun(state);
+  const last = state.lastResult;
+  if (last && state.enabled) {
+    const got = (last.captured || []).length, missed = (last.failed || []).length;
+    $("captureNextRun").textContent += ` Last run collected ${got} block${got === 1 ? "" : "s"}` +
+      (missed ? `, ${missed} did not finish.` : ".");
+  }
+}
+async function refreshCaptureState() {
+  try { renderCaptureState(await api("/api/history/capture")); }
+  catch (_) { /* the panel simply stays as it was */ }
+}
+async function postCapture(body) {
+  const controls = ["captureEnabled", "captureInterval", "captureAt", "captureRunNow"];
+  controls.forEach(id => { $(id).disabled = true; });
+  try { renderCaptureState(await api("/api/history/capture", { method: "POST", body: JSON.stringify(body) })); }
+  catch (error) { toast(error.message); if (captureState) renderCaptureState(captureState); }
+  finally { controls.forEach(id => { $(id).disabled = false; }); }
+}
+$("captureEnabled").onchange = () => postCapture({ enabled: $("captureEnabled").checked });
+$("captureInterval").onchange = () => postCapture({ intervalHours: Number($("captureInterval").value) });
+$("captureAt").onchange = () => {
+  const value = $("captureAt").value;
+  if (!value) return postCapture({ atMinute: null });
+  const [hours, minutes] = value.split(":").map(Number);
+  postCapture({ atMinute: hours * 60 + minutes });
+};
+$("captureAtClear").onclick = () => postCapture({ atMinute: null });
+$("captureRunNow").onclick = () => postCapture({ enabled: true, runNow: true });
+
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]); }
 function safeCount(value) { const number = Number(value); return Number.isFinite(number) ? Math.max(0, Math.round(number)) : 0; }
 function displayCount(value) { return safeCount(value).toLocaleString(); }
@@ -782,6 +841,13 @@ async function refreshBuildReach(token) {
     note.textContent = selectedDate < oldest
       ? `Civitai can no longer reach ${displayDate(selectedDate)} at this coverage. Its public feed pages back only as far as ${displayDate(oldest)}, and that limit moves forward as new artwork is posted. Days already in your archive stay viewable.`
       : `Civitai can currently reach back to ${displayDate(oldest)} at this coverage.`;
+    try {
+      const capture = await api("/api/history/capture");
+      if (token !== estimateToken) return;
+      note.textContent += capture.enabled
+        ? " Recent days are being collected automatically, so they will not fall out of reach."
+        : " Days pass out of reach as new artwork is posted. My Profile → Keep recent days automatically collects them before that happens.";
+    } catch (_) { /* the reach note stands on its own */ }
   } catch (_) { note.classList.add("hidden"); }
 }
 function refreshBuildChoices() {
@@ -1322,7 +1388,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
   }, delay);
 }
 async function startup() {
-  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); } catch (_) { showContentRating(); showGalleryPreferences(); }
+  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);

@@ -235,3 +235,12 @@ dialog.update-dialog[open]{display:block}
   .update-actions{justify-content:stretch}.update-actions button{flex:1}
   .update-dialog-copy{padding:22px 17px}
 }
+
+/* Automatic collection: the schedule and the opt-out have to be visible together, so a
+   reader can see what will happen and turn it off in the same glance. */
+.capture-preference{align-items:flex-start}
+.capture-preference .capture-next{color:var(--muted);font-variant-numeric:tabular-nums}
+.capture-preference .capture-every,.capture-preference .capture-at{display:flex;align-items:center;gap:6px;color:var(--muted);white-space:nowrap}
+.capture-preference input[type=time]{background:#101114;color:inherit;border:1px solid var(--line);border-radius:6px;padding:3px 6px}
+.capture-preference .link-button{font-size:.85em}
+.capture-preference.is-off .capture-every,.capture-preference.is-off .capture-at,.capture-preference.is-off #captureRunNow{opacity:.45;pointer-events:none}

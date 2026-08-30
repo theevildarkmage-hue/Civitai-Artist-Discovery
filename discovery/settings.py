@@ -64,6 +64,11 @@ class AppSettings:
                 auto_capture_hours = 12
             # A stable per-install number, so this copy of the app always picks the same
             # slot in the interval but a different one from everybody else's copy.
+            # None means "pick a slot automatically", which spreads installs across the
+            # interval. A number is a local minute past midnight the user chose instead.
+            capture_minute = raw.get("autoCaptureMinute")
+            if not isinstance(capture_minute, int) or not 0 <= capture_minute < 1440:
+                capture_minute = None
             seed = raw.get("captureSeed")
             if not isinstance(seed, int) or not 0 <= seed < 2**31:
                 seed = secrets.randbelow(2**31)
@@ -77,6 +82,7 @@ class AppSettings:
                     "emergingReactionLimit": emerging_reaction_limit,
                     "autoCapture": auto_capture,
                     "autoCaptureHours": auto_capture_hours,
+                    "autoCaptureMinute": capture_minute,
                     "captureSeed": seed}
 
     def update(self, *, browsing_levels_value: object = None,
@@ -88,7 +94,8 @@ class AppSettings:
                emerging_reaction_mode_value: object = None,
                emerging_reaction_limit_value: object = None,
                auto_capture_value: object = None,
-               auto_capture_hours_value: object = None) -> dict:
+               auto_capture_hours_value: object = None,
+               auto_capture_minute_value: object = "keep") -> dict:
         current = self.load()
         if browsing_levels_value is not None:
             levels = browsing_levels(browsing_levels_value)
@@ -132,6 +139,11 @@ class AppSettings:
                               else auto_capture_hours_value)
         if auto_capture_hours not in AUTO_CAPTURE_INTERVALS:
             raise ValueError("autoCaptureHours must be 12 or 24")
+        capture_minute = (current["autoCaptureMinute"] if auto_capture_minute_value == "keep"
+                          else auto_capture_minute_value)
+        if capture_minute is not None and (not isinstance(capture_minute, int)
+                                           or not 0 <= capture_minute < 1440):
+            raise ValueError("autoCaptureMinute must be null or a minute of the day")
         seed = current["captureSeed"]
         value = {"contentRating": rating_for_levels(levels),
                  "browsingLevels": list(levels),
@@ -143,6 +155,7 @@ class AppSettings:
                  "emergingReactionLimit": emerging_reaction_limit,
                  "autoCapture": auto_capture,
                  "autoCaptureHours": auto_capture_hours,
+                 "autoCaptureMinute": capture_minute,
                  "captureSeed": seed}
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)

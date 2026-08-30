@@ -129,11 +129,31 @@ class AutoCapture:
         quieter baseline, which is a straight loss.
         """
         settings = settings or self.settings.load()
+        now = self._now()
+        return (self.next_run_at(settings, now) - now).total_seconds()
+
+    def next_run_at(self, settings: dict | None = None, now: datetime | None = None):
+        """The datetime of this install's next slot.
+
+        Both the countdown and the displayed clock time come from here, so they cannot
+        disagree -- computing them from two separate readings of the clock left the shown
+        time a fraction of a second short, which rendered a chosen 3:30 as 3:29.
+        """
+        settings = settings or self.settings.load()
+        now = now or self._now()
         period = settings["autoCaptureHours"] * 3600
+        chosen = settings.get("autoCaptureMinute")
+        if chosen is not None:
+            # An explicit local time, honoured exactly. Picking one gives up the spread,
+            # which is why it is not the default.
+            target = now.replace(hour=chosen // 60, minute=chosen % 60,
+                                 second=0, microsecond=0)
+            while target <= now:
+                target += timedelta(seconds=period)
+            return target
         slot = settings["captureSeed"] % period
-        now = self._now().timestamp()
-        elapsed = (now - slot) % period
-        return period - elapsed
+        elapsed = (now.timestamp() - slot) % period
+        return now + timedelta(seconds=period - elapsed)
 
     def _worker(self) -> None:
         while not self.stopping.is_set():
@@ -175,10 +195,14 @@ class AutoCapture:
 
     def status(self) -> dict:
         settings = self.settings.load()
+        now = self._now()
+        next_run = self.next_run_at(settings, now)
         with self.lock:
             running = bool(self.thread and self.thread.is_alive())
             return {"enabled": settings["autoCapture"],
                     "intervalHours": settings["autoCaptureHours"],
                     "running": running, "lastRun": self.last_run,
                     "lastResult": self.last_result,
-                    "nextRunInSeconds": round(self.seconds_until_next(settings))}
+                    "atMinute": settings.get("autoCaptureMinute"),
+                    "nextRunAt": next_run.isoformat(),
+                    "nextRunInSeconds": round((next_run - now).total_seconds())}
