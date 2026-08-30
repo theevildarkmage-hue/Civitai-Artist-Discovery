@@ -235,3 +235,15 @@ dialog.update-dialog[open]{display:block}
   .update-actions{justify-content:stretch}.update-actions button{flex:1}
   .update-dialog-copy{padding:22px 17px}
 }
+
+/* Priming progress is counted in creators, not images: the API returns no per-creator
+   total, and creators-primed is both meaningful and free. */
+.tm-track{margin-top:7px;height:6px;border-radius:3px;background:#101114;overflow:hidden}
+.tm-track>div{height:100%;width:0;background:var(--accent,#4dd0c7);transition:width .4s ease}
+.tm-card{display:grid;gap:6px}
+.tm-card{padding:10px;overflow:hidden}
+.tm-card img{width:100%;border-radius:8px;display:block}
+.tm-card .tm-meta{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+  flex-wrap:wrap;color:var(--muted);font-size:.85rem;min-width:0}
+.tm-card .tm-meta>span{min-width:0;overflow-wrap:anywhere}
+.tm-card .tm-progress{font-variant-numeric:tabular-nums;text-align:right}

@@ -1642,14 +1642,22 @@ async function pollDiscovery() {
 }
 function showView(name) {
   const discovery = name === "discovery";
-  if (discovery) pauseSeenTracking();
-  $("tabGallery").classList.toggle("active", !discovery); $("tabGallery").setAttribute("aria-pressed", String(!discovery));
+  const timeMachine = name === "timemachine";
+  const gallery = !discovery && !timeMachine;
+  if (!gallery) pauseSeenTracking();
+  $("tabGallery").classList.toggle("active", gallery); $("tabGallery").setAttribute("aria-pressed", String(gallery));
   $("tabDiscovery").classList.toggle("active", discovery); $("tabDiscovery").setAttribute("aria-pressed", String(discovery));
-  segmentToolbar.classList.toggle("hidden", discovery);
-  ["olderDay", "newerDay", "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", discovery));
+  $("tabTimeMachine").classList.toggle("active", timeMachine); $("tabTimeMachine").setAttribute("aria-pressed", String(timeMachine));
+  segmentToolbar.classList.toggle("hidden", !gallery);
+  ["olderDay", "newerDay", "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", !gallery));
   $("discovery").classList.toggle("hidden", !discovery);
-  $("loading").classList.toggle("hidden", discovery || dayBuilt);
-  $("gallery").classList.toggle("hidden", discovery || !dayBuilt);
+  $("timeMachine").classList.toggle("hidden", !timeMachine);
+  $("loading").classList.toggle("hidden", !gallery || dayBuilt);
+  $("gallery").classList.toggle("hidden", !gallery || !dayBuilt);
+  if (timeMachine) {
+    refreshTimeMachine().catch(error => { $("timeMachineMessage").textContent = error.message; });
+    return;
+  }
   if (!discovery) {
     resumeSeenTracking();
     if (recommendationsNeedRefresh && dayBuilt && selectedView === "foryou") {
@@ -1668,6 +1676,96 @@ function showView(name) {
 }
 $("tabGallery").onclick = () => showView("gallery");
 $("tabDiscovery").onclick = () => showView("discovery");
+$("tabTimeMachine").onclick = () => showView("timemachine");
+
+// The Time Machine walks each followed creator from their oldest image. A card advances
+// only when it has been scrolled past, using the same rule as the dimmed gallery cards,
+// so "seen" means one thing everywhere in the app.
+let timeMachinePoll = 0;
+function renderTimeMachineStatus(state) {
+  const bar = $("timeMachineBar");
+  bar.style.width = `${Math.max(0, Math.min(100, Number(state.progress) || 0))}%`;
+  const { primed = 0, creators = 0, images = 0, priming } = state;
+  $("timeMachineStatus").textContent = !creators
+    ? "Not started. Reading your follows fetches each creator’s earliest artwork."
+    : priming
+      ? `Reading creator ${displayCount(primed)} of ${displayCount(creators)}… ${displayCount(images)} images so far.`
+      : `${displayCount(primed)} of ${displayCount(creators)} creators read · ${displayCount(images)} images available.`;
+  $("timeMachinePrime").classList.toggle("hidden", !!priming);
+  $("timeMachineStop").classList.toggle("hidden", !priming);
+}
+function renderTimeMachineCards(cards) {
+  const grid = $("timeMachineGrid");
+  grid.innerHTML = "";
+  if (!cards.length) {
+    $("timeMachineMessage").textContent = $("timeMachineBar").style.width === "0%"
+      ? "Read your follows to begin."
+      : "Every creator you follow has been read to the end at this content level.";
+    return;
+  }
+  $("timeMachineMessage").textContent = "";
+  cards.forEach(card => {
+    const element = document.createElement("article");
+    element.className = "creator-card tm-card";
+    element.dataset.username = card.username.toLowerCase();
+    const seen = safeCount(card.seenCount), known = safeCount(card.knownCount);
+    // "of N so far" while more of the creator is unfetched: the API gives no total, so
+    // claiming a complete denominator would be a guess.
+    const progress = card.complete ? `${displayCount(seen)} of ${displayCount(known)}`
+                                   : `${displayCount(seen)} of ${displayCount(known)} so far`;
+    element.innerHTML =
+      `<div class="creator-identity"><strong>${escapeHtml(card.username)}</strong></div>` +
+      `<a href="${escapeHtml(card.civitaiUrl)}" target="_blank" rel="noopener">` +
+      `<img loading="lazy" src="${escapeHtml(card.thumbnailUrl || card.url)}" alt=""></a>` +
+      `<div class="tm-meta"><span>${escapeHtml(String(card.createdAt).slice(0, 10))}</span>` +
+      `<span class="tm-progress">${progress}</span></div>`;
+    grid.appendChild(element);
+    timeMachineSeenObserver.observe(element);
+  });
+}
+const timeMachinePending = new Set();
+const timeMachineSeenObserver = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    const element = entry.target;
+    if (entry.isIntersecting) { element.tmEnteredAt = Date.now(); return; }
+    // Scrolled away after dwelling, not merely rendered: the same test the gallery uses.
+    if (element.tmEnteredAt && Date.now() - element.tmEnteredAt > 900) {
+      timeMachinePending.add(element.dataset.username);
+    }
+    element.tmEnteredAt = 0;
+  });
+}, { threshold: 0.6 });
+async function flushTimeMachineSeen() {
+  if (!timeMachinePending.size) return 0;
+  const usernames = [...timeMachinePending];
+  timeMachinePending.clear();
+  const { advanced } = await api("/api/timemachine/seen",
+    { method: "POST", body: JSON.stringify({ usernames }) });
+  return advanced;
+}
+async function refreshTimeMachine() {
+  await flushTimeMachineSeen();
+  const data = await api("/api/timemachine");
+  renderTimeMachineStatus(data.status);
+  renderTimeMachineCards(data.cards);
+}
+$("timeMachinePrime").onclick = async () => {
+  $("timeMachinePrime").disabled = true;
+  try {
+    renderTimeMachineStatus(await api("/api/timemachine/prime", { method: "POST", body: "{}" }));
+    clearInterval(timeMachinePoll);
+    timeMachinePoll = setInterval(async () => {
+      const state = await api("/api/timemachine/status");
+      renderTimeMachineStatus(state);
+      if (!state.priming) { clearInterval(timeMachinePoll); refreshTimeMachine().catch(() => {}); }
+    }, 1500);
+  } catch (error) { toast(error.message); }
+  finally { $("timeMachinePrime").disabled = false; }
+};
+$("timeMachineStop").onclick = async () => {
+  try { renderTimeMachineStatus(await api("/api/timemachine/stop", { method: "POST", body: "{}" })); }
+  catch (error) { toast(error.message); }
+};
 $("syncDiscovery").onclick = async () => {
   if (!oauthConnected) return toast("Connect Civitai to analyse your reactions.");
   $("syncDiscovery").disabled = true;
