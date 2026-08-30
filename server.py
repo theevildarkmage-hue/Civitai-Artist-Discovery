@@ -23,6 +23,7 @@ import traceback
 
 from discovery.civitai import CandidateCache
 from discovery.capture import AutoCapture
+from discovery.timemachine import TimeMachine
 from discovery.history import HistoryArchive, parse_day, previous_local_day
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
@@ -55,6 +56,9 @@ TASTE = TasteStore(DATA_ROOT / "discovery")
 UPDATES = UpdateManager(DATA_ROOT, application_root(), APP_VERSION)
 # The listing sweep is the only step that expires, so it is the only one run unattended.
 CAPTURE = AutoCapture(HISTORY, SETTINGS)
+# Shares HISTORY's paced request lane, so priming queues behind a day build rather
+# than racing it for the same API budget.
+TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
 WRITE_LOCK = threading.Lock()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
@@ -1050,6 +1054,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response(CAPTURE.status())
             except Exception as error: self.internal_error("Capture status", error)
             return
+        if parsed.path == "/api/timemachine":
+            try:
+                self.json_response({"cards": TIME_MACHINE.cards(),
+                                    "status": TIME_MACHINE.status()})
+            except Exception as error: self.internal_error("Time machine", error)
+            return
+        if parsed.path == "/api/timemachine/status":
+            try:
+                self.json_response(TIME_MACHINE.status())
+            except Exception as error: self.internal_error("Time machine status", error)
+            return
         if parsed.path == "/api/history/window":
             try:
                 rating = query.get("contentRating", [None])[0]
@@ -1456,6 +1471,27 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     CAPTURE.stop()
                 self.json_response(CAPTURE.status())
+                return
+            if parsed.path == "/api/timemachine/prime":
+                if not connected_or_false():
+                    raise PermissionError("Connect Civitai to read the creators you follow")
+                self.json_response(TIME_MACHINE.start_prime(SocialClient()), 202)
+                return
+            if parsed.path == "/api/timemachine/stop":
+                TIME_MACHINE.stop_prime()
+                self.json_response(TIME_MACHINE.status())
+                return
+            if parsed.path == "/api/timemachine/seen":
+                names = body.get("usernames")
+                if not isinstance(names, list) or len(names) > 500:
+                    raise ValueError("usernames must be a list of at most 500 names")
+                self.json_response({"advanced": TIME_MACHINE.advance(names)})
+                return
+            if parsed.path == "/api/timemachine/refill":
+                name = str(body.get("username") or "").strip()
+                if not name:
+                    raise ValueError("username is required")
+                self.json_response({"added": TIME_MACHINE.refill(name)})
                 return
             if parsed.path == "/api/history/rebuild":
                 value = str(body.get("date") or previous_local_day())
