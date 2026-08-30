@@ -249,5 +249,6 @@ dialog.update-dialog[open]{display:block}
 .tm-track{margin-top:7px;height:6px;border-radius:3px;background:#101114;overflow:hidden}
 .tm-track>div{height:100%;width:0;background:var(--accent,#4dd0c7);transition:width .4s ease}
 .tm-card{display:grid;gap:6px}
+.discovery.tm-head{max-width:1800px}
 .tm-card .tm-progress{padding:4px 12px 10px;color:var(--muted);font-size:.85rem;
   font-variant-numeric:tabular-nums;overflow-wrap:anywhere}

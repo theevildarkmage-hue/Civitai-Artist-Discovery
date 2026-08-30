@@ -92,6 +92,19 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=
             arrows = page.locator("#timeMachineGrid .creator-card .next")
             assert arrows.count() == 0 or arrows.first.is_hidden(), "one image needs no carousel"
 
+            geometry = page.evaluate("""() => {
+                const left = sel => { const el = document.querySelector(sel);
+                    return el ? Math.round(el.getBoundingClientRect().left) : null; };
+                return {heading: left('#timeMachine h2'), card: left('.tm-card'),
+                        grid: left('#timeMachineGrid')}; }""")
+            assert geometry["heading"] == geometry["grid"], geometry
+            if geometry["card"] is not None:
+                assert geometry["card"] == geometry["grid"], geometry
+
+            # A late day load must not reveal the gallery's chrome over this view.
+            page.evaluate("() => { setChrome(true); }")
+            assert page.locator(".segment-toolbar").is_hidden(), "chrome leaked after setChrome"
+
             # The other tabs still work; gallery chrome is hidden here.
             assert page.locator(".segment-toolbar").is_hidden()
             page.locator("#tabDiscovery").click()

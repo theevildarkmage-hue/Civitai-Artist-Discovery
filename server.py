@@ -114,6 +114,17 @@ def profile_avatar(profile: dict | None) -> str | None:
     return f"https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/{value}/width=160/{filename}"
 
 
+def collected_image(image_id: int) -> bool:
+    """Whether this image came from somewhere the app collected, not just anywhere.
+
+    The reaction and content-control endpoints refuse images the app has not collected,
+    which is what keeps them from being general-purpose lookups against Civitai. Every
+    such guard has to consult every collector, or a feature works in one place and fails
+    in another for no reason a user could understand.
+    """
+    return HISTORY.has_image(image_id) or TIME_MACHINE.has_image(image_id)
+
+
 def decorate_history_artist(artist: dict, profiles: dict | None = None, follows: set[str] | None = None,
                             signals: dict | None = None, seen: set | None = None) -> dict:
     username = artist["username"]
@@ -1229,7 +1240,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not raw_ids or len(raw_ids) > 100:
                     raise ValueError("Request between 1 and 100 image IDs")
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not HISTORY.has_image(image_id) for image_id in image_ids):
+                if any(not collected_image(image_id) for image_id in image_ids):
                     raise ValueError("Image is not in this history archive")
                 try:
                     values = SocialClient().batch_query_optional("image.get", [{"id": image_id} for image_id in image_ids])
@@ -1548,8 +1559,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.json_response({"error": "Provide 1 to 100 image IDs"}, 400)
                     return
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not HISTORY.has_image(image_id) and not TIME_MACHINE.has_image(image_id)
-                       for image_id in image_ids):
+                if any(not collected_image(image_id) for image_id in image_ids):
                     self.json_response({"error": "An image is not in this history archive"}, 400)
                     return
                 tags = {image_id: TASTE.image_tags(image_id) for image_id in image_ids}
@@ -1612,7 +1622,7 @@ class Handler(BaseHTTPRequestHandler):
         if reaction not in REACTIONS or not isinstance(desired, bool):
             raise ValueError("Invalid reaction request")
         state = CACHE.load(); item = next((row for row in state.get("items", []) if int(row.get("id", -1)) == image_id), None)
-        in_history = HISTORY.has_image(image_id)
+        in_history = collected_image(image_id)
         if item is None and not in_history:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
