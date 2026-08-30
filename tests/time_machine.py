@@ -102,8 +102,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-timemachine-",
     # Bo's history ended inside the first page, so Bo is complete; Ana is not.
     cards = {c["username"]: c for c in machine.cards()}
     assert set(cards) == {"Ana", "Bo"}, cards
-    assert cards["Ana"]["id"] == 1 and cards["Ana"]["complete"] is False, cards["Ana"]
-    assert cards["Bo"]["id"] == 9 and cards["Bo"]["complete"] is True, cards["Bo"]
+    # Shaped like a gallery artist, so the browser builds these with the same card
+    # factory: one image, which is what hides the carousel.
+    assert cards["Ana"]["imageCount"] == 1 and cards["Ana"]["representativeIndex"] == 0
+    assert cards["Ana"]["representative"]["id"] == 1, cards["Ana"]
+    assert cards["Ana"]["complete"] is False, cards["Ana"]
+    assert cards["Bo"]["representative"]["id"] == 9 and cards["Bo"]["complete"] is True
     # The level-4 image is not visible at Soft, so it is not counted or shown.
     assert cards["Ana"]["knownCount"] == 2, cards["Ana"]
     assert cards["Ana"]["seenCount"] == 0, cards["Ana"]
@@ -111,8 +115,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-timemachine-",
     # Scrolling past Ana advances only Ana.
     assert machine.advance(["Ana"]) == 1
     cards = {c["username"]: c for c in machine.cards()}
-    assert cards["Ana"]["id"] == 2 and cards["Ana"]["seenCount"] == 1, cards["Ana"]
-    assert cards["Bo"]["id"] == 9, "advancing one creator must not move another"
+    assert cards["Ana"]["representative"]["id"] == 2, cards["Ana"]
+    assert cards["Ana"]["seenCount"] == 1, cards["Ana"]
+    assert cards["Bo"]["representative"]["id"] == 9, "advancing one must not move another"
 
     # Advancing past the hidden level-4 image lands on nothing further in this page,
     # so Ana drops out until refilled.
@@ -123,7 +128,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-timemachine-",
     assert added == 1, added
     assert archive.calls[-1] == ("Ana", "c1"), archive.calls
     cards = {c["username"]: c for c in machine.cards()}
-    assert cards["Ana"]["id"] == 4 and cards["Ana"]["complete"] is True, cards["Ana"]
+    assert cards["Ana"]["representative"]["id"] == 4, cards["Ana"]
+    assert cards["Ana"]["complete"] is True, cards["Ana"]
 
     # A creator read to the end stays gone rather than looping.
     machine.advance(["Ana"])
@@ -135,6 +141,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-timemachine-",
     assert machine.refill("Bo") == 0
     assert len(archive.calls) == before, "no request for an already-complete creator"
 
+    # The content-control check refuses images the app has not collected. These are
+    # collected, just not into the daily archive, so they must be recognised -- otherwise
+    # every card fails its check and the tab shows no artwork at all.
+    assert machine.has_image(1) and machine.has_image(9), "collected images must be known"
+    assert not machine.has_image(123456), "unknown images must stay refused"
+
 print({"resolvedInBatches": True, "onePagePerCreator": True, "oldestFirst": True,
        "levelFiltered": True, "pointerPerCreator": True, "refillsOnDemand": True,
-       "exhaustedStaysDone": True})
+       "exhaustedStaysDone": True, "galleryCardShape": True, "contentCheckAccepts": True})

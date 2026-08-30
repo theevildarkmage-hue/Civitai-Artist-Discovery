@@ -185,18 +185,33 @@ class TimeMachine:
                         WHERE username_key=? AND browsing_level IN ({holes})""",
                     (row["username_key"], *visible)).fetchone()[0]
                 out.append({
-                    "username": row["username"], "id": image["image_id"],
-                    "createdAt": image["created_at"], "url": image["url"],
-                    "thumbnailUrl": thumbnail_url(image["url"]),
-                    "civitaiUrl": image_url(image["image_id"]),
-                    "browsingLevel": image["browsing_level"], "postId": image["post_id"],
-                    "width": image["width"], "height": image["height"],
-                    "baseModel": image["base_model"], "stats": json.loads(image["stats"]),
+                    "username": row["username"],
+                    "imageCount": 1, "representativeIndex": 0,
+                    "representative": {
+                        "id": image["image_id"], "createdAt": image["created_at"],
+                        "url": image["url"], "thumbnailUrl": thumbnail_url(image["url"]),
+                        "civitaiUrl": image_url(image["image_id"]),
+                        "browsingLevel": image["browsing_level"], "postId": image["post_id"],
+                        "width": image["width"], "height": image["height"],
+                        "baseModel": image["base_model"],
+                        "stats": json.loads(image["stats"])},
                     "seenCount": seen, "knownCount": total,
                     # False while more of this creator remains unfetched, so the counts can
                     # be shown as "of N so far" rather than implying a complete history.
                     "complete": bool(row["exhausted"])})
         return out
+
+    def has_image(self, image_id: int) -> bool:
+        """Whether this image was collected here.
+
+        The content-control check refuses images the app has not collected, which is
+        what keeps that endpoint from being a general-purpose tag lookup. Time Machine
+        images are collected, just into a different database, so they have to be
+        recognised or every card fails its check and shows no artwork at all.
+        """
+        with self.connect() as db:
+            return db.execute("SELECT 1 FROM creator_images WHERE image_id=? LIMIT 1",
+                              (int(image_id),)).fetchone() is not None
 
     def advance(self, usernames) -> int:
         """Move each named creator past the image currently shown."""

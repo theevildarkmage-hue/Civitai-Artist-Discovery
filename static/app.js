@@ -1760,34 +1760,66 @@ function renderTimeMachineStatus(state) {
   $("timeMachinePrime").classList.toggle("hidden", !!priming);
   $("timeMachineStop").classList.toggle("hidden", !priming);
 }
+function timeMachineProgress(entry) {
+  const seen = safeCount(entry.seenCount), known = safeCount(entry.knownCount);
+  // "of N so far" while more of the creator is unfetched: the API gives no total, so
+  // claiming a complete denominator would be a guess.
+  return entry.complete ? `${displayCount(seen)} of ${displayCount(known)}`
+                        : `${displayCount(seen)} of ${displayCount(known)} so far`;
+}
+function decorateTimeMachineCard(element, entry) {
+  let line = element.querySelector(".tm-progress");
+  if (!line) {
+    line = document.createElement("div");
+    line.className = "tm-progress";
+    element.appendChild(line);
+  }
+  line.textContent = `${String(entry.representative.createdAt).slice(0, 10)} · ${timeMachineProgress(entry)}`;
+}
+function syncTimeMachineCards(entries) {
+  const grid = $("timeMachineGrid");
+  const existing = new Map([...grid.children].map(node => [node.dataset.username, node]));
+  const wanted = new Set();
+  entries.forEach(entry => {
+    const key = entry.username.toLowerCase();
+    wanted.add(key);
+    const current = existing.get(key);
+    // The signature covers everything the card renders, so an unchanged card is left
+    // alone entirely -- no reflow, no reloaded image, no lost scroll anchor.
+    const signature = `${entry.representative.id}|${entry.seenCount}|${entry.knownCount}|${entry.complete}`;
+    if (current && current.dataset.signature === signature) return;
+    // Built by the gallery's own card factory, so reactions, follow, creator metadata
+    // and the detail dialog all behave identically here. imageCount is 1, which is what
+    // hides the carousel arrows: one image instead of all, and nothing else differs.
+    const element = card(entry);
+    element.classList.add("tm-card");
+    element.dataset.username = key;
+    element.dataset.signature = signature;
+    decorateTimeMachineCard(element, entry);
+    if (current) { current.replaceWith(element); }
+    else {
+      // Cards arrive as each creator finishes, not in order, so each is placed where it
+      // belongs alphabetically rather than appended and left out of sequence.
+      const after = [...grid.children].find(node => node.dataset.username > key);
+      grid.insertBefore(element, after || null);
+    }
+    timeMachineSeenObserver.observe(element);
+  });
+  existing.forEach((node, key) => {
+    if (!wanted.has(key)) { timeMachineSeenObserver.unobserve(node); node.remove(); }
+  });
+}
 function renderTimeMachineCards(cards) {
   const grid = $("timeMachineGrid");
-  grid.innerHTML = "";
   if (!cards.length) {
+    grid.innerHTML = "";
     $("timeMachineMessage").textContent = $("timeMachineBar").style.width === "0%"
       ? "Read your follows to begin."
       : "Every creator you follow has been read to the end at this content level.";
     return;
   }
   $("timeMachineMessage").textContent = "";
-  cards.forEach(card => {
-    const element = document.createElement("article");
-    element.className = "creator-card tm-card";
-    element.dataset.username = card.username.toLowerCase();
-    const seen = safeCount(card.seenCount), known = safeCount(card.knownCount);
-    // "of N so far" while more of the creator is unfetched: the API gives no total, so
-    // claiming a complete denominator would be a guess.
-    const progress = card.complete ? `${displayCount(seen)} of ${displayCount(known)}`
-                                   : `${displayCount(seen)} of ${displayCount(known)} so far`;
-    element.innerHTML =
-      `<div class="creator-identity"><strong>${escapeHtml(card.username)}</strong></div>` +
-      `<a href="${escapeHtml(card.civitaiUrl)}" target="_blank" rel="noopener">` +
-      `<img loading="lazy" src="${escapeHtml(card.thumbnailUrl || card.url)}" alt=""></a>` +
-      `<div class="tm-meta"><span>${escapeHtml(String(card.createdAt).slice(0, 10))}</span>` +
-      `<span class="tm-progress">${progress}</span></div>`;
-    grid.appendChild(element);
-    timeMachineSeenObserver.observe(element);
-  });
+  syncTimeMachineCards(cards);
 }
 const timeMachinePending = new Set();
 const timeMachineSeenObserver = new IntersectionObserver(entries => {
@@ -1821,9 +1853,12 @@ $("timeMachinePrime").onclick = async () => {
     renderTimeMachineStatus(await api("/api/timemachine/prime", { method: "POST", body: "{}" }));
     clearInterval(timeMachinePoll);
     timeMachinePoll = setInterval(async () => {
-      const state = await api("/api/timemachine/status");
-      renderTimeMachineStatus(state);
-      if (!state.priming) { clearInterval(timeMachinePoll); refreshTimeMachine().catch(() => {}); }
+      // A full card fetch measured 0.04s for 285 creators, so there is no reason to poll
+      // the status alone and make the reader wait for a tab switch to see new cards.
+      const data = await api("/api/timemachine");
+      renderTimeMachineStatus(data.status);
+      renderTimeMachineCards(data.cards);
+      if (!data.status.priming) clearInterval(timeMachinePoll);
     }, 1500);
   } catch (error) { toast(error.message); }
   finally { $("timeMachinePrime").disabled = false; }

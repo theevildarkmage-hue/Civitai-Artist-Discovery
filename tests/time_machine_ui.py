@@ -11,6 +11,21 @@ import urllib.request
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def artist(name, image_id, day, *, seen, known, complete):
+    """The shape the gallery's own card factory consumes: one image, so no carousel."""
+    return {"username": name, "imageCount": 1, "representativeIndex": 0,
+            "profileUrl": f"https://civitai.red/user/{name}", "avatarUrl": None,
+            "following": True, "userId": image_id, "reactedCount": 0,
+            "reactedOften": False, "worthFollowing": False, "seen": False,
+            "matchedTags": [], "recommendationLabel": None, "recommendationReasons": [],
+            "representative": {"id": image_id, "createdAt": f"{day}T00:00:00.000Z",
+                               "url": f"http://x/{image_id}.jpg",
+                               "thumbnailUrl": f"http://x/{image_id}.jpg",
+                               "civitaiUrl": f"https://civitai.red/images/{image_id}",
+                               "browsingLevel": 1, "stats": {}},
+            "seenCount": seen, "knownCount": known, "complete": complete}
 PORT = 8901
 SHOTS = ROOT / "reports" / "time-machine"
 SHOTS.mkdir(parents=True, exist_ok=True)
@@ -41,14 +56,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=
 
             # Three creators, one already read to the end, one with more to fetch.
             cards = [
-                {"username": "Ana", "id": 1, "createdAt": "2024-09-11T00:00:00.000Z",
-                 "url": "http://x/1.jpg", "thumbnailUrl": "http://x/1.jpg",
-                 "civitaiUrl": "https://civitai.red/images/1", "browsingLevel": 1,
-                 "stats": {}, "seenCount": 3, "knownCount": 177, "complete": True},
-                {"username": "Bo", "id": 2, "createdAt": "2025-12-06T00:00:00.000Z",
-                 "url": "http://x/2.jpg", "thumbnailUrl": "http://x/2.jpg",
-                 "civitaiUrl": "https://civitai.red/images/2", "browsingLevel": 1,
-                 "stats": {}, "seenCount": 0, "knownCount": 192, "complete": False},
+                artist("Ana", 1, "2024-09-11", seen=3, known=177, complete=True),
+                artist("Bo", 2, "2025-12-06", seen=0, known=192, complete=False),
             ]
             status = {"creators": 3, "primed": 2, "images": 369,
                       "priming": False, "progress": 66.7}
@@ -75,8 +84,13 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=
             # A finished creator reads as a plain count; an unfinished one says "so far",
             # because claiming a complete denominator would be a guess.
             grid = page.locator("#timeMachineGrid").inner_text()
-            assert "3 of 177" in grid and "so far" not in grid.split("3 of 177")[0][-30:], grid
-            assert "0 of 192 so far" in grid, grid
+            assert "3 of 177" in grid and "0 of 192 so far" in grid, grid
+            # These are the gallery's cards, not a second implementation: same class,
+            # same follow control, and the carousel hidden because there is one image.
+            assert page.locator("#timeMachineGrid .creator-card").count() == 2
+            assert page.locator("#timeMachineGrid .creator-identity").count() == 2
+            arrows = page.locator("#timeMachineGrid .creator-card .next")
+            assert arrows.count() == 0 or arrows.first.is_hidden(), "one image needs no carousel"
 
             # The other tabs still work; gallery chrome is hidden here.
             assert page.locator(".segment-toolbar").is_hidden()
@@ -88,6 +102,19 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=
 
             page.locator("#tabTimeMachine").click()
             page.wait_for_selector("#timeMachine:not(.hidden)")
+            # A creator finishing mid-browse adds its card without disturbing the rest.
+            first = page.locator(".tm-card").first
+            page.evaluate("() => { document.querySelector('.tm-card').dataset.probe = 'kept'; }")
+            cards.append(artist("Cy", 3, "2025-01-02", seen=0, known=5, complete=True))
+            page.evaluate("() => refreshTimeMachine()")
+            page.locator(".tm-card", has_text="Cy").wait_for(timeout=10000)
+            assert page.locator(".tm-card").count() == 3
+            # The untouched card is the same DOM node, not a rebuilt one.
+            assert first.get_attribute("data-probe") == "kept", "existing cards must survive"
+            # And new cards land in order rather than being appended out of sequence.
+            order = page.locator(".tm-card .creator-identity strong").all_inner_texts()
+            assert order == sorted(order, key=str.lower), order
+
             clipped = page.locator(".tm-card .tm-progress").evaluate_all(
                 "els => els.some(el => el.scrollWidth > el.clientWidth + 1)")
             assert not clipped, "the progress label must not be cut off by the card edge"

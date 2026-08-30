@@ -1056,8 +1056,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/timemachine":
             try:
-                self.json_response({"cards": TIME_MACHINE.cards(),
-                                    "status": TIME_MACHINE.status()})
+                # Decorated by the same function the daily gallery uses, so a Time
+                # Machine card carries the follow state, avatar, follower counts and
+                # reaction history a gallery card does.
+                signals = gallery_signals()
+                profiles, follows = creator_profiles(), signals["followed"]
+                self.json_response({
+                    "cards": [decorate_history_artist(card, profiles, follows, signals)
+                              for card in TIME_MACHINE.cards()],
+                    "status": TIME_MACHINE.status()})
             except Exception as error: self.internal_error("Time machine", error)
             return
         if parsed.path == "/api/timemachine/status":
@@ -1541,7 +1548,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.json_response({"error": "Provide 1 to 100 image IDs"}, 400)
                     return
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not HISTORY.has_image(image_id) for image_id in image_ids):
+                if any(not HISTORY.has_image(image_id) and not TIME_MACHINE.has_image(image_id)
+                       for image_id in image_ids):
                     self.json_response({"error": "An image is not in this history archive"}, 400)
                     return
                 tags = {image_id: TASTE.image_tags(image_id) for image_id in image_ids}
