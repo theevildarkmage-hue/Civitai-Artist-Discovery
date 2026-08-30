@@ -77,26 +77,39 @@ nothing about it should be able to corrupt a collected day.
 4. When a refill returns nothing, set `exhausted` and show the creator as caught up.
 5. Content rating filters through the existing `visible_levels`, as every other view does.
 
-## Open questions — need answers before building
+## Decisions (settled 2026-08-30)
 
-1. ~~**291 vs 483.**~~ **Resolved.** They are different representations, not the same list
-   in two states: `followed_creators` in `taste.sqlite3` holds **483 creator ids**, while
-   `data/following.json` holds **291 usernames**. Neither is stale — they overlap by zero
-   because one stores integers and the other strings.
+1. **Lazy, with a visible background prime.** On first visit the tab starts priming every
+   followed creator — one 200-image page each — and renders cards as their data lands.
+   Purely lazy fetching cannot keep up with fast scrolling at ~2.3s per request, so the
+   prime runs regardless of where the user has scrolled to; laziness only decides what is
+   *rendered* first, not what is *fetched*.
 
-   `followed_creators` is authoritative. The API needs a username, so the ids must be
-   resolved first: `user.getCreator` accepts `{"id"}` and batches 100 per request, so 483
-   ids costs 5 requests. Worth understanding separately why `following.json` holds only
-   291 of the 483 before relying on it for anything else.
-2. **Prime up front or lazily?** 483 requests is 25-40 minutes. Up front makes the tab
-   instant afterwards; lazy makes the first visit slow but spreads the cost.
-3. **What counts as "seen"?** The existing seen-creators logic marks a card viewed. Is
-   scrolling past enough, or must the image be opened? This decides how fast a user
-   burns through history.
-4. **No progress indicator is possible.** The API returns no total, so "12 of 847" cannot
-   be shown without paging a creator's whole history first. Is "oldest first, keep going"
-   enough, or is the count worth paying for?
-5. **Creators with no images** at the selected content rating — hide, or show as empty?
+2. **Seen means scrolled past**, reusing the existing dimmed-card rule rather than
+   inventing a second one. `seenObserver` in `static/app.js` already marks a card seen when
+   it is scrolled *away* after dwelling, not merely for having been on screen, and
+   `taste.mark_seen` persists it. The Time Machine advances a creator's pointer on the same
+   signal, so "seen" means one thing throughout the app.
+
+3. **The progress bar counts creators, not images.** Each creator whose first page has been
+   fetched moves the bar one notch; all followed creators primed is 100%. The denominator
+   is the follow count, which is known.
+
+   This matters because a per-creator *history* bar is not possible: the images endpoint
+   returns no total, `user.getCreator` carries only model-upload counts, and paging a
+   prolific creator to their end would cost hundreds of requests on its own (the heaviest
+   creator in the archive averages 12,551 images per 27 days — an estimated ~1,700 pages
+   of back-catalogue). Counting creators avoids the problem entirely.
+
+4. **Creators with nothing at the selected content rating are hidden**, not shown empty.
+
+### Consequences worth knowing
+
+The median creator posts ~10 images per 27 days, so their entire back-catalogue fits in
+the single page the prime already fetches — most creators are complete after priming and
+never need a refill. The cost is concentrated in the heavy tail: the top 10% would need
+roughly 15 pages each, and the heaviest handful far more. Refills are per-creator and
+on-demand, so that cost is only paid for creators the user actually reads to the end of.
 
 ## Build size
 
