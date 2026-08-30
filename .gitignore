@@ -51,6 +51,7 @@ docs/*
 !docs/release-notes.md
 !docs/civitai-page.md
 !docs/updates.md
+!docs/time-machine-spec.md
 
 # Deliberately published release artwork
 !assets/
