@@ -1468,8 +1468,49 @@ class HistoryArchive:
                         "retryUntilMonotonic": None, "retryAttempt": 0})
             return oldest, newest
 
+        # The feed has no date filter, so reaching a past day means finding the offset it
+        # starts at, and the only way to read an offset's date is to fetch it. Doubling
+        # from one page spends ~16 requests per feed doing that, each pulling 200 images
+        # to read their timestamps and discard them.
+        #
+        # The floor probe already knows the date at FEED_FLOOR_PROBE_OFFSET, and the feed
+        # runs close to linear in time (measured ~7% drift across a 2-day span), so that
+        # anchor turns the search into an estimate plus a short confirmation. A poor
+        # estimate can only cost extra probes: every bound below is still verified against
+        # real timestamps by the same binary search, so it cannot land on the wrong day.
         lower, upper, oldest = 0, PAGE_SIZE, None
-        while not cancel_event.is_set():
+        bracketed = False
+        floor = self.feed_floor(browsing_mask)
+        if floor is not None:
+            now = datetime.now(timezone.utc)
+            span = (now - floor).total_seconds()
+            wanted = (now - end).total_seconds()
+            if span > 0 and 0 < wanted < span:
+                estimate = FEED_FLOOR_PROBE_OFFSET * wanted / span
+                margin = max(4 * PAGE_SIZE, estimate * .25)
+                low = int(max(0, estimate - margin) // PAGE_SIZE) * PAGE_SIZE
+                high = int(min(MAX_CURSOR_OFFSET, estimate + margin) // PAGE_SIZE) * PAGE_SIZE
+                if high > low:
+                    high_oldest, _ = probe(high)
+                    # An empty page means the probe passed Civitai's traversal ceiling,
+                    # which bounds the search from above exactly as a crossing page does.
+                    if high_oldest is None or high_oldest < end:
+                        if low <= 0:
+                            lower, upper, oldest, bracketed = 0, high, high_oldest, True
+                        else:
+                            low_oldest, _ = probe(low)
+                            if low_oldest is None or low_oldest < end:
+                                # The estimate overshot: the boundary sits at or above
+                                # `low`, so bisect everything down to it. Bisection needs
+                                # a lower bound that has *not* crossed, and offset 0 is
+                                # the newest page, so it never has.
+                                lower, upper, oldest, bracketed = 0, low, low_oldest, True
+                            else:
+                                lower, upper, oldest, bracketed = low, high, high_oldest, True
+                    else:
+                        # Undershot: keep doubling, but from the estimate, not page one.
+                        lower = upper = max(PAGE_SIZE, high)
+        while not bracketed and not cancel_event.is_set():
             oldest, _ = probe(upper)
             if oldest is None or oldest < end:
                 break

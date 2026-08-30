@@ -113,6 +113,28 @@ class AutoCapture:
             self.last_run, self.last_result = result["at"], result
         return result
 
+    def seconds_until_next(self, settings: dict | None = None) -> float:
+        """Seconds to this install's own slot in the next interval.
+
+        Every copy of the app wakes on the same interval, so without a spread they would
+        all reach Civitai at the same moment -- and a synchronised burst is worse for a
+        service than the same requests scattered. The slot is derived from a stable
+        per-install number, so it does not drift between restarts but differs between
+        installs, and the interval is covered uniformly.
+
+        Deliberately not aimed at "quiet hours": measured over 626,407 archived images,
+        Civitai's posting volume runs 3.35%-4.83% per hour against a 4.17% flat line, so
+        the quietest six-hour block carries 22.2% of a day rather than 25%. Steering every
+        install into that window would concentrate them about four times over for an ~11%
+        quieter baseline, which is a straight loss.
+        """
+        settings = settings or self.settings.load()
+        period = settings["autoCaptureHours"] * 3600
+        slot = settings["captureSeed"] % period
+        now = self._now().timestamp()
+        elapsed = (now - slot) % period
+        return period - elapsed
+
     def _worker(self) -> None:
         while not self.stopping.is_set():
             settings = self.settings.load()
@@ -129,9 +151,9 @@ class AutoCapture:
                                          f"{traceback.format_exc()}")
                     except OSError:
                         pass
-            # Re-read the interval each cycle so a settings change takes effect without
-            # a restart, and wake early when asked to stop or run now.
-            self.wake.wait(max(1.0, self.settings.load()["autoCaptureHours"] * 3600))
+            # Re-read settings each cycle so a change takes effect without a restart,
+            # and wake early when asked to stop or to run now.
+            self.wake.wait(max(1.0, self.seconds_until_next()))
             self.wake.clear()
 
     def start(self) -> None:
@@ -158,4 +180,5 @@ class AutoCapture:
             return {"enabled": settings["autoCapture"],
                     "intervalHours": settings["autoCaptureHours"],
                     "running": running, "lastRun": self.last_run,
-                    "lastResult": self.last_result}
+                    "lastResult": self.last_result,
+                    "nextRunInSeconds": round(self.seconds_until_next(settings))}

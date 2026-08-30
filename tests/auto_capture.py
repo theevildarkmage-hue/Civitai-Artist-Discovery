@@ -86,5 +86,33 @@ with tempfile.TemporaryDirectory(prefix="civitai-autocapture-") as temporary:
     state = AutoCapture(FakeArchive(date(2026, 8, 27), set()), settings, now=lambda: NOW).status()
     assert state["enabled"] is False and state["intervalHours"] in AUTO_CAPTURE_INTERVALS, state
 
+
+with tempfile.TemporaryDirectory(prefix="civitai-capture-spread-") as temporary:
+    # Installs share an interval, so without a spread they would all reach Civitai at the
+    # same instant. A synchronised burst is worse for a service than scattered requests.
+    counts, seeds = [0] * 12, set()
+    for index in range(600):
+        each = AppSettings(Path(temporary) / f"s{index}.json")
+        each.update(auto_capture_value=True, auto_capture_hours_value=12)
+        seeds.add(each.load()["captureSeed"])
+        hours = AutoCapture(None, each, now=lambda: NOW).seconds_until_next() / 3600
+        assert 0 <= hours <= 12, hours
+        counts[min(11, int(hours))] += 1
+    assert len(seeds) > 590, f"seeds must differ between installs: {len(seeds)}"
+    # Every hour of the interval gets used; nothing clumps into one slot.
+    assert all(counts), counts
+    assert max(counts) < 3 * min(counts), counts
+
+    # The slot is stable across restarts, or the schedule would drift on every launch.
+    fixed = AppSettings(Path(temporary) / "stable.json")
+    fixed.update(auto_capture_value=True, auto_capture_hours_value=12)
+    first = AutoCapture(None, fixed, now=lambda: NOW).seconds_until_next()
+    again = AutoCapture(None, fixed, now=lambda: NOW).seconds_until_next()
+    assert first == again, (first, again)
+    # A longer interval spreads over a longer span.
+    fixed.update(auto_capture_hours_value=24)
+    assert AutoCapture(None, fixed, now=lambda: NOW).seconds_until_next() <= 24 * 3600
+
 print({"lookbackDays": CAPTURE_LOOKBACK_DAYS, "oldestFirst": True,
-       "unreachableSkipped": True, "todayNeverCaptured": True, "idempotent": True})
+       "unreachableSkipped": True, "todayNeverCaptured": True, "idempotent": True,
+       "installsSpreadAcrossInterval": True, "slotStableAcrossRestarts": True})

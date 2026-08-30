@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import secrets
 import threading
 
 from .site import (DEFAULT_CONTENT_RATING, browsing_levels, content_rating,
@@ -61,6 +62,11 @@ class AppSettings:
             auto_capture_hours = raw.get("autoCaptureHours", 12)
             if auto_capture_hours not in AUTO_CAPTURE_INTERVALS:
                 auto_capture_hours = 12
+            # A stable per-install number, so this copy of the app always picks the same
+            # slot in the interval but a different one from everybody else's copy.
+            seed = raw.get("captureSeed")
+            if not isinstance(seed, int) or not 0 <= seed < 2**31:
+                seed = secrets.randbelow(2**31)
             return {"contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),
                     "dimSeenCards": dim_seen_cards,
@@ -70,7 +76,8 @@ class AppSettings:
                     "emergingReactionMode": emerging_reaction_mode,
                     "emergingReactionLimit": emerging_reaction_limit,
                     "autoCapture": auto_capture,
-                    "autoCaptureHours": auto_capture_hours}
+                    "autoCaptureHours": auto_capture_hours,
+                    "captureSeed": seed}
 
     def update(self, *, browsing_levels_value: object = None,
                content_rating_value: object = None,
@@ -125,6 +132,7 @@ class AppSettings:
                               else auto_capture_hours_value)
         if auto_capture_hours not in AUTO_CAPTURE_INTERVALS:
             raise ValueError("autoCaptureHours must be 12 or 24")
+        seed = current["captureSeed"]
         value = {"contentRating": rating_for_levels(levels),
                  "browsingLevels": list(levels),
                  "dimSeenCards": dim_seen_cards,
@@ -134,7 +142,8 @@ class AppSettings:
                  "emergingReactionMode": emerging_reaction_mode,
                  "emergingReactionLimit": emerging_reaction_limit,
                  "autoCapture": auto_capture,
-                 "autoCaptureHours": auto_capture_hours}
+                 "autoCaptureHours": auto_capture_hours,
+                 "captureSeed": seed}
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")
