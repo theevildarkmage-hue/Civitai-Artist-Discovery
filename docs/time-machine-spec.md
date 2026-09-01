@@ -1,6 +1,7 @@
 # Time Machine — specification
 
-Status: **proposed, not built**. Measurements taken 2026-08-30 against the public v1 API.
+Status: **shipped in 1.0.3**. Measurements taken 2026-08-30 against the public v1 API.
+Kept as the record of what was measured and why the design is shaped this way.
 
 ## What it is
 
