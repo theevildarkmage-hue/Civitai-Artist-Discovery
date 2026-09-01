@@ -30,6 +30,9 @@ from .site import image_url, levels_for_rating
 PRIME_PAGE_SIZE = 200
 # user.getCreator batches, so 483 follows resolve to usernames in five requests.
 CREATOR_BATCH = 100
+# How far past the pointer to look for an image the reader does not hide. Tags are only
+# known for images already swept, so this bounds the scan rather than promising a find.
+HIDDEN_SCAN_LIMIT = 40
 
 
 class TimeMachine:
@@ -158,6 +161,35 @@ class TimeMachine:
 
     # -- reading ----------------------------------------------------------------
 
+    def hidden_tag_names(self) -> set[str]:
+        """Tag names the reader hides on Civitai, if the profile knows any."""
+        if self.taste is None:
+            return set()
+        try:
+            with self.taste.connect() as db:
+                return {str(row[0]).casefold() for row in
+                        db.execute("SELECT tag_name FROM hidden_tags") if row[0]}
+        except Exception:  # noqa: BLE001
+            return set()
+
+    def _hidden_image_ids(self, image_ids: list[int], hidden: set[str]) -> set[int]:
+        """Which of these images carry a tag the reader hides, per the cached sweep."""
+        if not image_ids or not hidden or self.taste is None:
+            return set()
+        holes = ",".join("?" for _ in image_ids)
+        try:
+            with self.taste.connect() as db:
+                rows = db.execute(
+                    f"SELECT image_id, tag_name FROM archive_image_tags "
+                    f"WHERE image_id IN ({holes})", image_ids).fetchall()
+        except Exception:  # noqa: BLE001
+            return set()
+        blocked = set()
+        for row in rows:
+            if str(row[1]).casefold() in hidden:
+                blocked.add(int(row[0]))
+        return blocked
+
     def cards(self, levels=None) -> list[dict]:
         """The oldest unseen image for each primed creator, one per creator.
 
@@ -166,14 +198,20 @@ class TimeMachine:
         """
         visible = sorted(levels or self.archive.visible_levels)
         holes = ",".join("?" for _ in visible)
+        hidden_tags = self.hidden_tag_names()
         out = []
         with self.connect() as db:
             for row in db.execute("SELECT * FROM creator_progress ORDER BY username"):
-                image = db.execute(
+                candidates = db.execute(
                     f"""SELECT * FROM creator_images
                         WHERE username_key=? AND position>=? AND browsing_level IN ({holes})
-                        ORDER BY position LIMIT 1""",
-                    (row["username_key"], row["next_position"], *visible)).fetchone()
+                        ORDER BY position LIMIT ?""",
+                    (row["username_key"], row["next_position"], *visible,
+                     HIDDEN_SCAN_LIMIT)).fetchall()
+                blocked = self._hidden_image_ids(
+                    [int(entry["image_id"]) for entry in candidates], hidden_tags)
+                image = next((entry for entry in candidates
+                              if int(entry["image_id"]) not in blocked), None)
                 if image is None:
                     continue
                 seen = db.execute(

@@ -1803,16 +1803,15 @@ function syncTimeMachineCards(entries) {
     seenObserver.unobserve(element);
     delete element.dataset.seenDate;
     element.classList.add("tm-card");
-    // A gallery card answers a hidden image by showing another of that creator's images
-    // from the same day. This card holds exactly one, so filtering it away leaves nothing
-    // and the creator would sit on an image the reader has hidden for good. Step past it
-    // instead, which is what the reader asked for by hiding the tag.
     const basePrepareArtwork = element.prepareArtwork;
     element.prepareArtwork = async () => {
       if (tagsHideImage(await checkImageTags(entry.representative.id))) {
+        // Only reachable when this image's tags had not been swept when the card was
+        // built. A card holds one image, so there is nothing to fall back to: step the
+        // creator past it and take the card off screen rather than leave it empty.
         timeMachinePending.add(key);
-        timeMachineHidden.add(key);
         scheduleTimeMachineFlush();
+        element.remove();
         return;
       }
       return basePrepareArtwork();
@@ -1846,37 +1845,34 @@ function renderTimeMachineCards(cards) {
   syncTimeMachineCards(cards);
 }
 const timeMachinePending = new Set();
-// Creators advanced because the reader hides that image's tags, rather than because they
-// scrolled past it. Those need replacement artwork pulled in rather than left blank.
-const timeMachineHidden = new Set();
 let timeMachineFlushTimer = 0;
 const timeMachineSeenObserver = new IntersectionObserver(entries => {
   entries.forEach(entry => {
     const element = entry.target;
     if (entry.isIntersecting) { element.tmEnteredAt = Date.now(); return; }
-    // Scrolled away after dwelling, not merely rendered: the same test the gallery uses.
-    if (element.tmEnteredAt && Date.now() - element.tmEnteredAt > 900) {
-      timeMachinePending.add(element.dataset.username);
-      // Dim it here rather than leaving it to the gallery's observer, which no longer
-      // watches these cards.
-      element.classList.add("is-seen");
-      // Persist promptly. This used to be flushed only when the tab was reopened, so
-      // reloading the page threw the whole pending set away and every creator came back
-      // showing the same image -- which defeats the point of walking a history.
-      scheduleTimeMachineFlush();
-    }
+    const enteredAt = element.tmEnteredAt;
     element.tmEnteredAt = 0;
+    // Leaving through the bottom means the reader scrolled back up, and a detached card
+    // produces this same notification without anyone having seen anything.
+    const exitedAbove = entry.rootBounds
+      ? entry.boundingClientRect.bottom <= entry.rootBounds.top
+      : entry.boundingClientRect.bottom <= 0;
+    if (!element.isConnected || !exitedAbove || !enteredAt) return;
+    if (Date.now() - enteredAt < SEEN_DWELL_MS) return;
+    timeMachinePending.add(element.dataset.username);
+    // Dim it here rather than leaving it to the gallery's observer, which no longer
+    // watches these cards.
+    element.classList.add("is-seen");
+    // Persist promptly. This used to be flushed only when the tab was reopened, so
+    // reloading the page threw the whole pending set away and every creator came back
+    // showing the same image -- which defeats the point of walking a history.
+    scheduleTimeMachineFlush();
   });
-}, { threshold: 0.6 });
+}, { rootMargin: "0px" });
 function scheduleTimeMachineFlush() {
   clearTimeout(timeMachineFlushTimer);
-  timeMachineFlushTimer = setTimeout(async () => {
-    try {
-      await flushTimeMachineSeen();
-      // Only refresh when something was skipped for being hidden. Refreshing after an
-      // ordinary scroll-past would swap cards out from under the reader.
-      if (timeMachineHidden.size) { timeMachineHidden.clear(); await refreshTimeMachine(); }
-    } catch (error) { console.warn("Time machine progress", error); }
+  timeMachineFlushTimer = setTimeout(() => {
+    flushTimeMachineSeen().catch(error => console.warn("Time machine progress", error));
   }, 1200);
 }
 function flushTimeMachineSeenOnUnload() {
