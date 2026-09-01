@@ -9,20 +9,24 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from discovery.history import HistoryArchive, HistoryWindowUnavailable, PAGE_SIZE
+from discovery.history import (FEED_FLOOR_PROBE_OFFSET, HistoryArchive,
+                               HistoryWindowUnavailable, PAGE_SIZE)
 
 
 with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
     archive = HistoryArchive(Path(temporary) / "history")
     value = "2026-07-31"
-    target_end = datetime(2026, 8, 1, 5, tzinfo=timezone.utc)
-    live_anchor = target_end + timedelta(minutes=1000)
+    live_anchor = datetime.now(timezone.utc)
+    target_end = live_anchor - timedelta(minutes=1000)
     offsets = []
     archive.jobs[value] = {"state": "loading", "phase": "locating", "pages": 0}
 
+    floor_probes = []
+
     def request(params, minimum_interval=1.0, on_delay=None, cancel_event=None, on_timing=None,
                 on_transfer=None):
-        offset = int(params["cursor"].split("|", 1)[0]); offsets.append(offset)
+        offset = int(params["cursor"].split("|", 1)[0])
+        (floor_probes if offset == FEED_FLOOR_PROBE_OFFSET else offsets).append(offset)
         page = offset // PAGE_SIZE
         newest = live_anchor - timedelta(minutes=page * 10)
         oldest = newest - timedelta(minutes=10)
@@ -38,7 +42,11 @@ with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
 
     assert oldest_at(selected) < target_end
     assert selected == PAGE_SIZE or oldest_at(selected - PAGE_SIZE) >= target_end
-    assert pages == len(offsets) < 20
+    assert pages == len(offsets)
+    # The floor anchor turns doubling-from-page-one into an estimate plus a short
+    # confirmation, so the search must now cost well under the old ~16 probes.
+    assert len(offsets) <= 8, (len(offsets), offsets)
+    assert len(floor_probes) == 1, floor_probes
     assert transferred == pages * 100
     assert max(offsets) >= selected
 
@@ -50,7 +58,11 @@ with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
     ceiling_page = 120
 
     def ceiling_request(params, **_):
-        offset = int(params["cursor"].split("|", 1)[0]); offsets.append(offset)
+        offset = int(params["cursor"].split("|", 1)[0])
+        if offset == FEED_FLOOR_PROBE_OFFSET:
+            floor_probes.append(offset)
+            return {"items": []}, 50      # inconclusive: the seek falls back to doubling
+        offsets.append(offset)
         page = offset // PAGE_SIZE
         if page >= ceiling_page:
             return {"items": []}, 50
@@ -63,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-fast-seek-") as temporary:
     ceiling_selected = int(ceiling_cursor.split("|", 1)[0]) // PAGE_SIZE
     assert ceiling_selected == crossing_page, (ceiling_selected, offsets)
     assert any(offset // PAGE_SIZE >= ceiling_page for offset in offsets)
-    assert ceiling_pages == len(offsets) < 20
+    assert ceiling_pages == len(offsets) < 20  # noqa
 
     # If every valid page is still newer than the target and the feed repeatedly ends,
     # report the public API window instead of handing collection a known-empty cursor.

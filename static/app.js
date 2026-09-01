@@ -6,6 +6,8 @@ let dimSeenCards = true;
 let hideHighVolumeCreators = false, highVolumeThreshold = 100;
 let emergingReactionMode = "balanced", emergingReactionLimit = 0;
 let updateChecksEnabled = true, updateState = null, updatePollTimer = 0;
+// Which tab is open. Async work that finishes late must not reveal another view's chrome.
+let currentView = "gallery";
 let buildSegment = "all", buildCoverageRating = "Soft", currentBlocks = null, estimateToken = 0;
 // How many creators this day's Civitai content controls removed, so the count on screen
 // can explain itself rather than looking like missing data.
@@ -285,6 +287,65 @@ $("updateChecks").onchange = async () => {
   } catch (error) { $("updateChecks").checked = updateChecksEnabled; toast(error.message); }
   finally { $("updateChecks").disabled = false; }
 };
+// Automatic collection reaches Civitai on a schedule with nobody watching, so the panel
+// has to answer three things at a glance: that it happens, when it happens next, and how
+// to stop it. Off until switched on.
+let captureState = null;
+function describeNextRun(state) {
+  if (!state.enabled) return "Off. Days older than Civitai’s reach cannot be collected later.";
+  const seconds = Number(state.nextRunInSeconds);
+  const when = state.nextRunAt ? new Date(state.nextRunAt) : null;
+  if (!when || !Number.isFinite(seconds)) return "Next collection is being scheduled.";
+  const hours = Math.floor(seconds / 3600), minutes = Math.round((seconds % 3600) / 60);
+  const away = hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+  const clock = when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const automatic = state.atMinute === null || state.atMinute === undefined;
+  const twice = Number(state.intervalHours) === 12 && !automatic;
+  return `Next collection ${clock} (in ${away})` +
+    (automatic ? " · time picked automatically so installs do not all arrive at once."
+     : twice ? " · your chosen time, and again 12 hours later."
+     : " · the time you chose.");
+}
+function renderCaptureState(state) {
+  captureState = state;
+  const block = document.querySelector(".capture-preference");
+  block.classList.toggle("is-off", !state.enabled);
+  $("captureEnabled").checked = !!state.enabled;
+  $("captureInterval").value = String(state.intervalHours ?? 12);
+  const minute = state.atMinute;
+  $("captureAt").value = minute === null || minute === undefined ? ""
+    : `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+  $("captureAtClear").classList.toggle("hidden", minute === null || minute === undefined);
+  $("captureNextRun").textContent = describeNextRun(state);
+  const last = state.lastResult;
+  if (last && state.enabled) {
+    const got = (last.captured || []).length, missed = (last.failed || []).length;
+    $("captureNextRun").textContent += ` Last run collected ${got} block${got === 1 ? "" : "s"}` +
+      (missed ? `, ${missed} did not finish.` : ".");
+  }
+}
+async function refreshCaptureState() {
+  try { renderCaptureState(await api("/api/history/capture")); }
+  catch (_) { /* the panel simply stays as it was */ }
+}
+async function postCapture(body) {
+  const controls = ["captureEnabled", "captureInterval", "captureAt", "captureRunNow"];
+  controls.forEach(id => { $(id).disabled = true; });
+  try { renderCaptureState(await api("/api/history/capture", { method: "POST", body: JSON.stringify(body) })); }
+  catch (error) { toast(error.message); if (captureState) renderCaptureState(captureState); }
+  finally { controls.forEach(id => { $(id).disabled = false; }); }
+}
+$("captureEnabled").onchange = () => postCapture({ enabled: $("captureEnabled").checked });
+$("captureInterval").onchange = () => postCapture({ intervalHours: Number($("captureInterval").value) });
+$("captureAt").onchange = () => {
+  const value = $("captureAt").value;
+  if (!value) return postCapture({ atMinute: null });
+  const [hours, minutes] = value.split(":").map(Number);
+  postCapture({ atMinute: hours * 60 + minutes });
+};
+$("captureAtClear").onclick = () => postCapture({ atMinute: null });
+$("captureRunNow").onclick = () => postCapture({ enabled: true, runNow: true });
+
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]); }
 function safeCount(value) { const number = Number(value); return Number.isFinite(number) ? Math.max(0, Math.round(number)) : 0; }
 function displayCount(value) { return safeCount(value).toLocaleString(); }
@@ -782,6 +843,13 @@ async function refreshBuildReach(token) {
     note.textContent = selectedDate < oldest
       ? `Civitai can no longer reach ${displayDate(selectedDate)} at this coverage. Its public feed pages back only as far as ${displayDate(oldest)}, and that limit moves forward as new artwork is posted. Days already in your archive stay viewable.`
       : `Civitai can currently reach back to ${displayDate(oldest)} at this coverage.`;
+    try {
+      const capture = await api("/api/history/capture");
+      if (token !== estimateToken) return;
+      note.textContent += capture.enabled
+        ? " Recent days are being collected automatically, so they will not fall out of reach."
+        : " Days pass out of reach as new artwork is posted. My Profile → Keep recent days automatically collects them before that happens.";
+    } catch (_) { /* the reach note stands on its own */ }
   } catch (_) { note.classList.add("hidden"); }
 }
 function refreshBuildChoices() {
@@ -862,7 +930,7 @@ function showReady(status) {
   setNavigationBusy(false);
 }
 function showStopped() { $("loadingTitle").textContent = "Loading stopped"; $("loadingMessage").textContent = "Everything collected so far has been saved. Press Continue building whenever you are ready."; $("progressText").textContent = "Safe to close the app"; $("progressBar").classList.remove("indeterminate"); $("stopLoading").classList.add("hidden"); $("startLoading").textContent = "Continue building"; $("startLoading").classList.remove("hidden"); $("startLoading").disabled = false; setNavigationBusy(false); }
-async function showCompletedDay(value, token) { const [day, auth] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), api("/api/auth-status")]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; applyAuth(auth); const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); $("gallery").classList.remove("hidden"); segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); const needs = { emerging: "followers", foryou: "tags" }[selectedView]; if (needs === "tags") showPreliminaryPlaceholder(); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); if (needs) ensureViewData(needs); }
+async function showCompletedDay(value, token) { const [day, auth] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), api("/api/auth-status")]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; applyAuth(auth); const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); if (currentView === "gallery") $("gallery").classList.remove("hidden"); if (currentView === "gallery") segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); const needs = { emerging: "followers", foryou: "tags" }[selectedView]; if (needs === "tags") showPreliminaryPlaceholder(); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); if (needs) ensureViewData(needs); }
 function buildStatusError(status) { const error = new Error(status.error || "Daily import failed"); error.kind = status.errorKind; error.savedItems = safeCount(status.itemCount); return error; }
 async function beginSelectedDay(rebuild = false) { const value = selectedDate, token = ++activeLoadToken; activeBuildSegment = selectedSegment; activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases(); showBuildSetup(false); $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery(); $("startLoading").disabled = true; $("startLoading").classList.add("hidden"); $("stopLoading").classList.remove("hidden"); $("stopLoading").disabled = false; $("elapsedText").classList.remove("hidden"); $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} ${displayDate(value)}`; setNavigationBusy(true); updateProgress({ phase: "locating", elapsedSeconds: 0, itemCount: 0, creatorCount: 0 }); const request = { ...dayRequest(value), contentRating: buildCoverageRating }; let status = await api(rebuild ? "/api/history/rebuild" : "/api/history/start", { method: "POST", body: JSON.stringify(request) }); while (!status.complete) { if (token !== activeLoadToken) return; if (loadCancelled || status.state === "cancelled") return; if (status.state === "error") throw buildStatusError(status); updateProgress(status); await new Promise(resolve => setTimeout(resolve, 750)); if (loadCancelled || token !== activeLoadToken) return; status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`); } activeBuildSegment = null; setLoadingPhase("complete"); await showCompletedDay(value, token); refreshBlockLabels(value); }
 async function beginFullDay(rebuild = false) {
@@ -1242,6 +1310,7 @@ const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1); newest
 // gallery's default ordering is personal, so without those two steps the app opens on a
 // view it cannot fill and looks broken rather than unconfigured.
 function setChrome(visible) {
+  if (visible && currentView !== "gallery") return;
   ["accountStatus", "connect", "disconnect", "olderDay", "newerDay",
    "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", !visible));
   segmentToolbar.classList.toggle("hidden", !visible);
@@ -1322,7 +1391,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
   }, delay);
 }
 async function startup() {
-  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); } catch (_) { showContentRating(); showGalleryPreferences(); }
+  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
@@ -1641,15 +1710,24 @@ async function pollDiscovery() {
   finally { discoveryPolling = false; }
 }
 function showView(name) {
+  currentView = name;
   const discovery = name === "discovery";
-  if (discovery) pauseSeenTracking();
-  $("tabGallery").classList.toggle("active", !discovery); $("tabGallery").setAttribute("aria-pressed", String(!discovery));
+  const timeMachine = name === "timemachine";
+  const gallery = !discovery && !timeMachine;
+  if (!gallery) pauseSeenTracking();
+  $("tabGallery").classList.toggle("active", gallery); $("tabGallery").setAttribute("aria-pressed", String(gallery));
   $("tabDiscovery").classList.toggle("active", discovery); $("tabDiscovery").setAttribute("aria-pressed", String(discovery));
-  segmentToolbar.classList.toggle("hidden", discovery);
-  ["olderDay", "newerDay", "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", discovery));
+  $("tabTimeMachine").classList.toggle("active", timeMachine); $("tabTimeMachine").setAttribute("aria-pressed", String(timeMachine));
+  segmentToolbar.classList.toggle("hidden", !gallery);
+  ["olderDay", "newerDay", "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", !gallery));
   $("discovery").classList.toggle("hidden", !discovery);
-  $("loading").classList.toggle("hidden", discovery || dayBuilt);
-  $("gallery").classList.toggle("hidden", discovery || !dayBuilt);
+  $("timeMachine").classList.toggle("hidden", !timeMachine);
+  $("loading").classList.toggle("hidden", !gallery || dayBuilt);
+  $("gallery").classList.toggle("hidden", !gallery || !dayBuilt);
+  if (timeMachine) {
+    refreshTimeMachine().catch(error => { $("timeMachineMessage").textContent = error.message; });
+    return;
+  }
   if (!discovery) {
     resumeSeenTracking();
     if (recommendationsNeedRefresh && dayBuilt && selectedView === "foryou") {
@@ -1668,6 +1746,131 @@ function showView(name) {
 }
 $("tabGallery").onclick = () => showView("gallery");
 $("tabDiscovery").onclick = () => showView("discovery");
+$("tabTimeMachine").onclick = () => showView("timemachine");
+
+// The Time Machine walks each followed creator from their oldest image. A card advances
+// only when it has been scrolled past, using the same rule as the dimmed gallery cards,
+// so "seen" means one thing everywhere in the app.
+let timeMachinePoll = 0;
+function renderTimeMachineStatus(state) {
+  const bar = $("timeMachineBar");
+  bar.style.width = `${Math.max(0, Math.min(100, Number(state.progress) || 0))}%`;
+  const { primed = 0, creators = 0, images = 0, priming } = state;
+  $("timeMachineStatus").textContent = !creators
+    ? "Not started. Reading your follows fetches each creator’s earliest artwork."
+    : priming
+      ? `Reading creator ${displayCount(primed)} of ${displayCount(creators)}… ${displayCount(images)} images so far.`
+      : `${displayCount(primed)} of ${displayCount(creators)} creators read · ${displayCount(images)} images available.`;
+  $("timeMachinePrime").classList.toggle("hidden", !!priming);
+  $("timeMachineStop").classList.toggle("hidden", !priming);
+}
+function timeMachineProgress(entry) {
+  const seen = safeCount(entry.seenCount), known = safeCount(entry.knownCount);
+  // "of N so far" while more of the creator is unfetched: the API gives no total, so
+  // claiming a complete denominator would be a guess.
+  return entry.complete ? `${displayCount(seen)} of ${displayCount(known)}`
+                        : `${displayCount(seen)} of ${displayCount(known)} so far`;
+}
+function decorateTimeMachineCard(element, entry) {
+  let line = element.querySelector(".tm-progress");
+  if (!line) {
+    line = document.createElement("div");
+    line.className = "tm-progress";
+    element.appendChild(line);
+  }
+  line.textContent = `${String(entry.representative.createdAt).slice(0, 10)} · ${timeMachineProgress(entry)}`;
+}
+function syncTimeMachineCards(entries) {
+  const grid = $("timeMachineGrid");
+  const existing = new Map([...grid.children].map(node => [node.dataset.username, node]));
+  const wanted = new Set();
+  entries.forEach(entry => {
+    const key = entry.username.toLowerCase();
+    wanted.add(key);
+    const current = existing.get(key);
+    // The signature covers everything the card renders, so an unchanged card is left
+    // alone entirely -- no reflow, no reloaded image, no lost scroll anchor.
+    const signature = `${entry.representative.id}|${entry.seenCount}|${entry.knownCount}|${entry.complete}`;
+    if (current && current.dataset.signature === signature) return;
+    // Built by the gallery's own card factory, so reactions, follow, creator metadata
+    // and the detail dialog all behave identically here. imageCount is 1, which is what
+    // hides the carousel arrows: one image instead of all, and nothing else differs.
+    const element = card(entry);
+    element.classList.add("tm-card");
+    element.dataset.username = key;
+    element.dataset.signature = signature;
+    decorateTimeMachineCard(element, entry);
+    if (current) { current.replaceWith(element); }
+    else {
+      // Cards arrive as each creator finishes, not in order, so each is placed where it
+      // belongs alphabetically rather than appended and left out of sequence.
+      const after = [...grid.children].find(node => node.dataset.username > key);
+      grid.insertBefore(element, after || null);
+    }
+    timeMachineSeenObserver.observe(element);
+  });
+  existing.forEach((node, key) => {
+    if (!wanted.has(key)) { timeMachineSeenObserver.unobserve(node); node.remove(); }
+  });
+}
+function renderTimeMachineCards(cards) {
+  const grid = $("timeMachineGrid");
+  if (!cards.length) {
+    grid.innerHTML = "";
+    $("timeMachineMessage").textContent = $("timeMachineBar").style.width === "0%"
+      ? "Read your follows to begin."
+      : "Every creator you follow has been read to the end at this content level.";
+    return;
+  }
+  $("timeMachineMessage").textContent = "";
+  syncTimeMachineCards(cards);
+}
+const timeMachinePending = new Set();
+const timeMachineSeenObserver = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    const element = entry.target;
+    if (entry.isIntersecting) { element.tmEnteredAt = Date.now(); return; }
+    // Scrolled away after dwelling, not merely rendered: the same test the gallery uses.
+    if (element.tmEnteredAt && Date.now() - element.tmEnteredAt > 900) {
+      timeMachinePending.add(element.dataset.username);
+    }
+    element.tmEnteredAt = 0;
+  });
+}, { threshold: 0.6 });
+async function flushTimeMachineSeen() {
+  if (!timeMachinePending.size) return 0;
+  const usernames = [...timeMachinePending];
+  timeMachinePending.clear();
+  const { advanced } = await api("/api/timemachine/seen",
+    { method: "POST", body: JSON.stringify({ usernames }) });
+  return advanced;
+}
+async function refreshTimeMachine() {
+  await flushTimeMachineSeen();
+  const data = await api("/api/timemachine");
+  renderTimeMachineStatus(data.status);
+  renderTimeMachineCards(data.cards);
+}
+$("timeMachinePrime").onclick = async () => {
+  $("timeMachinePrime").disabled = true;
+  try {
+    renderTimeMachineStatus(await api("/api/timemachine/prime", { method: "POST", body: "{}" }));
+    clearInterval(timeMachinePoll);
+    timeMachinePoll = setInterval(async () => {
+      // A full card fetch measured 0.04s for 285 creators, so there is no reason to poll
+      // the status alone and make the reader wait for a tab switch to see new cards.
+      const data = await api("/api/timemachine");
+      renderTimeMachineStatus(data.status);
+      renderTimeMachineCards(data.cards);
+      if (!data.status.priming) clearInterval(timeMachinePoll);
+    }, 1500);
+  } catch (error) { toast(error.message); }
+  finally { $("timeMachinePrime").disabled = false; }
+};
+$("timeMachineStop").onclick = async () => {
+  try { renderTimeMachineStatus(await api("/api/timemachine/stop", { method: "POST", body: "{}" })); }
+  catch (error) { toast(error.message); }
+};
 $("syncDiscovery").onclick = async () => {
   if (!oauthConnected) return toast("Connect Civitai to analyse your reactions.");
   $("syncDiscovery").disabled = true;

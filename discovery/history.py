@@ -51,6 +51,13 @@ COLLECTION_FEEDS = {
 }
 COLLECTION_VERSION = 5
 
+# Every browsing level in one mask. A single-image lookup has to name the level it wants
+# or Civitai answers an anonymous caller at the public level only.
+ALL_BROWSING_LEVELS = sum(COLLECTION_FEEDS["X"])
+# image.get batches like tag.getVotableTags, so a day costs hundreds of requests, not
+# hundreds of thousands.
+REACTION_SWEEP_BATCH = 100
+
 # Fixed planning benchmarks from the preserved completed runs. These are intentionally
 # not updated from runtime rows: later rows can represent partial/resumed work and caused
 # implausibly low estimates. The safe benchmark is the corrected 2026-07-24 run; the
@@ -385,6 +392,8 @@ class HistoryArchive:
             image_columns = {row[1] for row in db.execute("PRAGMA table_info(images)")}
             if "visual_hash" not in image_columns:
                 db.execute("ALTER TABLE images ADD COLUMN visual_hash TEXT")
+            if "stats_fetched_at" not in image_columns:
+                db.execute("ALTER TABLE images ADD COLUMN stats_fetched_at TEXT")
             db.execute("CREATE INDEX IF NOT EXISTS images_visual_hash "
                        "ON images(visual_hash,width,height) WHERE visual_hash IS NOT NULL")
             db.execute("INSERT OR IGNORE INTO block_images(block_key,image_id) SELECT local_date,id FROM images")
@@ -757,6 +766,22 @@ class HistoryArchive:
             }
             # Format 3 used one combined PG/PG-13 cursor. It cannot safely seed either
             # format-4 shard, so rebuilding an older archive locates both exact feeds.
+
+        # A rebuild clears this block's feeds before it collects anything. If Civitai can
+        # no longer reach the date, that collection can never succeed, so the day would be
+        # left marked incomplete with no way back -- a working gallery destroyed by asking
+        # to refresh it. Check reach while everything is still untouched.
+        if active_backend() != "search":
+            for mask in COLLECTION_FEEDS[rating]:
+                floor = self.feed_floor(mask)
+                if floor is not None and floor > start:
+                    oldest = oldest_buildable_day(floor)
+                    raise ValueError(
+                        "Civitai's public image feed can no longer reach this date, so it "
+                        "cannot be rebuilt. The oldest day it can rebuild at this coverage "
+                        f"is {oldest:%B} {oldest.day}, {oldest.year}. Your saved gallery for "
+                        "this day has been left exactly as it was.")
+
         with self.lock:
             self.jobs[key] = {"state": "loading", "phase": "locating", "progress": 0, "pages": 0,
                 "startedMonotonic": time.monotonic(), "etaLowSeconds": None, "etaHighSeconds": None,
@@ -1443,8 +1468,49 @@ class HistoryArchive:
                         "retryUntilMonotonic": None, "retryAttempt": 0})
             return oldest, newest
 
+        # The feed has no date filter, so reaching a past day means finding the offset it
+        # starts at, and the only way to read an offset's date is to fetch it. Doubling
+        # from one page spends ~16 requests per feed doing that, each pulling 200 images
+        # to read their timestamps and discard them.
+        #
+        # The floor probe already knows the date at FEED_FLOOR_PROBE_OFFSET, and the feed
+        # runs close to linear in time (measured ~7% drift across a 2-day span), so that
+        # anchor turns the search into an estimate plus a short confirmation. A poor
+        # estimate can only cost extra probes: every bound below is still verified against
+        # real timestamps by the same binary search, so it cannot land on the wrong day.
         lower, upper, oldest = 0, PAGE_SIZE, None
-        while not cancel_event.is_set():
+        bracketed = False
+        floor = self.feed_floor(browsing_mask)
+        if floor is not None:
+            now = datetime.now(timezone.utc)
+            span = (now - floor).total_seconds()
+            wanted = (now - end).total_seconds()
+            if span > 0 and 0 < wanted < span:
+                estimate = FEED_FLOOR_PROBE_OFFSET * wanted / span
+                margin = max(4 * PAGE_SIZE, estimate * .25)
+                low = int(max(0, estimate - margin) // PAGE_SIZE) * PAGE_SIZE
+                high = int(min(MAX_CURSOR_OFFSET, estimate + margin) // PAGE_SIZE) * PAGE_SIZE
+                if high > low:
+                    high_oldest, _ = probe(high)
+                    # An empty page means the probe passed Civitai's traversal ceiling,
+                    # which bounds the search from above exactly as a crossing page does.
+                    if high_oldest is None or high_oldest < end:
+                        if low <= 0:
+                            lower, upper, oldest, bracketed = 0, high, high_oldest, True
+                        else:
+                            low_oldest, _ = probe(low)
+                            if low_oldest is None or low_oldest < end:
+                                # The estimate overshot: the boundary sits at or above
+                                # `low`, so bisect everything down to it. Bisection needs
+                                # a lower bound that has *not* crossed, and offset 0 is
+                                # the newest page, so it never has.
+                                lower, upper, oldest, bracketed = 0, low, low_oldest, True
+                            else:
+                                lower, upper, oldest, bracketed = low, high, high_oldest, True
+                    else:
+                        # Undershot: keep doubling, but from the estimate, not page one.
+                        lower = upper = max(PAGE_SIZE, high)
+        while not bracketed and not cancel_event.is_set():
             oldest, _ = probe(upper)
             if oldest is None or oldest < end:
                 break
@@ -2109,6 +2175,55 @@ class HistoryArchive:
     def update_stats(self, image_id: int, stats: dict) -> None:
         with self.connect() as db: db.execute("UPDATE images SET stats=? WHERE id=?", (json.dumps(stats), image_id))
 
+    def stale_reaction_ids(self, block_key: str, max_age_hours: float = 12.0) -> list[int]:
+        """Archived images in a block whose reaction counts have never been refreshed,
+        or were refreshed longer ago than ``max_age_hours``."""
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(hours=max_age_hours)).isoformat().replace("+00:00", "Z")
+        with self.connect() as db:
+            return [row[0] for row in db.execute(
+                """SELECT i.id FROM block_images b JOIN images i ON i.id=b.image_id
+                   WHERE b.block_key=? AND (i.stats_fetched_at IS NULL OR i.stats_fetched_at<?)
+                   ORDER BY i.id""", (block_key, cutoff)).fetchall()]
+
+    def sweep_image_reactions(self, client, image_ids, cancel=None, progress=None) -> int:
+        """Refresh reaction counts for archived images, 100 per request.
+
+        The daily listing captures reactions at collection time, but they keep
+        accumulating for weeks afterwards, so the archived snapshot is the least settled
+        figure an image will ever have. ``image.get`` batches like the tag sweep, which
+        makes a whole day affordable: ~820 requests for a full day rather than one each.
+        """
+        wanted = [int(value) for value in dict.fromkeys(image_ids) if value]
+        done = 0
+        for start in range(0, len(wanted), REACTION_SWEEP_BATCH):
+            if cancel is not None and cancel.is_set():
+                break
+            chunk = wanted[start:start + REACTION_SWEEP_BATCH]
+            results = client.batch_query_optional("image.get", [{"id": value} for value in chunk])
+            stamp = utcnow()
+            updates = []
+            for image_id, result in zip(chunk, results):
+                if not isinstance(result, dict):
+                    continue
+                counts = result.get("stats") if isinstance(result.get("stats"), dict) else {}
+                mapped = {name: int(counts.get(f"{key}CountAllTime") or 0) for name, key in (
+                    ("likeCount", "like"), ("heartCount", "heart"), ("laughCount", "laugh"),
+                    ("cryCount", "cry"), ("dislikeCount", "dislike"),
+                    ("commentCount", "comment"), ("collectedCount", "collected"))}
+                mapped["reactionCount"] = sum(mapped[name] for name in
+                    ("likeCount", "heartCount", "laughCount", "cryCount"))
+                updates.append((json.dumps(mapped), stamp, image_id))
+            with self.connect() as db:
+                # Images that answered are stamped; ones that did not keep their old
+                # timestamp so the next sweep retries them rather than skipping them.
+                db.executemany(
+                    "UPDATE images SET stats=?,stats_fetched_at=? WHERE id=?", updates)
+            done += len(updates)
+            if progress:
+                progress(min(start + len(chunk), len(wanted)), len(wanted))
+        return done
+
     def stats(self, image_id: int) -> dict:
         with self.connect() as db: row = db.execute("SELECT stats FROM images WHERE id=?", (image_id,)).fetchone()
         return json.loads(row[0]) if row else {}
@@ -2117,8 +2232,22 @@ class HistoryArchive:
         with self.connect() as db: row = db.execute("SELECT * FROM images WHERE id=?", (image_id,)).fetchone()
         if row is None: raise ValueError("Image is not in the history archive")
         if not row["details_loaded"]:
-            payload, _ = self._request({"imageId": image_id, "withMeta": "true"}, minimum_interval=1.5)
+            # Without an explicit browsing level Civitai answers an anonymous caller at the
+            # public level only, so every Mature/X/XXX image came back empty -- no prompt,
+            # no resources -- and details_loaded was never set, which re-sent the same
+            # request on every reopen of the dialog. Ask for the level this image is on.
+            level = int(row["browsing_level"] or 0) or ALL_BROWSING_LEVELS
+            payload, _ = self._request(
+                {"imageId": image_id, "withMeta": "true", "browsingLevel": level},
+                minimum_interval=1.5)
             raw = next((item for item in payload.get("items", []) if int(item.get("id", -1)) == image_id), None)
+            if raw is None:
+                # The request succeeded and simply did not contain this image, so it is
+                # gone rather than delayed. Record the attempt so it is not retried forever.
+                with self.connect() as db:
+                    db.execute("UPDATE images SET details_loaded=1 WHERE id=?", (image_id,))
+                with self.connect() as db:
+                    row = db.execute("SELECT * FROM images WHERE id=?", (image_id,)).fetchone()
             if raw:
                 item = normalize(raw)
                 # Detail responses sometimes report an underlying creation

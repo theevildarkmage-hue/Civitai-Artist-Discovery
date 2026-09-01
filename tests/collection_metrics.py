@@ -20,7 +20,9 @@ def image(image_id, created):
         "type": "image", "nsfwLevel": "Soft", "browsingLevel": 2, "stats": {}}
 
 
-ANCIENT = ({"items": [{"id": 0, "createdAt": "2020-01-01T00:00:00Z"}]}, 60)
+# An inconclusive floor probe is a real state: the collector proceeds without a
+# reachability opinion and the seek searches unaided, which is what this test measures.
+ANCIENT = ({"items": []}, 60)
 
 
 def is_floor_probe(params) -> bool:

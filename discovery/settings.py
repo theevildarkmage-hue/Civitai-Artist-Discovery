@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import secrets
 import threading
 
 from .site import (DEFAULT_CONTENT_RATING, browsing_levels, content_rating,
@@ -10,6 +11,10 @@ from .site import (DEFAULT_CONTENT_RATING, browsing_levels, content_rating,
 HIGH_VOLUME_THRESHOLDS = (50, 100, 200)
 EMERGING_REACTION_MODES = ("balanced", "strict", "unadjusted")
 EMERGING_REACTION_LIMITS = (0, 100, 250, 500)
+# Civitai's feed can only be paged back a couple of days, so a day not captured inside
+# that window is lost for good. Twelve hours leaves roughly four times the margin the
+# narrowest coverage allows; twenty-four leaves about two.
+AUTO_CAPTURE_INTERVALS = (12, 24)
 
 
 class AppSettings:
@@ -51,6 +56,22 @@ class AppSettings:
             emerging_reaction_limit = raw.get("emergingReactionLimit", 0)
             if emerging_reaction_limit not in EMERGING_REACTION_LIMITS:
                 emerging_reaction_limit = 0
+            auto_capture = raw.get("autoCapture", False)
+            if not isinstance(auto_capture, bool):
+                auto_capture = False
+            auto_capture_hours = raw.get("autoCaptureHours", 12)
+            if auto_capture_hours not in AUTO_CAPTURE_INTERVALS:
+                auto_capture_hours = 12
+            # A stable per-install number, so this copy of the app always picks the same
+            # slot in the interval but a different one from everybody else's copy.
+            # None means "pick a slot automatically", which spreads installs across the
+            # interval. A number is a local minute past midnight the user chose instead.
+            capture_minute = raw.get("autoCaptureMinute")
+            if not isinstance(capture_minute, int) or not 0 <= capture_minute < 1440:
+                capture_minute = None
+            seed = raw.get("captureSeed")
+            if not isinstance(seed, int) or not 0 <= seed < 2**31:
+                seed = secrets.randbelow(2**31)
             return {"contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),
                     "dimSeenCards": dim_seen_cards,
@@ -58,7 +79,11 @@ class AppSettings:
                     "hideHighVolumeCreators": hide_high_volume,
                     "highVolumeThreshold": high_volume_threshold,
                     "emergingReactionMode": emerging_reaction_mode,
-                    "emergingReactionLimit": emerging_reaction_limit}
+                    "emergingReactionLimit": emerging_reaction_limit,
+                    "autoCapture": auto_capture,
+                    "autoCaptureHours": auto_capture_hours,
+                    "autoCaptureMinute": capture_minute,
+                    "captureSeed": seed}
 
     def update(self, *, browsing_levels_value: object = None,
                content_rating_value: object = None,
@@ -67,7 +92,10 @@ class AppSettings:
                hide_high_volume_creators_value: object = None,
                high_volume_threshold_value: object = None,
                emerging_reaction_mode_value: object = None,
-               emerging_reaction_limit_value: object = None) -> dict:
+               emerging_reaction_limit_value: object = None,
+               auto_capture_value: object = None,
+               auto_capture_hours_value: object = None,
+               auto_capture_minute_value: object = "keep") -> dict:
         current = self.load()
         if browsing_levels_value is not None:
             levels = browsing_levels(browsing_levels_value)
@@ -103,6 +131,20 @@ class AppSettings:
                                    else emerging_reaction_limit_value)
         if emerging_reaction_limit not in EMERGING_REACTION_LIMITS:
             raise ValueError("emergingReactionLimit must be none, 100, 250, or 500")
+        auto_capture = (current["autoCapture"] if auto_capture_value is None
+                        else auto_capture_value)
+        if not isinstance(auto_capture, bool):
+            raise ValueError("autoCapture must be true or false")
+        auto_capture_hours = (current["autoCaptureHours"] if auto_capture_hours_value is None
+                              else auto_capture_hours_value)
+        if auto_capture_hours not in AUTO_CAPTURE_INTERVALS:
+            raise ValueError("autoCaptureHours must be 12 or 24")
+        capture_minute = (current["autoCaptureMinute"] if auto_capture_minute_value == "keep"
+                          else auto_capture_minute_value)
+        if capture_minute is not None and (not isinstance(capture_minute, int)
+                                           or not 0 <= capture_minute < 1440):
+            raise ValueError("autoCaptureMinute must be null or a minute of the day")
+        seed = current["captureSeed"]
         value = {"contentRating": rating_for_levels(levels),
                  "browsingLevels": list(levels),
                  "dimSeenCards": dim_seen_cards,
@@ -110,7 +152,11 @@ class AppSettings:
                  "hideHighVolumeCreators": hide_high_volume,
                  "highVolumeThreshold": high_volume_threshold,
                  "emergingReactionMode": emerging_reaction_mode,
-                 "emergingReactionLimit": emerging_reaction_limit}
+                 "emergingReactionLimit": emerging_reaction_limit,
+                 "autoCapture": auto_capture,
+                 "autoCaptureHours": auto_capture_hours,
+                 "autoCaptureMinute": capture_minute,
+                 "captureSeed": seed}
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")

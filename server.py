@@ -22,6 +22,8 @@ import webbrowser
 import traceback
 
 from discovery.civitai import CandidateCache
+from discovery.capture import AutoCapture
+from discovery.timemachine import TimeMachine
 from discovery.history import HistoryArchive, parse_day, previous_local_day
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
@@ -52,6 +54,11 @@ HISTORY = HistoryArchive(DATA_ROOT / "history", INITIAL_SETTINGS["contentRating"
                          INITIAL_SETTINGS["browsingLevels"])
 TASTE = TasteStore(DATA_ROOT / "discovery")
 UPDATES = UpdateManager(DATA_ROOT, application_root(), APP_VERSION)
+# The listing sweep is the only step that expires, so it is the only one run unattended.
+CAPTURE = AutoCapture(HISTORY, SETTINGS)
+# Shares HISTORY's paced request lane, so priming queues behind a day build rather
+# than racing it for the same API budget.
+TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
 WRITE_LOCK = threading.Lock()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
@@ -105,6 +112,32 @@ def profile_avatar(profile: dict | None) -> str | None:
         return str(value) if allowed else None
     filename = urllib.parse.quote(str(picture.get("name") or "avatar.jpeg"))
     return f"https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/{value}/width=160/{filename}"
+
+
+def image_store(image_id: int):
+    """Which collector holds this image, or None.
+
+    Guarding on "the app collected this" is not enough on its own: the code behind the
+    guard then has to read and write through the store that actually holds the row.
+    Reading stats from the daily archive for an image it does not have returns {}, so a
+    reaction wrote 1 instead of the previous count plus one.
+    """
+    if HISTORY.has_image(image_id):
+        return HISTORY
+    if TIME_MACHINE.has_image(image_id):
+        return TIME_MACHINE
+    return None
+
+
+def collected_image(image_id: int) -> bool:
+    """Whether this image came from somewhere the app collected, not just anywhere.
+
+    The reaction and content-control endpoints refuse images the app has not collected,
+    which is what keeps them from being general-purpose lookups against Civitai. Every
+    such guard has to consult every collector, or a feature works in one place and fails
+    in another for no reason a user could understand.
+    """
+    return image_store(image_id) is not None
 
 
 def decorate_history_artist(artist: dict, profiles: dict | None = None, follows: set[str] | None = None,
@@ -1042,6 +1075,29 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Build estimate", error)
             return
+        if parsed.path == "/api/history/capture":
+            try:
+                self.json_response(CAPTURE.status())
+            except Exception as error: self.internal_error("Capture status", error)
+            return
+        if parsed.path == "/api/timemachine":
+            try:
+                # Decorated by the same function the daily gallery uses, so a Time
+                # Machine card carries the follow state, avatar, follower counts and
+                # reaction history a gallery card does.
+                signals = gallery_signals()
+                profiles, follows = creator_profiles(), signals["followed"]
+                self.json_response({
+                    "cards": [decorate_history_artist(card, profiles, follows, signals)
+                              for card in TIME_MACHINE.cards()],
+                    "status": TIME_MACHINE.status()})
+            except Exception as error: self.internal_error("Time machine", error)
+            return
+        if parsed.path == "/api/timemachine/status":
+            try:
+                self.json_response(TIME_MACHINE.status())
+            except Exception as error: self.internal_error("Time machine status", error)
+            return
         if parsed.path == "/api/history/window":
             try:
                 rating = query.get("contentRating", [None])[0]
@@ -1199,7 +1255,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not raw_ids or len(raw_ids) > 100:
                     raise ValueError("Request between 1 and 100 image IDs")
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not HISTORY.has_image(image_id) for image_id in image_ids):
+                if any(not collected_image(image_id) for image_id in image_ids):
                     raise ValueError("Image is not in this history archive")
                 try:
                     values = SocialClient().batch_query_optional("image.get", [{"id": image_id} for image_id in image_ids])
@@ -1263,7 +1319,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/history/image":
             try:
                 image_id = int(query.get("id", [0])[0])
-                detail = HISTORY.detail(image_id)
+                detail = (image_store(image_id) or HISTORY).detail(image_id)
                 # Tags are already collected for the personalised ordering; showing them
                 # here means the reason an image was ranked or hidden is inspectable.
                 try:
@@ -1432,6 +1488,44 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"),
                     str(body.get("segment") or "all"), body.get("contentRating")), 202)
                 return
+            if parsed.path == "/api/history/capture":
+                enabled = body.get("enabled")
+                hours = body.get("intervalHours")
+                # "keep" leaves the chosen time alone; an explicit null restores the
+                # automatic slot, so the two are not the same request.
+                minute = body["atMinute"] if "atMinute" in body else "keep"
+                SETTINGS.update(auto_capture_value=enabled if isinstance(enabled, bool) else None,
+                                auto_capture_hours_value=hours if hours is not None else None,
+                                auto_capture_minute_value=minute)
+                if SETTINGS.load()["autoCapture"]:
+                    CAPTURE.start()
+                    if body.get("runNow"):
+                        CAPTURE.trigger()
+                else:
+                    CAPTURE.stop()
+                self.json_response(CAPTURE.status())
+                return
+            if parsed.path == "/api/timemachine/prime":
+                if not connected_or_false():
+                    raise PermissionError("Connect Civitai to read the creators you follow")
+                self.json_response(TIME_MACHINE.start_prime(SocialClient()), 202)
+                return
+            if parsed.path == "/api/timemachine/stop":
+                TIME_MACHINE.stop_prime()
+                self.json_response(TIME_MACHINE.status())
+                return
+            if parsed.path == "/api/timemachine/seen":
+                names = body.get("usernames")
+                if not isinstance(names, list) or len(names) > 500:
+                    raise ValueError("usernames must be a list of at most 500 names")
+                self.json_response({"advanced": TIME_MACHINE.advance(names)})
+                return
+            if parsed.path == "/api/timemachine/refill":
+                name = str(body.get("username") or "").strip()
+                if not name:
+                    raise ValueError("username is required")
+                self.json_response({"added": TIME_MACHINE.refill(name)})
+                return
             if parsed.path == "/api/history/rebuild":
                 value = str(body.get("date") or previous_local_day())
                 self.json_response(HISTORY.rebuild(value, str(body.get("startUtc") or ""), str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"), str(body.get("segment") or "all")), 202)
@@ -1480,7 +1574,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.json_response({"error": "Provide 1 to 100 image IDs"}, 400)
                     return
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not HISTORY.has_image(image_id) for image_id in image_ids):
+                if any(not collected_image(image_id) for image_id in image_ids):
                     self.json_response({"error": "An image is not in this history archive"}, 400)
                     return
                 tags = {image_id: TASTE.image_tags(image_id) for image_id in image_ids}
@@ -1543,7 +1637,8 @@ class Handler(BaseHTTPRequestHandler):
         if reaction not in REACTIONS or not isinstance(desired, bool):
             raise ValueError("Invalid reaction request")
         state = CACHE.load(); item = next((row for row in state.get("items", []) if int(row.get("id", -1)) == image_id), None)
-        in_history = HISTORY.has_image(image_id)
+        store = image_store(image_id)
+        in_history = store is not None
         if item is None and not in_history:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
@@ -1564,11 +1659,11 @@ class Handler(BaseHTTPRequestHandler):
                     CACHE.save(fresh)
                     item = cached
         if in_history:
-            stats = HISTORY.stats(image_id)
+            stats = store.stats(image_id)
             if changed:
                 delta = 1 if desired else -1; key = REACTIONS[reaction]
                 stats[key] = max(0, int(stats.get(key, 0)) + delta); stats["reactionCount"] = max(0, int(stats.get("reactionCount", 0)) + delta)
-                HISTORY.update_stats(image_id, stats)
+                store.update_stats(image_id, stats)
         else: stats = item.get("stats", {})
         self.json_response({"imageId": image_id, "reactions": sorted(current), "stats": stats, "changed": changed})
 
@@ -1638,6 +1733,9 @@ def main() -> None:
     url = f"http://{display_host}:{actual_port}"
     save_instance_url(url)
     UPDATES.schedule_success_cleanup()
+    # Only starts a worker when the preference is on; otherwise nothing runs.
+    if SETTINGS.load()["autoCapture"]:
+        CAPTURE.start()
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
     tray = None
