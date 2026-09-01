@@ -50,6 +50,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-profile-auto-refresh-", ignore_
 
             page.route("**/api/discovery/sync", sync_route)
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            page.wait_for_selector("#welcome:not(.hidden)", timeout=20000)
 
             due = page.evaluate("""() => ({
                 missing: profileRefreshDue({hasData: true, lastSyncAt: null}),
@@ -62,6 +63,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-profile-auto-refresh-", ignore_
             page.evaluate("""() => {
                 oauthConnected = true;
                 dayBuilt = true;
+                activeBuildSegment = null;
+                activeRebuild = false;
                 scheduleAutomaticProfileRefresh({hasData: true,
                     lastSyncAt: new Date(Date.now() - 25*60*60*1000).toISOString()}, 0);
             }""")
