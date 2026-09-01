@@ -1796,6 +1796,12 @@ function syncTimeMachineCards(entries) {
     // and the detail dialog all behave identically here. imageCount is 1, which is what
     // hides the carousel arrows: one image instead of all, and nothing else differs.
     const element = card(entry);
+    // card() wires every card into the daily gallery's seen tracking, which dims it and
+    // records the creator against whichever day the gallery has open. Here that is both
+    // the wrong store and someone else's data, so this card is detached from it and
+    // tracked by the Time Machine's own observer instead.
+    seenObserver.unobserve(element);
+    delete element.dataset.seenDate;
     element.classList.add("tm-card");
     element.dataset.username = key;
     element.dataset.signature = signature;
@@ -1826,6 +1832,7 @@ function renderTimeMachineCards(cards) {
   syncTimeMachineCards(cards);
 }
 const timeMachinePending = new Set();
+let timeMachineFlushTimer = 0;
 const timeMachineSeenObserver = new IntersectionObserver(entries => {
   entries.forEach(entry => {
     const element = entry.target;
@@ -1833,14 +1840,38 @@ const timeMachineSeenObserver = new IntersectionObserver(entries => {
     // Scrolled away after dwelling, not merely rendered: the same test the gallery uses.
     if (element.tmEnteredAt && Date.now() - element.tmEnteredAt > 900) {
       timeMachinePending.add(element.dataset.username);
+      // Dim it here rather than leaving it to the gallery's observer, which no longer
+      // watches these cards.
+      element.classList.add("is-seen");
+      // Persist promptly. This used to be flushed only when the tab was reopened, so
+      // reloading the page threw the whole pending set away and every creator came back
+      // showing the same image -- which defeats the point of walking a history.
+      scheduleTimeMachineFlush();
     }
     element.tmEnteredAt = 0;
   });
 }, { threshold: 0.6 });
+function scheduleTimeMachineFlush() {
+  clearTimeout(timeMachineFlushTimer);
+  timeMachineFlushTimer = setTimeout(() => {
+    flushTimeMachineSeen().catch(error => console.warn("Time machine progress", error));
+  }, 1200);
+}
+function flushTimeMachineSeenOnUnload() {
+  if (!timeMachinePending.size) return;
+  const usernames = [...timeMachinePending];
+  timeMachinePending.clear();
+  // A closing page cannot await a response, so this goes out as a beacon exactly as the
+  // gallery's own seen flush does.
+  const blob = new Blob([JSON.stringify({ usernames })], { type: "application/json" });
+  navigator.sendBeacon("/api/timemachine/seen", blob);
+}
+window.addEventListener("pagehide", flushTimeMachineSeenOnUnload);
 async function flushTimeMachineSeen() {
   if (!timeMachinePending.size) return 0;
   const usernames = [...timeMachinePending];
   timeMachinePending.clear();
+  clearTimeout(timeMachineFlushTimer);
   const { advanced } = await api("/api/timemachine/seen",
     { method: "POST", body: JSON.stringify({ usernames }) });
   return advanced;

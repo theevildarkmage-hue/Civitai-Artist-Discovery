@@ -128,6 +128,32 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=
             order = page.locator(".tm-card .creator-identity strong").all_inner_texts()
             assert order == sorted(order, key=str.lower), order
 
+            # Progress must persist without needing a tab switch or a reload. It used to
+            # be flushed only when the tab was reopened, so refreshing the page discarded
+            # every card scrolled past and the same images came back.
+            seen_posts = []
+            page.route("**/api/timemachine/seen", lambda route: (
+                seen_posts.append(route.request.post_data),
+                route.fulfill(status=200, content_type="application/json",
+                              body='{"advanced": 1}')))
+
+            # These cards must not feed the daily gallery's seen tracking: that dims them
+            # against whichever day the gallery has open, which is someone else's data.
+            assert page.locator(".tm-card[data-seen-date]").count() == 0, "leaked into gallery seen"
+
+            page.evaluate("""() => {
+                const el = document.querySelector('.tm-card');
+                el.tmEnteredAt = Date.now() - 5000;
+                timeMachineSeenObserver.takeRecords();
+                // Drive the same path the observer does when a card is scrolled away.
+                timeMachinePending.add(el.dataset.username);
+                el.classList.add('is-seen');
+                scheduleTimeMachineFlush();
+            }""")
+            page.wait_for_timeout(2200)   # past the flush debounce
+            assert seen_posts, "scrolling past a card must persist without a tab switch"
+            assert "ana" in seen_posts[0].lower(), seen_posts
+
             clipped = page.locator(".tm-card .tm-progress").evaluate_all(
                 "els => els.some(el => el.scrollWidth > el.clientWidth + 1)")
             assert not clipped, "the progress label must not be cut off by the card edge"
