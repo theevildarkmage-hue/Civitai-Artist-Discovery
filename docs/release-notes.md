@@ -51,8 +51,9 @@ Versions 1.0.0 through 1.0.2 can install this release from the in-app update dia
 update remains user-approved, verifies GitHub's SHA-256 asset digest, preserves the
 portable `data/` folder, rolls back a failed replacement, and restarts automatically.
 
-The exact release asset is `CivitaiArtistDiscovery-1.0.3.zip`. Its SHA-256 is recorded
-below and in the accompanying checksum file, and is verified automatically by the app.
+The exact release asset is `CivitaiArtistDiscovery-1.0.3.zip`. Its SHA-256 is
+`51734e241c8a42bb241dcf360fb76fa5463ff6af898a34ad254082cb95c20b47`; it is also recorded in the
+accompanying checksum file and verified automatically by the app.
 
 Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
 unsigned, so Windows SmartScreen or managed-device policy may warn or block it.
