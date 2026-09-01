@@ -41,8 +41,9 @@ it is promoted from prerelease. The update remains user-approved, verifies GitHu
 SHA-256 asset digest, preserves the portable `data/` folder, rolls back a failed
 replacement, and restarts automatically.
 
-The exact release asset is `CivitaiArtistDiscovery-1.0.4.zip`. Its SHA-256 is recorded
-below and in the accompanying checksum file, and is verified automatically by the app.
+The exact release asset is `CivitaiArtistDiscovery-1.0.4.zip`. Its SHA-256 is
+`cbe711130a2c9e518d4b66427ec627ca48ae4d0c47b012df7afb8f9c7728106b`; it is also recorded in the
+accompanying checksum file and verified automatically by the app.
 
 Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
 unsigned, so Windows SmartScreen or managed-device policy may warn or block it.
