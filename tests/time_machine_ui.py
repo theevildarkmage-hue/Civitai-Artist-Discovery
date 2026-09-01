@@ -154,6 +154,22 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=
             assert seen_posts, "scrolling past a card must persist without a tab switch"
             assert "ana" in seen_posts[0].lower(), seen_posts
 
+            # A card holds one image, so a hidden one cannot be filtered away for a
+            # replacement: the creator would sit on artwork the reader hides, forever.
+            # It must step past instead.
+            seen_posts.clear()
+            page.route("**/api/history/tags", lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body='{"images": {"2": {"known": true, "tags": [{"name": "nude", "hidden": true}]}}}'))
+            page.evaluate("""() => {
+                const el = [...document.querySelectorAll('.tm-card')]
+                    .find(node => node.dataset.username === 'bo');
+                return el.prepareArtwork();
+            }""")
+            page.wait_for_timeout(2400)
+            assert seen_posts, "a hidden image must advance the creator, not strand it"
+            assert "bo" in seen_posts[0].lower(), seen_posts
+
             clipped = page.locator(".tm-card .tm-progress").evaluate_all(
                 "els => els.some(el => el.scrollWidth > el.clientWidth + 1)")
             assert not clipped, "the progress label must not be cut off by the card edge"

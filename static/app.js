@@ -1803,6 +1803,20 @@ function syncTimeMachineCards(entries) {
     seenObserver.unobserve(element);
     delete element.dataset.seenDate;
     element.classList.add("tm-card");
+    // A gallery card answers a hidden image by showing another of that creator's images
+    // from the same day. This card holds exactly one, so filtering it away leaves nothing
+    // and the creator would sit on an image the reader has hidden for good. Step past it
+    // instead, which is what the reader asked for by hiding the tag.
+    const basePrepareArtwork = element.prepareArtwork;
+    element.prepareArtwork = async () => {
+      if (tagsHideImage(await checkImageTags(entry.representative.id))) {
+        timeMachinePending.add(key);
+        timeMachineHidden.add(key);
+        scheduleTimeMachineFlush();
+        return;
+      }
+      return basePrepareArtwork();
+    };
     element.dataset.username = key;
     element.dataset.signature = signature;
     decorateTimeMachineCard(element, entry);
@@ -1832,6 +1846,9 @@ function renderTimeMachineCards(cards) {
   syncTimeMachineCards(cards);
 }
 const timeMachinePending = new Set();
+// Creators advanced because the reader hides that image's tags, rather than because they
+// scrolled past it. Those need replacement artwork pulled in rather than left blank.
+const timeMachineHidden = new Set();
 let timeMachineFlushTimer = 0;
 const timeMachineSeenObserver = new IntersectionObserver(entries => {
   entries.forEach(entry => {
@@ -1853,8 +1870,13 @@ const timeMachineSeenObserver = new IntersectionObserver(entries => {
 }, { threshold: 0.6 });
 function scheduleTimeMachineFlush() {
   clearTimeout(timeMachineFlushTimer);
-  timeMachineFlushTimer = setTimeout(() => {
-    flushTimeMachineSeen().catch(error => console.warn("Time machine progress", error));
+  timeMachineFlushTimer = setTimeout(async () => {
+    try {
+      await flushTimeMachineSeen();
+      // Only refresh when something was skipped for being hidden. Refreshing after an
+      // ordinary scroll-past would swap cards out from under the reader.
+      if (timeMachineHidden.size) { timeMachineHidden.clear(); await refreshTimeMachine(); }
+    } catch (error) { console.warn("Time machine progress", error); }
   }, 1200);
 }
 function flushTimeMachineSeenOnUnload() {
