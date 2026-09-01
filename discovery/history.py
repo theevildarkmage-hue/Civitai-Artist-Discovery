@@ -130,7 +130,21 @@ class SearchCompletenessError(RuntimeError):
 
 
 class AdaptivePacer:
-    """Conservative request pacing that responds to live service conditions."""
+    """Conservative request pacing that responds to live service conditions.
+
+    Backing off and recovering are both proportional, which they were not. Failure
+    multiplied the interval by 1.5, so about five errors took it from a second to the
+    eight-second ceiling, while recovery subtracted a tenth of a second every ten clean
+    responses -- roughly seven hundred requests to come back. A collection is rarely that
+    long, so any Civitai hiccup left the app slow for the rest of the run and often the
+    run after it: a Time Machine prime of 485 creators crawled at seven seconds each long
+    after the service had recovered, and could not have sped up within its own lifetime.
+    """
+
+    # Recovery is deliberately slower than the climb -- a service that just failed should
+    # be approached carefully -- but it now finishes inside a normal collection.
+    RECOVERY_STREAK = 5
+    RECOVERY_FACTOR = 0.85
 
     def __init__(self, initial: float = 1.0, minimum: float = 0.75, maximum: float = 8.0):
         self.interval = initial
@@ -145,8 +159,8 @@ class AdaptivePacer:
             self.clean_streak = 0
             return
         self.clean_streak += 1
-        if self.clean_streak >= 10:
-            self.interval = max(self.minimum, self.interval - 0.1)
+        if self.clean_streak >= self.RECOVERY_STREAK:
+            self.interval = max(self.minimum, self.interval * self.RECOVERY_FACTOR)
             self.clean_streak = 0
 
     def failure(self, reason: str) -> None:
