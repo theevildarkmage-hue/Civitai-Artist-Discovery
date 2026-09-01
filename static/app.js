@@ -1784,10 +1784,11 @@ function syncTimeMachineCards(entries) {
   const grid = $("timeMachineGrid");
   const existing = new Map([...grid.children].map(node => [node.dataset.username, node]));
   const wanted = new Set();
-  entries.forEach(entry => {
+  entries.forEach((entry, position) => {
     const key = entry.username.toLowerCase();
     wanted.add(key);
     const current = existing.get(key);
+    if (current) current.dataset.order = position;
     // The signature covers everything the card renders, so an unchanged card is left
     // alone entirely -- no reflow, no reloaded image, no lost scroll anchor.
     const signature = `${entry.representative.id}|${entry.seenCount}|${entry.knownCount}|${entry.complete}`;
@@ -1817,13 +1818,13 @@ function syncTimeMachineCards(entries) {
       return basePrepareArtwork();
     };
     element.dataset.username = key;
+    element.dataset.order = position;
     element.dataset.signature = signature;
     decorateTimeMachineCard(element, entry);
     if (current) { current.replaceWith(element); }
     else {
-      // Cards arrive as each creator finishes, not in order, so each is placed where it
-      // belongs alphabetically rather than appended and left out of sequence.
-      const after = [...grid.children].find(node => node.dataset.username > key);
+      const after = [...grid.children].find(
+        node => Number(node.dataset.order) > position);
       grid.insertBefore(element, after || null);
     }
     timeMachineSeenObserver.observe(element);

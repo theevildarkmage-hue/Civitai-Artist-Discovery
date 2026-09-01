@@ -112,8 +112,16 @@ with tempfile.TemporaryDirectory(prefix="civitai-timemachine-",
     assert cards["Ana"]["knownCount"] == 2, cards["Ana"]
     assert cards["Ana"]["seenCount"] == 0, cards["Ana"]
 
+    # Cards come back least-recently-advanced first. Plain alphabetical put the same
+    # creators at the top of every visit, and it sorted case-sensitively while the browser
+    # inserted by a lowercased key, so the grid reshuffled on every refresh.
+    import time as _time
+    assert [c["username"] for c in machine.cards()] == ["Ana", "Bo"]
+
     # Scrolling past Ana advances only Ana.
+    _time.sleep(0.01)
     assert machine.advance(["Ana"]) == 1
+    assert [c["username"] for c in machine.cards()] == ["Bo", "Ana"], "a creator just read must sink"
     cards = {c["username"]: c for c in machine.cards()}
     assert cards["Ana"]["representative"]["id"] == 2, cards["Ana"]
     assert cards["Ana"]["seenCount"] == 1, cards["Ana"]

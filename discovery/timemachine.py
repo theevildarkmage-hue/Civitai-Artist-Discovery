@@ -201,7 +201,8 @@ class TimeMachine:
         hidden_tags = self.hidden_tag_names()
         out = []
         with self.connect() as db:
-            for row in db.execute("SELECT * FROM creator_progress ORDER BY username"):
+            for row in db.execute("""SELECT * FROM creator_progress
+                                     ORDER BY updated_at ASC, username_key ASC"""):
                 candidates = db.execute(
                     f"""SELECT * FROM creator_images
                         WHERE username_key=? AND position>=? AND browsing_level IN ({holes})
