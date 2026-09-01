@@ -1,59 +1,48 @@
-# Civitai Artist Discovery 1.0.3
+# Civitai Artist Discovery 1.0.4
 
-Version 1.0.3 adds a way to reach artwork the daily gallery cannot, and an optional
-unattended collector for days that would otherwise expire.
+Version 1.0.4 fixes the Time machine tab, which did not work as described in 1.0.3, and
+lets the request pacer recover from a slow patch inside a single collection.
+
+**1.0.3 should not be used.** It is published as a prerelease and is not offered to
+existing installations. Everything below was broken in it.
 
 ## Time machine
 
-A new tab that walks each creator you follow from their earliest artwork, one card per
-creator. Scroll a card away and the next refresh shows that creator's next-oldest image.
+- Scrolling past a card now advances that creator. Progress was only saved when the tab
+  was reopened, so reloading the page discarded it and every creator came back showing
+  the same artwork -- which defeats the point of walking a history. It is now saved as
+  you scroll, and again when the page closes.
+- Scrolling registers reliably. The tab used its own rule for deciding a card had been
+  seen, and a card taller than half the window often never satisfied it: eight screens of
+  scrolling marked three cards. It now uses the same rule as the dimmed cards in the
+  daily gallery -- scrolled completely past, after a pause.
+- Cards no longer render empty. Artwork carrying a tag hidden on Civitai left a blank
+  card that could never advance, because a card holds one image and there was nothing to
+  fall back to. Hidden artwork is now skipped before the card is built.
+- The grid no longer reshuffles on every refresh, and creators just read sink to the
+  bottom rather than leading every visit.
+- Scrolling this tab no longer marks those creators as seen in the daily gallery, where
+  they were never shown. Existing incorrect entries are not removed automatically; they
+  clear themselves as each day ages out.
 
-This reaches history the daily gallery structurally cannot. Every other part of the app
-pages Civitai's global feed, which can only be paged back about two days; asking for one
-creator at a time is a short feed that can be entered from its far end. In testing, a
-followed creator's earliest artwork was from September 2024 -- eleven months beyond the
-oldest day the archive could hold -- and arrived in a single request.
+## Collection pacing
 
-Reading your follows fetches one page per creator, so the progress bar counts creators
-rather than images. Most creators are complete after that single page and are never
-fetched again. The cards are the gallery's own, so following, reacting, creator details
-and the artwork dialog all behave exactly as they do in the daily gallery.
-
-## Collect recent days automatically
-
-Off by default. When switched on, the app collects recently ended days on a 12 or 24 hour
-schedule so they are not lost to Civitai's roughly two-day window. It never touches the
-current day, skips days already out of reach rather than spending requests to fail on
-them, and records every run -- including runs that found nothing to do -- to
-`data/capture-log.jsonl` so an unattended failure can be diagnosed afterwards.
-
-Each installation picks its own slot in the interval rather than a shared one. Civitai's
-posting volume is close to flat across the day, so there is no quiet hour to aim for;
-spreading installations apart is what keeps the app from arriving in a burst.
-
-## Fixed
-
-- Rebuilding a day Civitai could no longer reach left a complete gallery marked
-  incomplete with no way back, because the collection it needed could never succeed.
-  Reach is now checked before anything is cleared, and the refusal names the oldest day
-  that can still be rebuilt.
-- A date out of reach now fails in under a second instead of after a full date-location
-  sweep, and the build screen shows the reachable boundary before the build starts.
-- Opening artwork details asked Civitai without naming a browsing level, so every image
-  above the public level returned nothing: no prompt, no resources, and the same request
-  re-sent every time the dialog was reopened.
-- Locating a date takes about seven requests instead of sixteen, by estimating from the
-  feed's known depth rather than searching from the first page.
+Backing off and recovering are now both proportional. A failure multiplied the interval
+by 1.5, so a handful of errors reached the eight-second ceiling, while recovery subtracted
+a tenth of a second per ten clean responses -- around 725 requests to come back down. Few
+collections run that long, so any Civitai hiccup left the app slow for the rest of the run
+and often the next one. Recovery now takes about 75 requests. Backing off is still faster
+than recovering, deliberately.
 
 ## Updating
 
-Versions 1.0.0 through 1.0.2 can install this release from the in-app update dialog. The
-update remains user-approved, verifies GitHub's SHA-256 asset digest, preserves the
-portable `data/` folder, rolls back a failed replacement, and restarts automatically.
+Versions 1.0.0 through 1.0.2 can install this release from the in-app update dialog once
+it is promoted from prerelease. The update remains user-approved, verifies GitHub's
+SHA-256 asset digest, preserves the portable `data/` folder, rolls back a failed
+replacement, and restarts automatically.
 
-The exact release asset is `CivitaiArtistDiscovery-1.0.3.zip`. Its SHA-256 is
-`51734e241c8a42bb241dcf360fb76fa5463ff6af898a34ad254082cb95c20b47`; it is also recorded in the
-accompanying checksum file and verified automatically by the app.
+The exact release asset is `CivitaiArtistDiscovery-1.0.4.zip`. Its SHA-256 is recorded
+below and in the accompanying checksum file, and is verified automatically by the app.
 
 Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
 unsigned, so Windows SmartScreen or managed-device policy may warn or block it.

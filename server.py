@@ -42,7 +42,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
