@@ -52,6 +52,24 @@ docs/*
 !docs/civitai-page.md
 !docs/updates.md
 !docs/time-machine-spec.md
+!docs/2.0-project-plan.md
+!docs/2.0-progress.md
+
+# Shared v2 browser modules and design system
+!static/ui/
+!static/ui/*.js
+!static/styles/
+!static/styles/*.css
+
+# Synthetic UI baseline only; account-derived reports remain private.
+!reports/
+reports/*
+!reports/v2/
+reports/v2/*
+!reports/v2/baseline/
+reports/v2/baseline/*
+!reports/v2/baseline/*.png
+!reports/v2/baseline/metrics.json
 
 # Deliberately published release artwork
 !assets/
