@@ -1,0 +1,18 @@
+.active-filters { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.active-filters .filter-button { min-height: 28px; padding: 4px 10px; font-size: 11px; border-radius: var(--radius-pill); color: var(--muted); background: var(--panel); }
+.active-filters .model-chip { border-color: #43698b; color: #b5dcff; }
+#filterToggle { margin-left: auto; }
+.segment-toolbar #galleryPreferences { margin-left: 0; }
+.filter-panel { position: fixed; z-index: 60; top: var(--filter-top, 160px); right: 20px; width: min(540px, calc(100vw - 24px)); max-height: calc(100dvh - var(--filter-top, 160px) - 12px); overflow: auto; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-popover); }
+.filter-panel h2 { margin: 0; font-size: 18px; }
+.filter-panel .quiet-button { min-width: 32px; min-height: 32px; border: 0; background: transparent; color: var(--text); cursor: pointer; font-size: 18px; }
+.filter-sections { display: grid; gap: 20px; padding: 12px 0 18px; }
+#filterPanel .filter-menu { display: block !important; position: static; width: auto; max-width: none; max-height: none; overflow: visible; padding: 0; border: 0; box-shadow: none; background: transparent; }
+#filterPanel .content-menu-title { font-size: 14px; font-weight: 700; }
+#filterPanel .content-menu > small { display: none; }
+#filterPanel .content-menu > p, #filterPanel .content-warning { font-size: 12px; }
+#filterPanel .rating-pills { gap: 6px; }
+#filterPanel .rating-pills button { min-width: 64px; padding: 8px 12px; font-size: 13px; }
+.filter-reset { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--text); font: inherit; cursor: pointer; }
+.filter-reset:disabled { opacity: .45; cursor: default; }
+@media (max-width: 700px) { .filter-panel { top: 12px; right: 12px; max-height: calc(100dvh - 24px); } }

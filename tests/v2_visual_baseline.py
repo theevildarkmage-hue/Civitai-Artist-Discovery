@@ -147,6 +147,11 @@ def capture(label):
                     page.locator(f"#{section}").wait_for()
                     page.wait_for_timeout(200)
                     page.screenshot(path=str(output / f"{section}-{width}.png"))
+                    if section == 'gallery' and page.locator('#filterToggle').count():
+                        page.locator('#filterToggle').click()
+                        page.locator('#modelMenu input').first.wait_for()
+                        page.screenshot(path=str(output / f"filters-{width}.png"))
+                        page.get_by_role('button', name='Close filters', exact=True).click()
                     results.append({"page": section, "width": width,
                         "horizontalOverflow": page.evaluate("document.documentElement.scrollWidth > innerWidth + 1"),
                         "resources": page.evaluate(r"""() => performance.getEntriesByType('resource')

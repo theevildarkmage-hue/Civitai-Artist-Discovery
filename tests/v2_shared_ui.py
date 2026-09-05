@@ -52,6 +52,28 @@ def run():
             page.mouse.click(0, 0)
             assert page.locator('#details').is_hidden()
 
+            page.locator('#filterToggle').click()
+            page.locator('#modelMenu input').nth(0).check()
+            page.locator('#modelMenu input').nth(1).check()
+            page.locator('#filterToggle[data-active-count="2"]').wait_for()
+            assert page.locator('.model-chip').count() == 2
+            panel_bounds = page.locator('#filterPanel').bounding_box()
+            assert panel_bounds['y'] >= 0 and panel_bounds['y'] + panel_bounds['height'] <= 844
+            page.get_by_role('button', name='Close filters', exact=True).click()
+            page.get_by_role('button', name='Remove model filter SDXL', exact=True).click()
+            page.locator('#filterToggle[data-active-count="1"]').wait_for()
+            page.locator('#filterToggle').click()
+            page.get_by_role('button', name='Reset filters', exact=True).click()
+            page.locator('#filterToggle[data-active-count="0"]').wait_for()
+            assert page.locator('.model-chip').count() == 0
+            page.locator('#contentMenu [data-level="2"]').click()
+            page.locator('#filterToggle[data-active-count="1"]').wait_for()
+            page.wait_for_selector('#contentFilter:enabled')
+            page.get_by_role('button', name='Reset filters', exact=True).click()
+            page.locator('#filterToggle[data-active-count="0"]').wait_for()
+            page.get_by_role('button', name='Close filters', exact=True).click()
+            assert page.locator('#contentFilter').inner_text() == 'Content: PG + PG-13'
+
             page.route('**/api/probe', lambda route: route.fulfill(content_type='application/json',
                 body='{"custom":"' + route.request.headers.get('x-ui-test', '') + '"}'))
             page.route('**/api/probe-error', lambda route: route.fulfill(status=409,
@@ -158,12 +180,34 @@ def run():
             assert page.locator('.gallery-skeleton').count() == 0
             for route in held:
                 route.abort()
+
+            failing = [True]
+
+            def retry_page(route):
+                if failing[0]:
+                    failing[0] = False
+                    route.fulfill(status=503, content_type='application/json', body='{"error":"Temporarily unavailable"}')
+                else:
+                    route.fulfill(content_type='application/json', body=json.dumps(
+                        {'artists': [creator(114)], 'total': 1, 'hasMore': False}))
+
+            page.route('**/api/history/artists?*', retry_page)
+            page.locator('#dayView').select_option('new')
+            page.get_by_role('button', name='Retry loading artists', exact=True).click()
+            page.locator('.creator-card[data-id="114"]').wait_for()
+            page.get_by_text("You're caught up for this view.", exact=True).wait_for()
+            page.route('**/api/history/artists?*', lambda route: route.fulfill(
+                content_type='application/json', body='{"artists":[],"total":0,"hasMore":false}'))
+            page.locator('#dayView').select_option('discovery')
+            page.get_by_text('No creators match these filters.', exact=True).wait_for()
+            assert page.locator('.creator-card').count() == 0
             assert not errors, errors
             browser.close()
     finally:
         server.shutdown()
         server.server_close()
-    print({'shellKeyboard': True, 'sharedTransport': True, 'fallbackSurvivesRepaint': True})
+    print({'shellKeyboard': True, 'sharedTransport': True, 'fallbackSurvivesRepaint': True,
+           'filterChipsAndReset': True})
 
 
 if __name__ == '__main__':

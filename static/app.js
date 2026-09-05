@@ -635,16 +635,19 @@ let galleryToken = 0;
 const PAGE_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let activePageRequest = null;
 let activePageTask = null;
+let pageLoadFailed = false;
 function cancelPageLoad() {
   activePageRequest?.abort();
   activePageRequest = null;
   activePageTask = null;
+  pageLoadFailed = false;
   loadingMore = false;
 }
 function loadMore() {
   // Scroll restoration and the sentinel can request the same page concurrently.
   // Both callers must await its actual completion instead of burning restore retries.
   if (loadingMore) return activePageTask;
+  if (pageLoadFailed) return Promise.resolve();
   if (loadedArtists >= artistTotal) return Promise.resolve();
   activePageTask = loadArtistPage();
   return activePageTask;
@@ -669,12 +672,32 @@ async function loadArtistPage() {
     $("gallery").insertBefore(fragment, $("loadSentinel"));
     loadedArtists += data.artists.length;
     if (data.hasMore === false || !data.artists.length) artistTotal = loadedArtists;
+    const sentinel = $("loadSentinel");
+    if (sentinel) {
+      sentinel.setAttribute("role", "status");
+      sentinel.textContent = loadedArtists >= artistTotal
+        ? (loadedArtists ? "You're caught up for this view." : "No creators match these filters.")
+        : "Loading more artists…";
+    }
     $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}${preferenceHidden ? ` · ${displayCount(preferenceHidden)} hidden by Gallery preferences` : ""}`;
     $("summary").title = [hiddenCreators ? "Creators you hide on Civitai, or who have blocked you, are left out of this gallery." : "", preferenceHidden ? "Gallery preferences are hiding high-volume or high-reaction creators." : ""].filter(Boolean).join(" ");
     enrichCards(data.artists, cards);
     hydrateReactionStates(data.artists.map(artist => artist.representative)).catch(error => console.warn("Reaction history could not be loaded", error));
   } catch (error) {
-    if (error.name !== "AbortError") throw error;
+    if (error.name !== "AbortError") {
+      if (activePageRequest === request && $("loadSentinel")) {
+        // A pending intersection notification may arrive after this failure. Keep it
+        // from silently retrying in a loop; the button or a new view clears the flag.
+        pageLoadFailed = true;
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "filter-button";
+        retry.textContent = "Retry loading artists";
+        retry.onclick = () => { pageLoadFailed = false; loadMore().catch(error => toast(error.message)); };
+        $("loadSentinel").replaceChildren("Could not load this page. ", retry);
+      }
+      throw error;
+    }
   } finally {
     clearSkeleton();
     // An older aborted request must not unlock a newer request's paging guard.
@@ -1449,6 +1472,23 @@ let discoveryPolling = false, discoveryLoaded = false;
 // stop using.
 function modelQuery() {
   return [...selectedModels].map(name => `&model=${encodeURIComponent(name)}`).join("");
+}
+function galleryFilterState() {
+  return { models: [...selectedModels], levels: [...visibleBrowsingLevels] };
+}
+async function removeGalleryModel(model) {
+  if (!selectedModels.delete(model)) return;
+  $("modelFilter").textContent = modelButtonLabel();
+  saveFeedState();
+  refreshModelMenu();
+  if (dayBuilt) await reloadView();
+}
+async function resetGalleryFilters() {
+  selectedModels.clear();
+  $("modelFilter").textContent = modelButtonLabel();
+  saveFeedState();
+  refreshModelMenu();
+  await chooseContentRating([1, 2]);
 }
 function modelButtonLabel() {
   const count = selectedModels.size;

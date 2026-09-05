@@ -5,6 +5,8 @@ import { showArtwork, showCardArtwork, wireArtworkFallback } from './artwork.js'
 import { showGallerySkeleton } from './feedback.js';
 import { bindDialog } from './dialog.js';
 import { createCreatorCard } from './cards.js';
+import { mountFilters } from './filters.js';
+import { mountPageLayout } from './pages.js';
 
 mountShell();
 // Temporary bridge for the classic page controller; new modules import directly.
@@ -16,6 +18,13 @@ const controller = document.createElement('script');
 controller.src = '/app.js';
 controller.onload = () => {
   groupPageControls();
+  mountPageLayout();
+  mountFilters({
+    state: () => window.galleryFilterState(),
+    refreshModels: () => window.refreshModelMenu(),
+    removeModel: name => window.removeGalleryModel(name).catch(error => window.toast(error.message)),
+    reset: () => window.resetGalleryFilters(),
+  });
   for (const [id, labelledBy, closeIds] of [
     ['details', 'detailCreator', ['close']],
     ['updateDialog', 'updateTitle', ['closeUpdate', 'laterUpdate']],
@@ -25,7 +34,7 @@ controller.onload = () => {
     });
   }
   document.getElementById('close').setAttribute('aria-label', 'Close image details');
-  for (const [trigger, panel] of [['contentFilter', 'contentMenu'], ['modelFilter', 'modelMenu'], ['galleryPreferences', 'preferencesMenu']]) {
+  for (const [trigger, panel] of [['galleryPreferences', 'preferencesMenu']]) {
     enhancePopover(document.getElementById(trigger), document.getElementById(panel));
   }
 };

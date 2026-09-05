@@ -1,0 +1,25 @@
+.page-heading { align-items: flex-start; gap: 16px; }
+.page-heading > div { min-width: 0; }
+.page-heading h2 { font-size: clamp(22px, 2.5vw, 30px); letter-spacing: -.02em; }
+.page-heading .eyebrow { color: var(--accent); margin-bottom: 6px; }
+.page-heading .discovery-note { line-height: 1.55; max-width: 76ch; }
+.discovery.tm-head { max-width: 1880px; margin-bottom: 20px; }
+.panel, .metric-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: none; }
+.panel h3 { font-size: 17px; }
+.panel.lead { background: var(--panel); border-color: #3b617f; }
+.discovery-message:empty { display: none; }
+.panel-grid .lead { order: -1; }
+.page-settings { display: grid; gap: 16px; }
+.page-settings .update-preference { margin: 0; padding: 14px; background: var(--bg); border-radius: var(--radius-sm); }
+.settings-reset { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 2px 0; border-top: 1px solid var(--line); }
+.settings-reset strong { font-size: 14px; }
+.settings-reset .panel-note { margin: 4px 0 0; }
+.settings-reset button, .discovery-actions button { min-height: 38px; padding: 8px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--text); cursor: pointer; }
+.discovery-actions .primary-button { border-color: #4779a3; background: var(--accent-surface); color: #c1e2ff; }
+.discovery .rank-item { border-radius: var(--radius-sm); }
+.discovery .pill { border-radius: var(--radius-pill); }
+@media (max-width: 700px) {
+  .page-heading { gap: 12px; }
+  .page-settings { padding: 14px; }
+  .page-settings .update-preference { padding: 12px; }
+}
