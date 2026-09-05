@@ -171,6 +171,21 @@ def connected_user_id() -> int | None:
         return None
 
 
+def attach_preview_tags(artists: list[dict]) -> list[dict]:
+    """Ship already-known safety decisions with cards, avoiding a second browser read.
+
+    Missing tags still go through the normal viewport verification endpoint. Attaching
+    tags never initiates a remote lookup or treats unknown content as verified.
+    """
+    ids = [(artist.get("representative") or {}).get("id") for artist in artists]
+    tags = TASTE.image_tags_many(value for value in ids if value is not None)
+    for artist, image_id in zip(artists, ids):
+        state = tags.get(image_id)
+        if state and state["known"]:
+            artist["representative"] = {**artist["representative"], "tagState": state}
+    return artists
+
+
 def followed_usernames(user_id: int | None = None) -> set[str]:
     expected_user_id = user_id if user_id is not None else connected_user_id()
     if expected_user_id is None:
@@ -1088,8 +1103,8 @@ class Handler(BaseHTTPRequestHandler):
                 signals = gallery_signals()
                 profiles, follows = creator_profiles(), signals["followed"]
                 self.json_response({
-                    "cards": [decorate_history_artist(card, profiles, follows, signals)
-                              for card in TIME_MACHINE.cards()],
+                    "cards": attach_preview_tags([decorate_history_artist(card, profiles, follows, signals)
+                              for card in TIME_MACHINE.cards()]),
                     "status": TIME_MACHINE.status()})
             except Exception as error: self.internal_error("Time machine", error)
             return
@@ -1229,7 +1244,7 @@ class Handler(BaseHTTPRequestHandler):
                             artist["recommendationLabel"] = "New match"
                             reasons.append("New to you")
                         artist["recommendationReasons"] = reasons
-                self.json_response({"date": value, "offset": offset, "artists": artists,
+                self.json_response({"date": value, "offset": offset, "artists": attach_preview_tags(artists),
                     "view": view, "total": total,
                     "preferenceHidden": len(preference_hidden_keys),
                     "hasMore": offset + len(artists) < total
@@ -1577,7 +1592,7 @@ class Handler(BaseHTTPRequestHandler):
                 if any(not collected_image(image_id) for image_id in image_ids):
                     self.json_response({"error": "An image is not in this history archive"}, 400)
                     return
-                tags = {image_id: TASTE.image_tags(image_id) for image_id in image_ids}
+                tags = TASTE.image_tags_many(image_ids)
                 # Cached checks remain useful in read-only/offline test and recovery
                 # states. A live lookup needs OAuth, but the ordinary signed-in gallery
                 # always has it before reaching this endpoint.

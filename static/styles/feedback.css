@@ -1,0 +1,9 @@
+.gallery-skeleton { overflow: hidden; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
+.skeleton-identity { height: calc(40px + 30px * var(--card-scale)); display: flex; align-items: center; gap: 12px; padding: 12px; }
+.skeleton-identity i { width: 38px; height: 38px; border-radius: 50%; background: var(--surface-raised); }
+.skeleton-identity span { width: 42%; height: 12px; border-radius: var(--radius-pill); background: var(--surface-raised); }
+.skeleton-artwork { height: clamp(calc(320px * var(--card-scale)), calc(52vh * var(--card-scale)), calc(560px * var(--card-scale))); background: linear-gradient(110deg, #202226 25%, #2a2d32 45%, #202226 65%); background-size: 250% 100%; animation: skeleton-pulse 1.8s ease-in-out infinite; }
+.skeleton-footer { height: 38px; }
+@keyframes skeleton-pulse { to { background-position: -170% 0; } }
+@media (min-height: 1000px) { .skeleton-artwork { height: clamp(calc(380px * var(--card-scale)), calc(56vh * var(--card-scale)), calc(640px * var(--card-scale))); } }
+@media (prefers-reduced-motion: reduce) { .skeleton-artwork { animation: none; } }

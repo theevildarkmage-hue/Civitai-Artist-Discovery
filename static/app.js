@@ -61,7 +61,7 @@ const CARD_SCALE_KEY = "civitai-card-scale";
     try { localStorage.setItem(CARD_SCALE_KEY, select.value); } catch (_) {}
   };
 })();
-async function api(url, options = {}) { const response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options }); const body = await response.json(); if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`); return body; }
+const api = window.CivitaiUI.api;
 const contentLabels = { Soft: "PG + PG-13", Mature: "PG through R", X: "All ratings" };
 const browsingLevelLabels = new Map([[1, "PG"], [2, "PG-13"], [4, "R"], [8, "X"], [16, "XXX"]]);
 function contentButtonLabel() {
@@ -522,6 +522,7 @@ function resumeSeenTracking() {
   document.querySelectorAll(".creator-card:not(.is-seen)").forEach(el => seenObserver.observe(el));
 }
 function clearGallery() {
+  cancelPageLoad();
   document.querySelectorAll(".creator-card").forEach(el => {
     seenObserver.unobserve(el);
     cardImageObserver.unobserve(el);
@@ -536,31 +537,16 @@ function wireAvatarFallback(image, username) { if (!image) return; image.addEven
 // still available. Retry the original once, then retain the normal broken-image state;
 // the one-shot marker prevents a bad original from creating an error loop.
 function wireArtworkFallback(image) {
-  if (!image || image.dataset.fallbackWired) return;
-  image.dataset.fallbackWired = "1";
-  image.addEventListener("load", () => image.classList.remove("image-error"));
-  image.addEventListener("error", () => {
-    const fallback = image.dataset.fallbackUrl;
-    if (fallback && image.dataset.fallbackPending === "1") {
-      image.dataset.fallbackPending = "0";
-      image.src = fallback;
-      return;
-    }
-    image.classList.add("image-error");
-  });
+  window.CivitaiUI.wireArtworkFallback(image);
 }
 function showArtwork(image, previewUrl, originalUrl) {
-  wireArtworkFallback(image);
-  const preview = previewUrl || originalUrl || "";
-  const fallback = originalUrl && originalUrl !== preview ? originalUrl : "";
-  image.classList.remove("image-error");
-  image.dataset.fallbackUrl = fallback;
-  image.dataset.fallbackPending = fallback ? "1" : "0";
-  if (preview) image.src = preview;
-  else { image.removeAttribute("src"); image.classList.add("image-error"); }
+  window.CivitaiUI.showArtwork(image, previewUrl, originalUrl);
 }
 function card(a) {
   let images = [a.representative], index = 0, current = images[0], imagesLoaded = a.imageCount <= 1;
+  // The listing can include a cached decision. Unknown artwork still passes through
+  // checkImageTags before any preview URL is attached, including in Time Machine.
+  if (current.tagState?.known) imageTagState.set(String(current.id), current.tagState);
   let navigating = false;
   const el = document.createElement("article"); el.className = a.seen ? "creator-card is-seen" : "creator-card"; el.dataset.id = current.id;
   el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
@@ -737,8 +723,46 @@ let galleryToken = 0;
 // page loads could send the same value and collide on the server's cache. This adds the
 // per-page-load part that makes the combination unique across reloads, not just within one.
 const PAGE_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-async function loadMore() { if (loadingMore || loadedArtists >= artistTotal) return; loadingMore = true; const token = galleryToken; try { const data = await api(`/api/history/artists?date=${selectedDate}&segment=${selectedSegment}&offset=${loadedArtists}&limit=50&view=${selectedView}&session=${PAGE_SESSION}-${galleryToken}${modelQuery()}`); if (token !== galleryToken) return; if (Number.isFinite(data.total)) artistTotal = data.total; preferenceHidden = safeCount(data.preferenceHidden); const fragment = document.createDocumentFragment(), cards = []; data.artists.forEach(artist => { const element = card(artist); cards.push(element); fragment.appendChild(element); }); $("gallery").insertBefore(fragment, $("loadSentinel")); loadedArtists += data.artists.length; $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}${preferenceHidden ? ` · ${displayCount(preferenceHidden)} hidden by Gallery preferences` : ""}`;
-  $("summary").title = [hiddenCreators ? "Creators you hide on Civitai, or who have blocked you, are left out of this gallery." : "", preferenceHidden ? "Gallery preferences are hiding high-volume or high-reaction creators." : ""].filter(Boolean).join(" "); enrichCards(data.artists, cards); hydrateReactionStates(data.artists.map(artist => artist.representative)).catch(error => console.warn("Reaction history could not be loaded", error)); } finally { loadingMore = false; } }
+let activePageRequest = null;
+function cancelPageLoad() {
+  activePageRequest?.abort();
+  activePageRequest = null;
+  loadingMore = false;
+}
+async function loadMore() {
+  if (loadingMore || loadedArtists >= artistTotal) return;
+  const request = new AbortController(), token = galleryToken;
+  activePageRequest = request;
+  loadingMore = true;
+  const clearSkeleton = !loadedArtists ? window.CivitaiUI.showGallerySkeleton($("gallery")) : () => {};
+  try {
+    const data = await api(`/api/history/artists?date=${selectedDate}&segment=${selectedSegment}&offset=${loadedArtists}&limit=50&view=${selectedView}&session=${PAGE_SESSION}-${galleryToken}${modelQuery()}`, { signal: request.signal });
+    if (token !== galleryToken || activePageRequest !== request) return;
+    if (Number.isFinite(data.total)) artistTotal = data.total;
+    preferenceHidden = safeCount(data.preferenceHidden);
+    const fragment = document.createDocumentFragment(), cards = [];
+    data.artists.forEach(artist => {
+      const element = card(artist);
+      cards.push(element);
+      fragment.appendChild(element);
+    });
+    $("gallery").insertBefore(fragment, $("loadSentinel"));
+    loadedArtists += data.artists.length;
+    $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}${preferenceHidden ? ` · ${displayCount(preferenceHidden)} hidden by Gallery preferences` : ""}`;
+    $("summary").title = [hiddenCreators ? "Creators you hide on Civitai, or who have blocked you, are left out of this gallery." : "", preferenceHidden ? "Gallery preferences are hiding high-volume or high-reaction creators." : ""].filter(Boolean).join(" ");
+    enrichCards(data.artists, cards);
+    hydrateReactionStates(data.artists.map(artist => artist.representative)).catch(error => console.warn("Reaction history could not be loaded", error));
+  } catch (error) {
+    if (error.name !== "AbortError") throw error;
+  } finally {
+    clearSkeleton();
+    // An older aborted request must not unlock a newer request's paging guard.
+    if (activePageRequest === request) {
+      activePageRequest = null;
+      loadingMore = false;
+    }
+  }
+}
 function applyAuth(auth) { oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; const waiting = auth.oauthJob?.state === "loading";
   // Follows and reactions are granted at sign-in, so the normal signed-in state needs no
   // qualifier. The exception is worth naming: Civitai can complete a sign-in while
@@ -1278,12 +1302,10 @@ async function ensureViewData(kind) {
 }
 async function reloadView() {
   const token = ++activeLoadToken;
-  // Invalidate any page already in flight, then wait for it to actually finish. Without
-  // the wait, the fresh load is refused by the in-flight guard and the discarded one
-  // never retries, leaving the gallery empty.
+  // Cancel stale browser work immediately. The new view must not wait (formerly up to
+  // eight seconds) for an irrelevant page to finish before requesting its own results.
   galleryToken++;
-  const deadline = Date.now() + 8000;
-  while (loadingMore && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  cancelPageLoad();
   if (token !== activeLoadToken) return;
   loadedArtists = 0;
   artistTotal = Number.MAX_SAFE_INTEGER;

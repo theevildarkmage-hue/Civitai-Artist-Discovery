@@ -1,0 +1,51 @@
+body { background: var(--bg); }
+:where(button, a, input, select, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.ui-icon { width: 18px; height: 18px; flex: none; }
+.skip-link { position: fixed; top: -80px; left: 12px; z-index: 200; padding: 12px 18px; background: var(--panel); color: var(--text); border-radius: var(--radius-sm); }
+.skip-link:focus { top: 8px; }
+body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background: var(--bg); backdrop-filter: none; }
+.app-brand { min-width: 0; }
+.app-brand h1 { font-size: 19px; }
+.app-brand .eyebrow, .app-brand .tagline { display: none; }
+.account-toolbar { min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.account-toolbar #accountStatus { font-size: 12px; overflow-wrap: anywhere; }
+.account-toolbar #closeApp { margin-left: 8px; }
+.toolbar button { border-radius: var(--radius-sm); min-height: 36px; }
+.view-tabs { position: sticky; top: var(--header-h, 64px); z-index: 28; gap: 6px; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.view-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: var(--radius-pill); min-height: 36px; padding: 7px 16px; background: transparent; }
+.view-tabs button.active { background: var(--surface-raised); box-shadow: none; color: var(--text); }
+.view-tabs button:hover { background: var(--surface-raised); }
+.gallery-navigation { padding: 12px 20px 4px; flex-wrap: wrap; gap: 8px; }
+.gallery-navigation:not(:has(> :not(.hidden))) { display: none; }
+.gallery-navigation #selectedDate { font-size: 14px; }
+.gallery-navigation #summary { margin-left: auto; font-size: 12px; }
+.segment-toolbar { top: calc(var(--header-h, 64px) + var(--tabs-h, 53px)); padding: 10px 20px; justify-content: flex-start; background: var(--bg); backdrop-filter: none; gap: 8px; }
+.segment-toolbar label { margin-left: 0; }
+.ui-field { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.segment-toolbar select, .filter-button { min-height: 36px; border-radius: var(--radius-sm); }
+.segment-toolbar #galleryPreferences { margin-left: auto; }
+.filter-menu { border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-popover); }
+main { padding: 18px 20px 60px; }
+.gallery, .discovery { max-width: 1880px; }
+@media (max-width: 700px) {
+  body > .app-header { align-items: center; flex-wrap: wrap; padding: 10px 12px; gap: 8px; }
+  .app-brand h1 { font-size: 17px; }
+  .account-toolbar { width: 100%; flex-direction: row; align-items: center; justify-content: flex-start; }
+  .account-toolbar #accountStatus { flex: 1 1 100%; }
+  .account-toolbar #closeApp { margin-left: auto; }
+  .view-tabs { padding: 6px 8px; gap: 3px; }
+  .view-tabs button { flex: 1; font-size: 12px; padding: 8px; gap: 5px; }
+  .view-tabs .ui-icon { width: 16px; height: 16px; }
+  .gallery-navigation { flex-direction: row; align-items: center; padding: 10px 12px 4px; }
+  .gallery-navigation #selectedDate { flex: 1 1 100%; order: -1; white-space: normal; }
+  .gallery-navigation #summary { width: 100%; margin: 3px 0; }
+  .segment-toolbar { position: relative; top: auto; padding: 10px 12px; gap: 8px; }
+  .segment-toolbar select { min-width: 0; max-width: 100%; }
+  main { padding: 12px 12px 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; }
+}
