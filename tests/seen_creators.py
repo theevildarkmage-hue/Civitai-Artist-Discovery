@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
     day = (datetime.now() - timedelta(days=1)).date().isoformat()
     pixel = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3C/svg%3E"
     history = HistoryArchive(Path(temporary) / "history")
-    # Sixty creators: the browser loads 50 first, which makes the reported page-boundary
+    # Sixty creators: more than one initial page, which makes the reported page-boundary
     # failure reproducible while still leaving a second page to fetch.
     items = [{"id": 9800 + n, "postId": 9800 + n, "username": f"Artist{n}",
               "createdAt": f"{day}T13:{n:02d}:00Z", "url": pixel, "width": 8, "height": 8,
@@ -205,7 +205,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
             initial = cards()
             assert initial, "no cards rendered"
             subject = initial[0]["username"]
-            page_boundary_subject = initial[49]["username"]
+            page_boundary_subject = initial[-1]["username"]
             selector = f'.creator-card[data-username="{subject}"]'
             # Bring the card fully onto screen (the toolbar above the gallery means the
             # first card is not necessarily visible at scrollY=0) and let the dwell window

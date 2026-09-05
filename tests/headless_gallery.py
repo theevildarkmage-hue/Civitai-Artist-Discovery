@@ -140,7 +140,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
             browser.close()
         # Reloading restores where you were rather than starting over, so the card
         # count after a reload is at least what had been loaded before it.
-        assert initial == 50 and after_scroll > initial and after_reload >= 50
+        assert initial == 24 and after_scroll > initial and after_reload >= after_scroll
         assert not errors, errors
         assert not any("buzz" in url.casefold() for url in requests)
         print({"readOnlyStartup": True, "missingPreviewFallsBack": True,

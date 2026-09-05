@@ -95,13 +95,15 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
             page.click("#contentFilter")
             page.click('#contentMenu [data-level="4"]')
             page.wait_for_selector("#contentFilter:has-text('PG-13')")
+            page.wait_for_selector("#contentFilter:enabled")
             page.wait_for_selector(".creator-card", timeout=30000)
             assert not dialogs, dialogs
             assert not history_starts, history_starts
             assert page.is_hidden("#loading"), "a local content downgrade looked like a download"
 
             def card_metrics():
-                return page.eval_on_selector(".creator-card", """card => {
+                return page.evaluate("""() => {
+                    const card = document.querySelector('.creator-card');
                     const stage = card.querySelector('.image-stage').getBoundingClientRect();
                     const strip = card.querySelector('.creator-strip');
                     const stripBox = strip.getBoundingClientRect();

@@ -68,6 +68,25 @@ def run():
             }""")
             assert transport == {'value': {'custom': 'preserved'}, 'error': 'Try again', 'aborted': 'AbortError'}, transport
 
+            sizing = page.evaluate("""async () => {
+                const {cardPreviewUrl} = await import('/ui/artwork.js');
+                const source = 'https://image.civitai.com/key/id/width=768/example.jpg';
+                return {
+                    standard: cardPreviewUrl(source, 400, 1),
+                    retina: cardPreviewUrl(source, 400, 2),
+                    compact: cardPreviewUrl(source, 250, 1),
+                    original: cardPreviewUrl(source.replace('width=768', 'original=true'), 400, 1),
+                    foreign: cardPreviewUrl('https://example.com/width=768/image.jpg', 400, 1),
+                    local: cardPreviewUrl('/width=768/image.jpg', 400, 1),
+                };
+            }""")
+            assert '/width=512/' in sizing['standard'], sizing
+            assert '/width=1024/' in sizing['retina'], sizing
+            assert '/width=384/' in sizing['compact'], sizing
+            assert '/original=true/' in sizing['original'], sizing
+            assert sizing['foreign'] == 'https://example.com/width=768/image.jpg'
+            assert sizing['local'] == '/width=768/image.jpg'
+
             page.route('**/missing-preview.svg', lambda route: route.fulfill(status=404))
             page.route('**/original-preview.svg', lambda route: route.fulfill(content_type='image/svg+xml',
                 body='<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>'))

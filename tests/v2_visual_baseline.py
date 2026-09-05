@@ -39,10 +39,14 @@ def creator(index):
                           "laughCount": 1, "cryCount": 0, "reactionCount": 21 + index}}}
 
 
-def install_fixture(page, base_url):
+def install_fixture(page, base_url, *, cached_tags=False):
     cards = [creator(i) for i in range(1, 121)]
+    if cached_tags:
+        for card in cards:
+            card['representative']['tagState'] = {'known': True, 'tags': []}
     status = {"complete": True, "archiveComplete": True, "state": "complete",
               "itemCount": 120, "creatorCount": 120, "contentRating": "Soft"}
+    settings = {"browsingLevels": [1, 2], "contentRating": "Soft", "checkForUpdates": False}
     summary = {"hasData": True, "lastSyncAt": datetime.now(timezone.utc).isoformat(),
                "followedCreators": 42, "reactedImages": 1200, "creatorsReactedTo": 86,
                "creatorsNotFollowed": 3, "reactionRecords": 1200, "baselineImages": 500,
@@ -77,7 +81,9 @@ def install_fixture(page, base_url):
         if path == "/api/auth-status":
             data = {"connected": True, "socialWrite": True, "username": "Preview", "id": 7}
         elif path == "/api/settings":
-            data = {"browsingLevels": [1, 2], "contentRating": "Soft", "checkForUpdates": False}
+            if route.request.method == 'POST':
+                settings.update(json.loads(route.request.post_data))
+            data = settings
         elif path == "/api/discovery/summary":
             data = summary
         elif path == "/api/history/config":
@@ -99,7 +105,7 @@ def install_fixture(page, base_url):
         elif path == "/api/history/models":
             data = {"models": [{"model": "SDXL", "images": 120}, {"model": "Flux", "images": 60}]}
         elif path.startswith("/api/history/prepare"):
-            data = {"prepared": True, "job": {"state": "complete"}}
+            data = {"complete": True, "known": 120, "total": 120, "job": {"running": False}}
         elif path == "/api/timemachine":
             data = {"cards": cards[:12], "status": {"creators": 12, "primed": 12,
                     "images": 1024, "priming": False, "progress": 100}}

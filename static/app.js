@@ -158,7 +158,7 @@ async function chooseContentRating(nextLevels) {
   $("contentMenu").classList.add("hidden"); $("contentFilter").setAttribute("aria-expanded", "false");
   try {
     const result = await api("/api/settings", { method: "POST", body: JSON.stringify({ browsingLevels: nextLevels }) });
-    contentRating = result.contentRating; visibleBrowsingLevels = new Set(result.browsingLevels); showContentRating(); selectedModels.clear();
+    contentRating = result.contentRating; visibleBrowsingLevels = new Set(result.browsingLevels); showContentRating();
     const lowering = ({ Soft: 0, Mature: 1, X: 2 }[contentRating] || 0) < ({ Soft: 0, Mature: 1, X: 2 }[previous] || 0);
     toast(lowering ? `Showing ${contentButtonLabel()} from saved galleries. No download needed.`
       : `Showing ${contentButtonLabel()}. Incomplete coverage will be marked for upgrade.`);
@@ -569,7 +569,7 @@ function card(a) {
     if (navigating) reaction.querySelectorAll("[data-reaction]").forEach(button => { button.disabled = true; });
   }
   function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!socialWrite) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
-  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showArtwork(main, current.thumbnailUrl, current.url); age.textContent = ago(current.createdAt); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
+  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) window.CivitaiUI.showCardArtwork(main, current.thumbnailUrl, current.url); age.textContent = ago(current.createdAt); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
   async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${modelQuery()}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
   function removeCard() {
     cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
@@ -724,19 +724,29 @@ let galleryToken = 0;
 // per-page-load part that makes the combination unique across reloads, not just within one.
 const PAGE_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let activePageRequest = null;
+let activePageTask = null;
 function cancelPageLoad() {
   activePageRequest?.abort();
   activePageRequest = null;
+  activePageTask = null;
   loadingMore = false;
 }
-async function loadMore() {
-  if (loadingMore || loadedArtists >= artistTotal) return;
+function loadMore() {
+  // Scroll restoration and the sentinel can request the same page concurrently.
+  // Both callers must await its actual completion instead of burning restore retries.
+  if (loadingMore) return activePageTask;
+  if (loadedArtists >= artistTotal) return Promise.resolve();
+  activePageTask = loadArtistPage();
+  return activePageTask;
+}
+async function loadArtistPage() {
   const request = new AbortController(), token = galleryToken;
   activePageRequest = request;
   loadingMore = true;
   const clearSkeleton = !loadedArtists ? window.CivitaiUI.showGallerySkeleton($("gallery")) : () => {};
+  const limit = loadedArtists === 0 ? 24 : 50;
   try {
-    const data = await api(`/api/history/artists?date=${selectedDate}&segment=${selectedSegment}&offset=${loadedArtists}&limit=50&view=${selectedView}&session=${PAGE_SESSION}-${galleryToken}${modelQuery()}`, { signal: request.signal });
+    const data = await api(`/api/history/artists?date=${selectedDate}&segment=${selectedSegment}&offset=${loadedArtists}&limit=${limit}&view=${selectedView}&session=${PAGE_SESSION}-${galleryToken}${modelQuery()}`, { signal: request.signal });
     if (token !== galleryToken || activePageRequest !== request) return;
     if (Number.isFinite(data.total)) artistTotal = data.total;
     preferenceHidden = safeCount(data.preferenceHidden);
@@ -748,6 +758,7 @@ async function loadMore() {
     });
     $("gallery").insertBefore(fragment, $("loadSentinel"));
     loadedArtists += data.artists.length;
+    if (data.hasMore === false || !data.artists.length) artistTotal = loadedArtists;
     $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}${preferenceHidden ? ` · ${displayCount(preferenceHidden)} hidden by Gallery preferences` : ""}`;
     $("summary").title = [hiddenCreators ? "Creators you hide on Civitai, or who have blocked you, are left out of this gallery." : "", preferenceHidden ? "Gallery preferences are hiding high-volume or high-reaction creators." : ""].filter(Boolean).join(" ");
     enrichCards(data.artists, cards);
@@ -759,6 +770,7 @@ async function loadMore() {
     // An older aborted request must not unlock a newer request's paging guard.
     if (activePageRequest === request) {
       activePageRequest = null;
+      activePageTask = null;
       loadingMore = false;
     }
   }
@@ -1361,9 +1373,13 @@ async function applyPendingRestore() {
   const saved = pendingRestore; pendingRestore = null;
   if (!saved || saved.date !== selectedDate || (saved.segment || "evening") !== selectedSegment) return;
   const target = Math.min(saved.loaded || 0, artistTotal || 0);
-  let guard = 0;
-  while (loadedArtists < target && guard++ < 40) { await loadMore(); }
-  if (saved.scrollY) window.scrollTo({ top: saved.scrollY, behavior: "auto" });
+  const token = galleryToken;
+  while (loadedArtists < target && token === galleryToken) {
+    const before = loadedArtists;
+    await loadMore();
+    if (loadedArtists <= before) break;
+  }
+  if (saved.scrollY && token === galleryToken) window.scrollTo({ top: saved.scrollY, behavior: "auto" });
 }
 async function runFirstAnalysis() {
   $("welcomeStatus").textContent = "Reading the artwork you have reacted to…";

@@ -1,13 +1,13 @@
 import { mountShell, groupPageControls } from './shell.js';
 import { enhancePopover } from './menu.js';
 import { api } from './api.js';
-import { showArtwork, wireArtworkFallback } from './artwork.js';
+import { showArtwork, showCardArtwork, wireArtworkFallback } from './artwork.js';
 import { showGallerySkeleton } from './feedback.js';
 import { bindDialog } from './dialog.js';
 
 mountShell();
 // Temporary bridge for the classic page controller; new modules import directly.
-window.CivitaiUI = Object.freeze({ api, showArtwork, wireArtworkFallback, showGallerySkeleton });
+window.CivitaiUI = Object.freeze({ api, showArtwork, showCardArtwork, wireArtworkFallback, showGallerySkeleton });
 
 // Transitional classic controller preserves existing integration tests and global
 // callbacks while page behavior moves into modules one tested slice at a time.
