@@ -1,0 +1,49 @@
+/* Shared image-first card layout for Gallery and Time Machine. */
+.creator-card { position: relative; border-radius: var(--radius-md); border-color: #303238; box-shadow: none; background: var(--panel); }
+.creator-card .image-stage, .skeleton-artwork {
+  height: clamp(calc(360px * var(--card-scale)), calc(58vh * var(--card-scale)), calc(640px * var(--card-scale)));
+}
+.creator-card .image-button img { object-fit: cover; }
+.creator-card .creator-strip {
+  position: absolute; z-index: 5; bottom: 10px; inset-inline: 0;
+  background: linear-gradient(transparent, #080b12d9);
+  text-shadow: 0 1px 5px #000;
+  align-items: flex-end;
+}
+.creator-card .creator-avatar { border: 2px solid #ffffff8c; }
+.creator-card .creator-identity { flex: 1; padding-right: 6px; }
+.creator-card .creator-identity strong { color: #fff; }
+.creator-card .creator-identity small { color: #e1e4eb; font-size: calc(8px + 3px * var(--card-scale)); }
+.creator-card .creator-controls { padding-bottom: 2px; }
+.creator-card .follow-button { background: #276da9; border-color: #76baff66; color: #fff; text-shadow: none; }
+.creator-card .follow-button.is-following { background: #171b23ba; border-color: #ffffff44; color: #fff; }
+.creator-card .more-menu {
+  position: absolute; z-index: 6; top: 8px; right: 8px;
+  display: grid; place-items: center; width: 36px; height: 36px;
+  padding: 0; font-size: 25px; border-radius: 50%; background: #11151cbf; color: #fff;
+}
+.creator-card .recommendation-badge { max-width: calc(100% - 64px); background: #142436e8; border-color: #6cadde66; color: #b5dcff; font-size: 10px; text-transform: none; }
+.creator-card .image-overlay { position: static; padding: 6px 9px; min-height: 43px; gap: 4px; background: var(--panel); align-items: center; }
+.creator-card .reaction-slot { min-width: 0; flex: 1; }
+.creator-card .reaction-bar { flex-wrap: wrap; background: transparent; backdrop-filter: none; padding: 0; gap: 1px; }
+.creator-card .reaction-bar button { padding: 5px; font-size: 13px; }
+.creator-card .reaction-bar b { font-size: 11px; margin-left: 1px; }
+.creator-card .total-reactions { padding: 5px; font-size: 11px; }
+.creator-card .info-button { flex: none; width: 30px; height: 30px; font-size: 21px; background: var(--surface-raised); }
+.creator-card .creator-footer { border-top: 1px solid var(--line); min-height: 34px; height: auto; gap: 6px; padding: 8px 10px; font-size: 10px; flex-wrap: wrap; }
+.creator-card .carousel-arrow { width: 38px; height: 38px; background: #171b23b8; color: white; border: 1px solid #ffffff44; }
+.creator-card .carousel-arrow.previous { left: 8px; }
+.creator-card .carousel-arrow.next { right: 8px; }
+.creator-card .image-progress { height: 6px; gap: 3px; padding: 0 5px 2px; }
+.creator-card .image-progress button { height: 3px; border-radius: 2px; background: #ffffff5c; }
+.creator-card .image-progress button.active { background: #fff; }
+.creator-card.tm-card { gap: 0; }
+.creator-card .tm-progress { padding: 6px 10px 10px; font-size: 11px; }
+.gallery-skeleton { position: relative; }
+.gallery-skeleton .skeleton-identity { position: absolute; bottom: 82px; left: 0; right: 0; }
+.gallery-skeleton .skeleton-footer { height: 82px; }
+@media (hover: hover) and (pointer: fine) {
+  .creator-card .carousel-arrow { opacity: 0; transition: opacity .15s ease; }
+  .creator-card:hover .carousel-arrow, .creator-card:focus-within .carousel-arrow { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .creator-card .carousel-arrow { transition: none; } }
