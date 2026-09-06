@@ -86,9 +86,15 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
             like.click(); page.wait_for_timeout(50)
             assert like.evaluate("element => element.classList.contains('selected')")
 
-            card.locator(".next").click(); page.wait_for_function(
+            card.locator(".next").evaluate("button => button.click()")
+            assert card.get_attribute("aria-busy") == "true"
+            assert card.locator(".card-nav-status").is_visible()
+            assert card.locator(".next").is_disabled()
+            assert "image" in card.locator(".card-nav-status").inner_text().lower()
+            page.wait_for_function(
                 "([selector, oldId]) => document.querySelector(selector)?.dataset.id !== oldId",
                 arg=[".creator-card", first_id])
+            card.locator(".card-nav-status").wait_for(state="hidden")
             second_id = card.get_attribute("data-id")
             assert not card.locator('[data-reaction="Like"]').evaluate("e => e.classList.contains('selected')")
             card.locator('[data-reaction="Heart"]').click(); page.wait_for_timeout(50)
@@ -122,4 +128,5 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
         process.wait(timeout=10)
 
 print(json.dumps({"revisitPreserved": True, "removalPreserved": True,
-    "imagesIndependent": True, "failureDidNotMutate": True}))
+    "imagesIndependent": True, "navigationFeedback": True,
+    "failureDidNotMutate": True}))

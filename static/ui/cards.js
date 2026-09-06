@@ -20,7 +20,7 @@ export function createCreatorCard(a, context) {
   if (current.tagState?.known) imageTagState.set(String(current.id), current.tagState);
   let navigating = false;
   const el = document.createElement("article"); el.className = a.seen ? "creator-card is-seen" : "creator-card"; el.dataset.id = current.id;
-  el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${context.canWrite() ? "" : "disabled"} title="${context.canWrite() ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
+  el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${context.canWrite() ? "" : "disabled"} title="${context.canWrite() ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="card-nav-status hidden" role="status" aria-live="polite"><span class="card-nav-spinner" aria-hidden="true"></span><span>Loading image…</span></div><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
   [[".previous", "Previous image", "15 5 8 12 15 19"], [".next", "Next image", "9 5 16 12 9 19"]].forEach(([selector, label, points]) => {
     const button = el.querySelector(selector);
     button.setAttribute("aria-label", label);
@@ -46,7 +46,7 @@ export function createCreatorCard(a, context) {
   actionMenu.setAttribute('role', 'menu');
   actionMenu.innerHTML = `<button type="button" data-action="collections" role="menuitem">♡ Add image to collection</button><button type="button" data-action="hide" class="danger-item" role="menuitem">⊘ Hide this artist</button>`;
   el.append(actionMenu);
-  const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"); wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
+  const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"), navStatus = el.querySelector(".card-nav-status"), navMessage = navStatus.lastElementChild; wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
   function renderReactions() {
     reaction.innerHTML = reactionBar(current);
     wireReactions();
@@ -69,7 +69,8 @@ export function createCreatorCard(a, context) {
     while (images.length) {
       candidate = (candidate + images.length) % images.length;
       const result = await checkImageTags(images[candidate].id);
-      if (!tagsHideImage(result)) { index = candidate; paint(); return true; }
+      if (!tagsHideImage(result)) { index = candidate; paint(); if (navigating) await waitForArtwork(); return true; }
+      if (navigating) setCardNavigationBusy(true, 'Skipping a filtered image…');
       images.splice(candidate, 1); a.imageCount = images.length;
       if (delta < 0) candidate--;
     }
@@ -86,15 +87,32 @@ export function createCreatorCard(a, context) {
     el.dataset.imagesActive = "1";
     paint();
   }
-  function setCardNavigationBusy(value) {
+  function waitForArtwork() {
+    if (main.complete && main.naturalWidth > 0 && !main.classList.contains('image-pending')) return Promise.resolve();
+    return new Promise(resolve => {
+      let timer, watchedSrc = main.currentSrc || main.src;
+      const done = () => { clearTimeout(timer); main.removeEventListener('load', done); main.removeEventListener('error', failed); resolve(); };
+      const failed = () => queueMicrotask(() => {
+        const activeSrc = main.currentSrc || main.src;
+        if (activeSrc && activeSrc !== watchedSrc) { watchedSrc = activeSrc; return; }
+        done();
+      });
+      main.addEventListener('load', done, { once: true });
+      main.addEventListener('error', failed);
+      timer = setTimeout(done, 15000);
+    });
+  }
+  function setCardNavigationBusy(value, message = 'Loading image…') {
     navigating = value;
     el.setAttribute("aria-busy", value ? "true" : "false");
+    navMessage.textContent = message;
+    navStatus.classList.toggle('hidden', !value);
     el.querySelectorAll(".previous, .next, .image-progress button").forEach(button => { button.disabled = value; });
     renderReactions();
   }
   async function navigateTo(candidate, delta) {
     if (navigating) return;
-    setCardNavigationBusy(true);
+    setCardNavigationBusy(true, imagesLoaded ? 'Checking next image…' : 'Loading artist images…');
     try {
       await ensureImages();
       if (images.length) await selectAllowed(candidate, delta);
