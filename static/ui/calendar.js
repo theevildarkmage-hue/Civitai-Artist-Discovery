@@ -61,11 +61,14 @@ export function mountCalendar({ api, state, select, rebuild }) {
       cell.type = 'button'; cell.textContent = date.getDate(); cell.dataset.date = value;
       cell.className = date.getMonth() === shown.getMonth() ? '' : 'outside';
       if (value === current.date) { cell.classList.add('selected'); cell.setAttribute('aria-current', 'date'); }
-      if (saved?.all || (saved?.morning && saved?.evening)) cell.classList.add('saved');
-      else if (saved?.morning || saved?.evening) cell.classList.add('partial');
+      const coverageLabel = saved?.all || (saved?.morning && saved?.evening) ? 'Saved' :
+        saved?.morning || saved?.evening ? 'Partially saved' : '';
+      if (coverageLabel === 'Saved') cell.classList.add('saved');
+      else if (coverageLabel) cell.classList.add('partial');
       cell.disabled = date > newest;
-      cell.setAttribute('aria-label', date.toLocaleDateString(undefined,
-        {weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'}));
+      const dateLabel = date.toLocaleDateString(undefined,
+        {weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'});
+      cell.setAttribute('aria-label', coverageLabel ? `${dateLabel}, ${coverageLabel}` : dateLabel);
       cell.onclick = async () => { close(); await select(value); };
       grid.append(cell);
     }

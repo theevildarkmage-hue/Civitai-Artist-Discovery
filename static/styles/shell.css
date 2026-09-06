@@ -15,7 +15,7 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
 .account-toolbar #closeApp { margin-left: 8px; }
 .toolbar button { border-radius: var(--radius-sm); min-height: 36px; }
 .view-tabs { position: sticky; top: var(--header-h, 64px); z-index: 28; gap: 6px; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.view-tabs.command-bar { display: flex; align-items: center; flex-wrap: wrap; }
+.view-tabs.command-bar { display: flex; align-items: center; flex-wrap: nowrap; }
 .view-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: var(--radius-pill); min-height: 36px; padding: 7px 16px; background: transparent; }
 .view-tabs button.active { background: var(--surface-raised); box-shadow: none; color: var(--text); }
 .view-tabs button:hover { background: var(--surface-raised); }
@@ -24,7 +24,7 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
 .gallery-navigation:not(:has(> :not(.hidden))) { display: none; }
 .gallery-navigation #selectedDate { font-size: 14px; }
 .gallery-navigation #summary { margin-left: auto; font-size: 12px; }
-.command-bar .segment-toolbar { position: static; top: auto; flex: 1; min-width: min(100%, 460px); padding: 0; justify-content: flex-end; background: transparent; border: 0; backdrop-filter: none; gap: 8px; }
+.command-bar .segment-toolbar { position: static; top: auto; flex: 1 1 auto; min-width: 0; padding: 0; justify-content: flex-end; flex-wrap: nowrap; background: transparent; border: 0; backdrop-filter: none; gap: 8px; }
 .segment-toolbar label { margin-left: 0; }
 .ui-field { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .segment-toolbar select, .filter-button { min-height: 36px; border-radius: var(--radius-sm); }
@@ -43,6 +43,7 @@ main { padding: 18px 20px 60px; }
   .account-toolbar #accountStatus { flex: 1 1 100%; }
   .account-toolbar #closeApp { margin-left: auto; }
   .view-tabs { padding: 6px 8px; gap: 3px; }
+  .view-tabs.command-bar { flex-wrap: wrap; }
   .view-tabs button { flex: 1; font-size: 12px; padding: 8px; gap: 5px; }
   .view-tabs .ui-icon { width: 16px; height: 16px; }
   .gallery-navigation { flex-direction: row; align-items: center; padding: 10px 12px 4px; }

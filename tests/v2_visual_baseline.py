@@ -95,7 +95,10 @@ def install_fixture(page, base_url, *, cached_tags=False):
         elif path == "/api/history/day":
             data = {**status, "artistCount": 120, "imageCount": 120}
         elif path == "/api/history/calendar":
-            data = {"days": [{"date": DAY, "all": True, "morning": True,
+            partial = (datetime.fromisoformat(DAY) - timedelta(days=1)).date().isoformat()
+            data = {"days": [{"date": partial, "all": False, "morning": True,
+                               "evening": False},
+                              {"date": DAY, "all": True, "morning": True,
                                "evening": True}]}
         elif path == "/api/history/artists":
             offset = int(query.get("offset", [0])[0])
@@ -153,6 +156,7 @@ def capture(label):
                     if section == 'gallery' and page.locator('#filterToggle').count():
                         page.locator('#calendarToggle').click()
                         page.locator('#calendarPanel [aria-current="date"]').wait_for()
+                        page.locator('#calendarPanel [aria-current="date"].saved').wait_for()
                         page.screenshot(path=str(output / f"calendar-{width}.png"))
                         page.get_by_role('button', name='Close calendar', exact=True).click()
                         page.locator('#filterToggle').click()
