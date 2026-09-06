@@ -15,18 +15,24 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
 .account-toolbar #closeApp { margin-left: 8px; }
 .toolbar button { border-radius: var(--radius-sm); min-height: 36px; }
 .view-tabs { position: sticky; top: var(--header-h, 64px); z-index: 28; gap: 6px; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.view-tabs.command-bar { display: flex; align-items: center; flex-wrap: wrap; }
 .view-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: var(--radius-pill); min-height: 36px; padding: 7px 16px; background: transparent; }
 .view-tabs button.active { background: var(--surface-raised); box-shadow: none; color: var(--text); }
 .view-tabs button:hover { background: var(--surface-raised); }
 .gallery-navigation { padding: 12px 20px 4px; flex-wrap: wrap; gap: 8px; }
+.legacy-gallery-navigation { display: none !important; }
 .gallery-navigation:not(:has(> :not(.hidden))) { display: none; }
 .gallery-navigation #selectedDate { font-size: 14px; }
 .gallery-navigation #summary { margin-left: auto; font-size: 12px; }
-.segment-toolbar { top: calc(var(--header-h, 64px) + var(--tabs-h, 53px)); padding: 10px 20px; justify-content: flex-start; background: var(--bg); backdrop-filter: none; gap: 8px; }
+.command-bar .segment-toolbar { position: static; top: auto; flex: 1; min-width: min(100%, 460px); padding: 0; justify-content: flex-end; background: transparent; border: 0; backdrop-filter: none; gap: 8px; }
 .segment-toolbar label { margin-left: 0; }
 .ui-field { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .segment-toolbar select, .filter-button { min-height: 36px; border-radius: var(--radius-sm); }
 .segment-toolbar #galleryPreferences { margin-left: auto; }
+.segment-toolbar .card-size-source, .segment-toolbar .ui-field:has(#daySegment) { display: none; }
+.segment-toolbar .ui-field:has(#dayView) label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.segment-toolbar #dayView { min-width: 132px; }
+.segment-toolbar.build-mode > :not(.calendar-toggle) { display: none !important; }
 .filter-menu { border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-popover); }
 main { padding: 18px 20px 60px; }
 .gallery, .discovery { max-width: 1880px; }
@@ -42,7 +48,10 @@ main { padding: 18px 20px 60px; }
   .gallery-navigation { flex-direction: row; align-items: center; padding: 10px 12px 4px; }
   .gallery-navigation #selectedDate { flex: 1 1 100%; order: -1; white-space: normal; }
   .gallery-navigation #summary { width: 100%; margin: 3px 0; }
-  .segment-toolbar { position: relative; top: auto; padding: 10px 12px; gap: 8px; }
+  .command-bar .segment-toolbar { flex: 1 0 100%; padding-top: 6px; justify-content: stretch; gap: 6px; }
+  .segment-toolbar #dayView { flex: 1; min-width: 0; }
+  .segment-toolbar .calendar-toggle { flex: 1; }
+  .segment-toolbar #galleryPreferences, #filterToggle { margin-left: 0; }
   .segment-toolbar select { min-width: 0; max-width: 100%; }
   main { padding: 12px 12px 40px; }
 }

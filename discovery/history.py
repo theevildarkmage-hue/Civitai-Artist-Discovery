@@ -1905,6 +1905,21 @@ class HistoryArchive:
             images, artists = counts[0], counts[1]
         return {"date": value, "complete": bool(day and day["complete"]), "imageCount": images, "artistCount": artists, "updatedAt": day["updated_at"] if day else None}
 
+    def calendar_days(self) -> list[dict]:
+        """Return compact archive coverage for the calendar without hydrating artwork."""
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT day,complete FROM days WHERE day GLOB '????-??-??*' ORDER BY day"
+            ).fetchall()
+        dates: dict[str, dict] = {}
+        for row in rows:
+            base, _, block = row["day"].partition("#")
+            entry = dates.setdefault(base, {"date": base, "all": False,
+                                             "morning": False, "evening": False})
+            if row["complete"]:
+                entry[block or "all"] = True
+        return list(dates.values())
+
     def day_artist_keys(self, value: str) -> list[dict]:
         """Every creator in the day, in the archive's own order, without image hydration.
 

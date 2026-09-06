@@ -49,4 +49,9 @@ export function groupPageControls() {
     label.before(field);
     field.append(label, select);
   }
+  const tabs = document.querySelector('.view-tabs');
+  const toolbar = document.querySelector('.segment-toolbar');
+  tabs.classList.add('command-bar');
+  tabs.append(toolbar);
+  document.querySelector('.gallery-navigation').classList.add('legacy-gallery-navigation');
 }

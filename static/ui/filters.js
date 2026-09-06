@@ -4,6 +4,7 @@ export function mountFilters(actions) {
   const toolbar = document.querySelector('.segment-toolbar');
   const content = document.getElementById('contentFilter');
   const model = document.getElementById('modelFilter');
+  const modelMenu = document.getElementById('modelMenu');
   const button = document.createElement('button');
   button.id = 'filterToggle';
   button.className = 'filter-button';
@@ -21,10 +22,33 @@ export function mountFilters(actions) {
   panel.className = 'filter-panel hidden';
   panel.setAttribute('aria-label', 'Gallery filters');
   panel.innerHTML = '<div class="filter-head"><h2>Filters</h2><button type="button" class="quiet-button" aria-label="Close filters">×</button></div><div class="filter-sections"></div><button type="button" class="filter-reset">Reset filters</button>';
-  panel.querySelector('.filter-sections').append(document.getElementById('contentMenu'), document.getElementById('modelMenu'));
+  panel.querySelector('.filter-sections').append(document.getElementById('contentMenu'), modelMenu);
   // Keep the legacy label as a state notification point until page state is extracted.
   model.classList.add('hidden');
   panel.append(model);
+  const search = document.createElement('input');
+  search.type = 'search'; search.className = 'model-search';
+  search.placeholder = 'Search models'; search.setAttribute('aria-label', 'Search generation models');
+  const more = document.createElement('button');
+  more.type = 'button'; more.className = 'model-more';
+  let showAllModels = false;
+  modelMenu.before(search); modelMenu.after(more);
+  const applyModelSearch = () => {
+    const rows = [...modelMenu.querySelectorAll('.filter-row')];
+    const query = search.value.trim().toLocaleLowerCase();
+    rows.forEach((row, index) => {
+      const match = !query || row.textContent.toLocaleLowerCase().includes(query);
+      row.classList.toggle('search-hidden', !match || (!query && !showAllModels && index >= 8));
+    });
+    more.hidden = !!query || rows.length <= 8;
+    more.textContent = showAllModels ? 'Show fewer models' : 'Show all ' + rows.length + ' models';
+  };
+  window.applyGalleryModelSearch = applyModelSearch;
+  search.addEventListener('input', applyModelSearch);
+  more.onclick = () => { showAllModels = !showAllModels; applyModelSearch(); };
+  new MutationObserver(() => requestAnimationFrame(applyModelSearch)).observe(panel, {
+    childList: true, subtree: true,
+  });
   document.body.append(panel);
   let opener = button;
   const close = (restoreFocus = false) => {
@@ -33,13 +57,16 @@ export function mountFilters(actions) {
     content.setAttribute('aria-expanded', 'false');
     if (restoreFocus) opener.focus();
   };
-  const open = (trigger = button) => {
+  const open = async (trigger = button) => {
     opener = trigger;
     panel.style.setProperty('--filter-top', `${Math.ceil(button.getBoundingClientRect().bottom + 8)}px`);
     panel.classList.remove('hidden');
     button.setAttribute('aria-expanded', 'true');
     content.setAttribute('aria-expanded', 'true');
-    actions.refreshModels();
+    search.disabled = true;
+    await actions.refreshModels();
+    search.disabled = false;
+    applyModelSearch();
   };
   button.onclick = () => panel.classList.contains('hidden') ? open() : close();
   window.addEventListener('resize', () => {
@@ -68,6 +95,7 @@ export function mountFilters(actions) {
   panel.querySelector('.filter-reset').onclick = () => actions.reset();
 
   const paint = () => {
+    applyModelSearch();
     const { models, levels } = actions.state();
     const ratingChanged = levels.length !== 2 || !levels.includes(1) || !levels.includes(2);
     const count = models.length + Number(ratingChanged);
@@ -84,6 +112,8 @@ export function mountFilters(actions) {
       chip.onclick = () => { actions.removeModel(name); button.focus(); };
       chips.append(chip);
     }
+    const summary = document.getElementById('summary');
+    if (summary && summary.parentElement !== chips) chips.append(summary);
   };
   const observer = new MutationObserver(paint);
   for (const element of [content, model]) observer.observe(element, {

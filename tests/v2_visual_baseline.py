@@ -94,6 +94,9 @@ def install_fixture(page, base_url, *, cached_tags=False):
             data = {"blocks": {key: status for key in ("all", "morning", "evening")}}
         elif path == "/api/history/day":
             data = {**status, "artistCount": 120, "imageCount": 120}
+        elif path == "/api/history/calendar":
+            data = {"days": [{"date": DAY, "all": True, "morning": True,
+                               "evening": True}]}
         elif path == "/api/history/artists":
             offset = int(query.get("offset", [0])[0])
             limit = int(query.get("limit", [50])[0])
@@ -148,10 +151,18 @@ def capture(label):
                     page.wait_for_timeout(200)
                     page.screenshot(path=str(output / f"{section}-{width}.png"))
                     if section == 'gallery' and page.locator('#filterToggle').count():
+                        page.locator('#calendarToggle').click()
+                        page.locator('#calendarPanel [aria-current="date"]').wait_for()
+                        page.screenshot(path=str(output / f"calendar-{width}.png"))
+                        page.get_by_role('button', name='Close calendar', exact=True).click()
                         page.locator('#filterToggle').click()
                         page.locator('#modelMenu input').first.wait_for()
                         page.screenshot(path=str(output / f"filters-{width}.png"))
                         page.get_by_role('button', name='Close filters', exact=True).click()
+                        page.locator('#galleryPreferences').click()
+                        page.locator('#cardSizeSlider').wait_for()
+                        page.screenshot(path=str(output / f"preferences-{width}.png"))
+                        page.get_by_role('button', name='Close gallery preferences', exact=True).click()
                     results.append({"page": section, "width": width,
                         "horizontalOverflow": page.evaluate("document.documentElement.scrollWidth > innerWidth + 1"),
                         "resources": page.evaluate(r"""() => performance.getEntriesByType('resource')

@@ -1144,6 +1144,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 self.internal_error("History day summary", error)
             return
+        if parsed.path == "/api/history/calendar":
+            try:
+                self.json_response({"days": HISTORY.calendar_days()})
+            except Exception as error:
+                self.internal_error("History calendar", error)
+            return
         if parsed.path == "/api/history/artists":
             try:
                 value = query.get("date", [previous_local_day()])[0]; key = HISTORY.archive_key(value, query.get("segment", ["all"])[0])

@@ -66,7 +66,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-window-fallback-", ignore_clean
             assert page.locator("#startLoading").inner_text() == "Build gallery"
             assert "two resumable halves" in page.locator('#buildRange [data-segment="all"]').inner_text()
 
-            page.locator("#olderDay").click()
+            page.locator("#calendarToggle").click()
+            page.locator(f'#calendarPanel [data-date="{value}"]').click()
             page.wait_for_selector(".creator-card")
             assert page.locator("#daySegment").input_value() == "all"
             assert "ArchivedArtist" in page.locator(".creator-card").inner_text()
@@ -81,7 +82,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-window-fallback-", ignore_clean
             assert page.locator("#daySegment").input_value() == "all"
 
             # An explicit user selection remains explicit; it may be built separately.
-            page.locator("#daySegment").select_option("evening")
+            page.locator("#calendarToggle").click()
+            page.locator('#calendarPanel [data-segment="evening"]').click()
             page.wait_for_selector("#startLoading:not(.hidden)")
             page.locator('#buildRange [data-segment="evening"]').click()
             assert page.locator('#buildRange [data-segment="evening"]').get_attribute("class") == "selected"

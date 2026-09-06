@@ -32,7 +32,7 @@ $("prefEmergingLimit").prepend(noReactionLimit);
 const emergingModeField = $("prefEmergingMode").closest("label");
 emergingModeField.querySelector("span").textContent = "Emerging First ranking";
 $("prefEmergingMode").classList.add("hidden");
-emergingModeField.insertAdjacentHTML("beforeend", '<div id="emergingModeChoices" class="preference-choice-group" role="radiogroup" aria-label="Emerging First ranking"><button type="button" data-mode="balanced">Balanced</button><button type="button" data-mode="strict">Strict</button><button type="button" data-mode="unadjusted">Unadjusted</button></div>');
+emergingModeField.insertAdjacentHTML("beforeend", '<div id="emergingModeChoices" class="preference-choice-group" role="radiogroup" aria-label="Emerging First ranking"><button type="button" data-mode="balanced">Balanced</button><button type="button" data-mode="strict">Strict</button><button type="button" data-mode="unadjusted">Original</button></div>');
 $("prefEmergingLimit").closest("label").insertAdjacentHTML("afterend",
   '<p id="emergingLimitHelp" class="preference-help"></p>');
 // Put the ranking choice near the top of the panel. On short tablet windows the old
@@ -759,10 +759,23 @@ async function refreshBlockLabels(value) {
   } catch (error) { console.warn("Block states could not be read", error); }
 }
 function setNavigationBusy(busy) { $("olderDay").disabled = busy; $("newerDay").disabled = busy || selectedDate >= newestDate; $("daySegment").disabled = busy; $("dayView").disabled = busy; $("rebuildDay").textContent = selectedSegment === "all" ? "Rebuild day" : "Rebuild block"; $("rebuildDay").disabled = busy || !dayBuilt; $("rebuildDay").title = dayBuilt ? (busy ? "Wait for the current operation to finish" : `Rescan this ${selectedSegment === "all" ? "day" : "12-hour block"} and merge updated listings`) : `Build this ${selectedSegment === "all" ? "day" : "block"} before rebuilding it`; }
+function galleryCalendarState() {
+  return { date: selectedDate, segment: selectedSegment, newest: newestDate, built: dayBuilt };
+}
+async function selectGalleryDate(date, segment) {
+  if (!date) return;
+  const explicitSegment = !!segment;
+  if (explicitSegment) selectedSegment = segment;
+  $("daySegment").value = selectedSegment;
+  await loadDay(date, !explicitSegment);
+  window.updateGalleryCalendar?.();
+}
+window.galleryCalendarState = galleryCalendarState;
+window.selectGalleryDate = selectGalleryDate;
 function showBuildSetup(visible) {
   $("buildSetup").classList.toggle("hidden", !visible);
   $("loading").classList.toggle("ready-to-build", visible);
-  if (visible) segmentToolbar.classList.add("hidden");
+  segmentToolbar.classList.toggle("build-mode", visible);
 }
 const coverageRank = { Soft: 0, Mature: 1, X: 2 };
 function blockReadyForBuild(segment) {
@@ -945,7 +958,7 @@ async function beginFullDay(rebuild = false) {
 }
 async function loadDay(value, preferAvailable = true, preserveCurrent = false) {
   const token = ++activeLoadToken; selectedDate = value; dayBuilt = false; activeRebuild = false; loadCancelled = false;
-  $("selectedDate").textContent = displayDate(value); setNavigationBusy(false); await refreshBlockLabels(value);
+  $("selectedDate").textContent = displayDate(value); window.updateGalleryCalendar?.(); setNavigationBusy(false); await refreshBlockLabels(value);
   if (!preserveCurrent) {
     $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery();
     $("summary").textContent = ""; $("startLoading").classList.add("hidden"); $("stopLoading").classList.add("hidden");
@@ -971,7 +984,7 @@ async function loadDay(value, preferAvailable = true, preserveCurrent = false) {
     }
   }
   clearGallery(); $("summary").textContent = "";
-  if (status.complete) { await showCompletedDay(value, token); return; }
+  if (status.complete) { await showCompletedDay(value, token); window.updateGalleryCalendar?.(); return; }
   $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden");
   $("startLoading").classList.add("hidden"); $("stopLoading").classList.add("hidden"); showBuildReady(status);
 }
@@ -1497,6 +1510,7 @@ async function refreshModelMenu() {
       saveFeedState();
       reloadView();
     };
+    window.applyGalleryModelSearch?.();
   } catch (error) { menu.innerHTML = `<p class="filter-empty">${escapeHtml(error.message)}</p>`; }
 }
 async function followFromDashboard(row) {

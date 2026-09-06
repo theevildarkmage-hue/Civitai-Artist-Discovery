@@ -73,11 +73,29 @@ def run():
                 assert keyboard_trigger.evaluate('node => node === document.activeElement')
             page.locator('#tabTimeMachine').click()
             assert page.locator('.gallery-navigation').is_hidden()
+            assert page.locator('.segment-toolbar').is_hidden()
             assert page.locator('.account-toolbar #disconnect').is_visible()
             page.locator('#tabDiscovery').click()
             assert page.locator('.gallery-navigation').is_hidden()
             page.locator('#tabGallery').click()
-            assert page.locator('.gallery-navigation').is_visible()
+            assert page.locator('.gallery-navigation').is_hidden()
+            assert page.locator('.segment-toolbar').is_visible()
+
+            calendar = page.locator('#calendarToggle')
+            calendar.focus()
+            calendar.press('ArrowDown')
+            page.locator('#calendarPanel [aria-current="date"]').wait_for()
+            assert calendar.get_attribute('aria-expanded') == 'true'
+            assert page.locator('#calendarPanel .calendar-grid button:disabled').count() > 0
+            page.locator('#calendarPanel [data-segment="morning"]').click()
+            page.locator('#calendarToggle', has_text='Morning').wait_for()
+            page.locator('.creator-card').first.wait_for()
+            page.wait_for_timeout(100)
+            assert page.locator('#calendarPanel').is_hidden()
+            calendar.press('Enter')
+            calendar.press('Escape')
+            assert page.locator('#calendarPanel').is_hidden()
+            assert calendar.evaluate('node => node === document.activeElement')
 
             opener = page.locator('.info-button').first
             opener.focus()
@@ -93,6 +111,13 @@ def run():
             assert page.locator('#details').is_hidden()
 
             page.locator('#filterToggle').click()
+            page.locator('#filterPanel .model-search').wait_for()
+            assert page.locator('#modelMenu .filter-row:visible').count() <= 8
+            page.locator('#filterPanel .model-search').fill('flux')
+            assert page.locator('#filterPanel .model-search').input_value() == 'flux'
+            visible_models = page.locator('#modelMenu .filter-row:visible')
+            assert visible_models.count() == 1
+            page.locator('#filterPanel .model-search').fill('')
             page.locator('#modelMenu input').nth(0).check()
             page.locator('#modelMenu input').nth(1).check()
             page.locator('#filterToggle[data-active-count="2"]').wait_for()

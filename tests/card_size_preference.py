@@ -119,11 +119,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
             assert page.eval_on_selector("#cardSize", "n => n.value") == "1"
             large = card_metrics()
 
-            page.select_option("#cardSize", "0.8")
+            page.locator("#galleryPreferences").click()
+            page.locator("#cardSizeSlider").evaluate("n => { n.value='1'; n.dispatchEvent(new Event('input')); n.dispatchEvent(new Event('change')); }")
             page.wait_for_timeout(300)
             medium = card_metrics()
 
-            page.select_option("#cardSize", "0.6")
+            page.locator("#cardSizeSlider").evaluate("n => { n.value='0'; n.dispatchEvent(new Event('input')); n.dispatchEvent(new Event('change')); }")
             page.wait_for_timeout(300)
             small = card_metrics()
             assert small["stage"] < medium["stage"] < large["stage"], (small, medium, large)

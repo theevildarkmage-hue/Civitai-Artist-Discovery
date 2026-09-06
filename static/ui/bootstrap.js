@@ -11,6 +11,8 @@ import { browsingState, modelParameters, readBrowsingState } from './state.js';
 import { toggleCreatorFollow } from './creator-actions.js';
 import { renderProfile } from './profile.js';
 import { startPerformanceTrace } from './performance.js';
+import { mountCalendar } from './calendar.js';
+import { mountPreferences } from './preferences.js';
 
 if (new URLSearchParams(location.search).get('uiPerf') === '1') {
   window.CivitaiPerformance = startPerformanceTrace();
@@ -26,6 +28,13 @@ const controller = document.createElement('script');
 controller.src = '/app.js';
 controller.onload = () => {
   groupPageControls();
+  mountPreferences();
+  const calendar = mountCalendar({ api,
+    state: () => window.galleryCalendarState(),
+    select: (date, segment) => window.selectGalleryDate(date, segment),
+    rebuild: () => document.getElementById('rebuildDay').click(),
+  });
+  window.updateGalleryCalendar = calendar.update;
   mountPageLayout();
   mountFilters({
     state: () => window.galleryFilterState(),

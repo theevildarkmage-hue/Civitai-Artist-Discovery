@@ -71,7 +71,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                 assert starts["count"] == 0
                 assert page.locator("#stopLoading").is_hidden()
                 assert page.locator("#buildSetup").is_visible()
-                assert page.locator(".segment-toolbar").is_hidden(), "gallery filters leaked into build setup"
+                assert page.locator("#calendarToggle").is_visible(), "calendar navigation disappeared in build setup"
+                assert page.locator("#dayView").is_hidden(), "gallery filters leaked into build setup"
                 safe_estimate = page.locator("#buildEstimate").inner_text()
                 page.locator('#buildCoverage [data-rating="X"]').click()
                 page.wait_for_function("previous => document.getElementById('buildEstimate').textContent !== previous",
@@ -150,11 +151,17 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                 value = datetime.now().date() - timedelta(days=days_back)
                 return f"{value:%A, %B} {value.day}, {value.year}"
 
-            page.locator("#olderDay").click()
-            page.locator("#selectedDate", has_text=long_date(2)).wait_for()
+            older = (datetime.now().date() - timedelta(days=2)).isoformat()
+            page.locator("#calendarToggle").click()
+            page.locator(f'#calendarPanel [data-date="{older}"]').click()
+            page.wait_for_function("value => document.getElementById('selectedDate').textContent === value",
+                                   arg=long_date(2))
             assert calls["startRequests"] == 0
-            page.locator("#newerDay").click()
-            page.locator("#selectedDate", has_text=long_date(1)).wait_for()
+            newer = (datetime.now().date() - timedelta(days=1)).isoformat()
+            page.locator("#calendarToggle").click()
+            page.locator(f'#calendarPanel [data-date="{newer}"]').click()
+            page.wait_for_function("value => document.getElementById('selectedDate').textContent === value",
+                                   arg=long_date(1))
             assert calls["startRequests"] == 0
             page.locator("#startLoading").evaluate("button => { button.click(); button.click(); }")
             page.wait_for_selector("#phaseCollecting.active", timeout=10000)
