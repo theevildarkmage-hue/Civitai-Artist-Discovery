@@ -1,5 +1,13 @@
 # Beta releases
 
+## 2.0 development preview
+
+The `v2` branch is ready for local acceptance testing, not public distribution. Follow
+[2.0 testing notes](2.0-testing.md). Promote to `2.0.0-beta.1` only after the remaining
+acceptance gates pass; stable users must not be enrolled automatically.
+
+## Historical 0.3.3 beta notes
+
 Version **0.3.3-beta.2** is the current public beta of Civitai Artist Discovery. It keeps
 the existing local Python/SQLite architecture while incorporating the fixes and features
 validated during alpha testing.

@@ -14,9 +14,12 @@ sponsored by Civitai.
 
 ## Project status
 
-Version `1.0.1` is the current stable release. The 1.x line focuses on compatibility and
-bug fixes; a broader interface redesign is planned separately for 2.x. Windows is the
-primary and only routinely tested platform.
+This `v2` branch contains the local 2.0 interface preview. The separate `main` worktree
+continues the 1.x maintenance line (1.0.4 at the redesign baseline). Nothing on this branch
+has been published as 2.0. Windows is the primary and only routinely tested platform.
+
+See [2.0 testing and compatibility](docs/2.0-testing.md) for the preview, shared component
+map, performance evidence, and remaining acceptance gates.
 
 See the [1.0 release notes](docs/release-notes.md) for the release highlights.
 

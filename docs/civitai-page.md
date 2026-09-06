@@ -1,5 +1,14 @@
 # Civitai page copy for 1.0.1
 
+## Draft 2.0 preview announcement — not published
+
+The 2.0 interface preview puts artwork first while keeping one card per creator.
+Daily Gallery, Time Machine, and My Profile share a consistent layout. Common content
+and model choices live in one Filters panel, with active chips and a simple reset;
+advanced discovery settings remain available separately. Loading improvements include
+smaller first pages, appropriately sized previews, and faster local content checks.
+This preview is being tested locally; no public 2.0 download is announced yet.
+
 Canonical model: https://civitai.red/models/2829529/civitai-artist-discovery
 
 ## Model description

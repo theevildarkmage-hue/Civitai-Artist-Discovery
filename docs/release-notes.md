@@ -1,3 +1,14 @@
+# 2.0 local preview — unreleased
+
+- Shared image-first cards across Daily Gallery and Time Machine; unified Profile styling.
+- Combined content/model Filters, active chips, safe-default reset, and advanced preferences.
+- Smaller first page, responsive thumbnails, cached tag decisions, cancellation, and retry.
+- Indexed hidden-tag lookup for large archives; no content-safety rules removed.
+- Shared Profile Follow action, keyboard improvements, and Settings below profile insights.
+
+See [testing notes](2.0-testing.md) for measured results and known limitations. This is not
+a stable or public beta release; version promotion and publication await acceptance.
+
 # Civitai Artist Discovery 1.0.4
 
 Version 1.0.4 fixes the Time machine tab, which did not work as described in 1.0.3, and

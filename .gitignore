@@ -55,6 +55,7 @@ docs/*
 !docs/2.0-project-plan.md
 !docs/2.0-progress.md
 !docs/2.0-checkpoint.md
+!docs/2.0-testing.md
 
 # Shared v2 browser modules and design system
 !static/ui/
