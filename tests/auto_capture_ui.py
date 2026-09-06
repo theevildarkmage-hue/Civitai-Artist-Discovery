@@ -1,4 +1,4 @@
-"""The schedule, and the way to turn it off, must be visible in the app itself."""
+"""Compact collection controls show their state and persist without explanatory clutter."""
 
 import os
 from pathlib import Path
@@ -45,36 +45,30 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
 
             block = page.locator(".capture-preference")
             text = block.inner_text()
-            # It must say what it does and why, not merely offer a switch.
-            assert "two days" in text, text
-            assert "gone for good" in text, text
+            assert "Save recent days" in text, text
             assert page.locator("#captureEnabled").is_checked() is False, "must be off until asked for"
-            assert "Off." in page.locator("#captureNextRun").inner_text()
+            assert page.locator("#captureNextRun").inner_text() == "Off"
 
             page.locator("#captureEnabled").check()
-            page.locator("#captureNextRun", has_text="Next collection").wait_for(timeout=10000)
+            page.locator("#captureNextRun", has_text="Next:").wait_for(timeout=10000)
             enabled_text = page.locator("#captureNextRun").inner_text()
-            # When it will happen, and that the time was spread deliberately.
-            assert "in " in enabled_text, enabled_text
-            assert "do not all arrive at once" in enabled_text, enabled_text
+            assert "·" in enabled_text, enabled_text
             page.screenshot(path=str(SHOTS / "enabled.png"), full_page=False)
 
             # A chosen time is honoured and described as the user's own.
             page.locator("#captureAt").fill("03:30")
             page.locator("#captureAt").dispatch_event("change")
-            page.locator("#captureNextRun", has_text="chosen").wait_for(timeout=10000)
+            page.locator("#captureNextRun", has_text="3:30").wait_for(timeout=10000)
             chosen = page.locator("#captureNextRun").inner_text()
             assert "3:30" in chosen, chosen
-            assert "12 hours later" in chosen, chosen   # a 12h interval runs twice a day
 
             # And it can be handed back to the automatic spread.
             page.locator("#captureAtClear").click()
-            page.locator("#captureNextRun", has_text="do not all arrive at once").wait_for(timeout=10000)
+            page.locator("#captureNextRun", has_text="Next:").wait_for(timeout=10000)
 
             # Turning it off says plainly what the consequence is.
             page.locator("#captureEnabled").uncheck()
-            page.locator("#captureNextRun", has_text="Off.").wait_for(timeout=10000)
-            assert "cannot be collected later" in page.locator("#captureNextRun").inner_text()
+            page.locator("#captureNextRun", has_text="Off").wait_for(timeout=10000)
             page.screenshot(path=str(SHOTS / "disabled.png"), full_page=False)
 
             # The choice survives a reload rather than silently reverting.
@@ -90,5 +84,5 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
         process.wait(timeout=20)
 
 print({"statesShown": ["off", "enabled", "chosen time", "back to automatic"],
-       "explainsConsequence": True, "offByDefault": True, "persists": True,
+       "compactStatus": True, "offByDefault": True, "persists": True,
        "screenshots": str(SHOTS)})

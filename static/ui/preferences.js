@@ -22,7 +22,7 @@ function mirrorRange(select, { id, values, labels }) {
 
 export function mountPreferences() {
   const panel = document.getElementById('preferencesMenu');
-  panel.querySelector('.filter-head strong').textContent = 'Preferences';
+  panel.querySelector('.filter-head strong').textContent = 'Settings';
   const appearance = document.createElement('h3'); appearance.textContent = 'Appearance';
   panel.querySelector('.filter-head').after(appearance);
 
@@ -78,6 +78,11 @@ export function mountPreferences() {
   }
   panel.append(profileSettings.querySelector('.settings-reset'));
   profileSettings.remove();
+  document.querySelector('.capture-preference strong').textContent = 'Save recent days';
+  document.getElementById('capturePreferenceStatus').textContent = '';
+  document.getElementById('updateChecks').parentElement.lastChild.textContent = ' Automatic';
+  document.getElementById('captureEnabled').parentElement.lastChild.textContent = ' On';
+  document.querySelector('.settings-reset strong').textContent = 'Local profile data';
   update();
   return { update };
 }

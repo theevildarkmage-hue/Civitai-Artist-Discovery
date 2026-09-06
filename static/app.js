@@ -294,19 +294,14 @@ $("updateChecks").onchange = async () => {
 // to stop it. Off until switched on.
 let captureState = null;
 function describeNextRun(state) {
-  if (!state.enabled) return "Off. Days older than Civitai’s reach cannot be collected later.";
+  if (!state.enabled) return "Off";
   const seconds = Number(state.nextRunInSeconds);
   const when = state.nextRunAt ? new Date(state.nextRunAt) : null;
-  if (!when || !Number.isFinite(seconds)) return "Next collection is being scheduled.";
+  if (!when || !Number.isFinite(seconds)) return "Scheduling next collection";
   const hours = Math.floor(seconds / 3600), minutes = Math.round((seconds % 3600) / 60);
   const away = hours ? `${hours}h ${minutes}m` : `${minutes}m`;
   const clock = when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  const automatic = state.atMinute === null || state.atMinute === undefined;
-  const twice = Number(state.intervalHours) === 12 && !automatic;
-  return `Next collection ${clock} (in ${away})` +
-    (automatic ? " · time picked automatically so installs do not all arrive at once."
-     : twice ? " · your chosen time, and again 12 hours later."
-     : " · the time you chose.");
+  return `Next: ${clock} · ${away}`;
 }
 function renderCaptureState(state) {
   captureState = state;
@@ -319,12 +314,6 @@ function renderCaptureState(state) {
     : `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
   $("captureAtClear").classList.toggle("hidden", minute === null || minute === undefined);
   $("captureNextRun").textContent = describeNextRun(state);
-  const last = state.lastResult;
-  if (last && state.enabled) {
-    const got = (last.captured || []).length, missed = (last.failed || []).length;
-    $("captureNextRun").textContent += ` Last run collected ${got} block${got === 1 ? "" : "s"}` +
-      (missed ? `, ${missed} did not finish.` : ".");
-  }
 }
 async function refreshCaptureState() {
   try { renderCaptureState(await api("/api/history/capture")); }
