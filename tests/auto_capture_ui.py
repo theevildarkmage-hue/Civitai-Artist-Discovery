@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
                 status=200, content_type="application/json", body='{"hasData":true}'))
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.wait_for_selector("#tabDiscovery")
-            page.locator("#tabDiscovery").click()
+            page.locator("#galleryPreferences").click()
             page.wait_for_selector("#captureEnabled", state="visible")
 
             block = page.locator(".capture-preference")
@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
             # The choice survives a reload rather than silently reverting.
             page.reload(wait_until="domcontentloaded")
             page.wait_for_selector("#tabDiscovery")
-            page.locator("#tabDiscovery").click()
+            page.locator("#galleryPreferences").click()
             page.wait_for_selector("#captureEnabled", state="visible")
             assert page.locator("#captureEnabled").is_checked() is False
             page.close()

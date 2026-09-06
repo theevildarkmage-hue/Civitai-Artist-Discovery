@@ -305,6 +305,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             assert len(shown) == len(set(shown)), sorted(shown)
 
             page.click("#tabDiscovery")
+            page.click("#galleryPreferences")
             page.on("dialog", lambda dialog: dialog.accept())
             page.click("#resetDiscovery")
             page.wait_for_selector("#discoveryBody", state="hidden")

@@ -42,8 +42,4 @@
 .gallery-skeleton { position: relative; }
 .gallery-skeleton .skeleton-identity { position: absolute; bottom: 82px; left: 0; right: 0; }
 .gallery-skeleton .skeleton-footer { height: 82px; }
-@media (hover: hover) and (pointer: fine) {
-  .creator-card .carousel-arrow { opacity: 0; transition: opacity .15s ease; }
-  .creator-card:hover .carousel-arrow, .creator-card:focus-within .carousel-arrow { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) { .creator-card .carousel-arrow { transition: none; } }
+.creator-card .carousel-arrow { opacity: 1; }

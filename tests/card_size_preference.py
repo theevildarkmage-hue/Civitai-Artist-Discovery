@@ -142,10 +142,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
                 const icon = button.querySelector('svg').getBoundingClientRect();
                 return {x: Math.abs((circle.left + circle.width / 2) - (icon.left + icon.width / 2)),
                         y: Math.abs((circle.top + circle.height / 2) - (icon.top + icon.height / 2)),
+                        visible: getComputedStyle(button).opacity === '1',
                         labelled: button.getAttribute('aria-label') === 'Next image'};
             }""")
             assert arrow_alignment["x"] < .6 and arrow_alignment["y"] < .6, arrow_alignment
             assert arrow_alignment["labelled"], arrow_alignment
+            assert arrow_alignment["visible"], arrow_alignment
             # A pure display preference: no request to Civitai for a smaller box.
             assert not civitai_requests, civitai_requests
             assert page.evaluate(

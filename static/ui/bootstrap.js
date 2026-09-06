@@ -28,6 +28,7 @@ const controller = document.createElement('script');
 controller.src = '/app.js';
 controller.onload = () => {
   groupPageControls();
+  mountPageLayout();
   const preferences = mountPreferences();
   window.updateGalleryPreferencesUI = preferences.update;
   const calendar = mountCalendar({ api,
@@ -36,7 +37,6 @@ controller.onload = () => {
     rebuild: () => document.getElementById('rebuildDay').click(),
   });
   window.updateGalleryCalendar = calendar.update;
-  mountPageLayout();
   mountFilters({
     state: () => window.galleryFilterState(),
     refreshModels: () => window.refreshModelMenu(),

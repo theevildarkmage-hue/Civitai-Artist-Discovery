@@ -68,6 +68,16 @@ export function mountPreferences() {
   slider.onchange = () => panel.dispatchEvent(new CustomEvent('high-volume-change', {
     detail: values[Number(slider.value)],
   }));
+
+  const application = document.createElement('h3');
+  application.textContent = 'Application';
+  frequent.after(application);
+  const profileSettings = document.getElementById('profileSettings');
+  for (const preference of profileSettings.querySelectorAll('.update-preference')) {
+    panel.append(preference);
+  }
+  panel.append(profileSettings.querySelector('.settings-reset'));
+  profileSettings.remove();
   update();
   return { update };
 }

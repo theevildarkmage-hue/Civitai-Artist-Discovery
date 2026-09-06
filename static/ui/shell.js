@@ -53,5 +53,7 @@ export function groupPageControls() {
   const toolbar = document.querySelector('.segment-toolbar');
   tabs.classList.add('command-bar');
   tabs.append(toolbar);
+  // Settings belong to the application, not only the Gallery page.
+  tabs.append(document.getElementById('galleryPreferences'));
   document.querySelector('.gallery-navigation').classList.add('legacy-gallery-navigation');
 }
