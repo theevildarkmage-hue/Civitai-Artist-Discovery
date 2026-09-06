@@ -187,6 +187,11 @@ class TasteStore:
                     creator_id INTEGER PRIMARY KEY, username_key TEXT, reason TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS hidden_creators_name ON hidden_creators(username_key);
+                -- Artists hidden inside this app. Keep these separate from Civitai's
+                -- mirrored Content Controls because every refresh replaces that mirror.
+                CREATE TABLE IF NOT EXISTS app_hidden_creators (
+                    username_key TEXT PRIMARY KEY, username TEXT NOT NULL, hidden_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS hidden_tags (
                     tag_id INTEGER PRIMARY KEY, tag_name TEXT NOT NULL
                 );
@@ -669,8 +674,31 @@ class TasteStore:
 
     def hidden_creator_keys(self) -> set[str]:
         with self.connect() as db:
-            return {row["username_key"] for row in
-                    db.execute("SELECT username_key FROM hidden_creators WHERE username_key IS NOT NULL")}
+            imported = {row["username_key"] for row in
+                        db.execute("SELECT username_key FROM hidden_creators WHERE username_key IS NOT NULL")}
+            local = {row["username_key"] for row in db.execute("SELECT username_key FROM app_hidden_creators")}
+            return imported | local
+
+    def hide_creator(self, username: str) -> dict:
+        clean = str(username or "").strip()
+        if not clean:
+            raise ValueError("Provide an artist username")
+        with self.lock, self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO app_hidden_creators(username_key,username,hidden_at) VALUES(?,?,?)",
+                       (clean.casefold(), clean, _now()))
+        return {"username": clean, "hidden": True}
+
+    def unhide_creator(self, username: str) -> dict:
+        clean = str(username or "").strip()
+        with self.lock, self.connect() as db:
+            changed = db.execute("DELETE FROM app_hidden_creators WHERE username_key=?",
+                                 (clean.casefold(),)).rowcount
+        return {"username": clean, "hidden": False, "changed": bool(changed)}
+
+    def app_hidden_creators(self) -> list[dict]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT username,hidden_at AS hiddenAt FROM app_hidden_creators ORDER BY username COLLATE NOCASE")]
 
     def hidden_tag_names(self) -> set[str]:
         with self.connect() as db:

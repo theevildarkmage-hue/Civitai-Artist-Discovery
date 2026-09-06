@@ -139,6 +139,29 @@ class SocialClient:
             raise RuntimeError(response["error"].get("json", {}).get("message", "Civitai mutation failed"))
         return unwrap_result(response["result"])
 
+    def writable_image_collections(self, user_id: int | None = None) -> list[dict]:
+        value = self.query("collection.getAllUser", {
+            "permissions": ["ADD", "ADD_REVIEW"], "type": "Image",
+            "includeActiveContests": False,
+        })
+        if not isinstance(value, list):
+            raise RuntimeError("Civitai returned an unexpected collections response")
+        return [{"id": int(row["id"]), "name": str(row.get("name") or "Untitled collection"),
+                 "userId": row.get("userId"), "read": row.get("read")}
+                for row in value if isinstance(row, dict) and row.get("id") and
+                (user_id is None or int(row.get("userId") or -1) == int(user_id))]
+
+    def add_image_to_collection(self, image_id: int, collection: dict) -> object:
+        selected = {"collectionId": int(collection["id"])}
+        if collection.get("userId") is not None:
+            selected["userId"] = int(collection["userId"])
+        if collection.get("read"):
+            selected["read"] = collection["read"]
+        return self.mutate("collection.saveItem", {
+            "type": "Image", "imageId": int(image_id), "collections": [selected],
+            "removeFromCollectionIds": [],
+        })
+
     def images_page(self, *, cursor: object = None, limit: int = 100,
                     reactions: list[str] | None = None, with_tags: bool = True,
                     tags: list[int] | None = None, period: str = "AllTime") -> dict:

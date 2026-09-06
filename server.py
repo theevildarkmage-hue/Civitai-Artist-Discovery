@@ -1011,7 +1011,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({**auth_status(), "oauthJob": job})
             except Exception:
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
-                self.json_response({"connected": False, "socialWrite": False, "readOnly": True, "oauthJob": job})
+                self.json_response({"connected": False, "socialWrite": False,
+                                    "collectionsRead": False, "collectionsWrite": False,
+                                    "readOnly": True, "oauthJob": job})
             return
         if parsed.path == "/api/oauth/client":
             try:
@@ -1143,6 +1145,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"error": str(error)}, 400)
             except Exception as error:
                 self.internal_error("History day summary", error)
+            return
+        if parsed.path == "/api/hidden-creators":
+            self.json_response({"artists": TASTE.app_hidden_creators()})
+            return
+        if parsed.path == "/api/collections":
+            try:
+                if not auth_status().get("collectionsRead"):
+                    self.json_response({"error": "Sign out and back in once to allow collection access."}, 403)
+                    return
+                self.json_response({"collections": SocialClient().writable_image_collections(connected_user_id())})
+            except Exception as error:
+                self.internal_error("Civitai collections", error)
             return
         if parsed.path == "/api/history/calendar":
             try:
@@ -1575,6 +1589,17 @@ class Handler(BaseHTTPRequestHandler):
                 marked = TASTE.mark_seen(value, keys)
                 self.json_response({"date": value, "marked": marked})
                 return
+            if parsed.path == "/api/hidden-creators":
+                username = str(body.get("username") or "").strip()
+                hidden = body.get("hidden")
+                if not isinstance(hidden, bool):
+                    self.json_response({"error": "Choose whether to hide this artist"}, 400)
+                    return
+                result = TASTE.hide_creator(username) if hidden else TASTE.unhide_creator(username)
+                with WRITE_LOCK:
+                    VISIBLE_CACHE.update({"token": None, "keys": {}})
+                self.json_response(result)
+                return
             # Discovery analysis is read-only, so it stays above the social-write gate
             # below and remains available to read-only OAuth connections.
             if parsed.path == "/api/history/prepare":
@@ -1629,6 +1654,23 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/app/close":
                 self.json_response({"closing": True})
                 request_app_shutdown(self.server)
+                return
+            if parsed.path == "/api/collections/add":
+                if not auth_status().get("collectionsWrite"):
+                    self.json_response({"error": "Sign out and back in once to allow collection changes."}, 403)
+                    return
+                image_id = int(body.get("imageId"))
+                collection_id = int(body.get("collectionId"))
+                if not collected_image(image_id):
+                    raise ValueError("Image is not in this app's saved gallery")
+                client = SocialClient()
+                collection = next((row for row in client.writable_image_collections(connected_user_id())
+                                   if int(row["id"]) == collection_id), None)
+                if collection is None:
+                    raise ValueError("That collection is not available for images")
+                client.add_image_to_collection(image_id, collection)
+                self.json_response({"imageId": image_id, "collectionId": collection_id,
+                                    "collectionName": collection["name"], "added": True})
                 return
             try:
                 can_write = bool(auth_status().get("socialWrite"))

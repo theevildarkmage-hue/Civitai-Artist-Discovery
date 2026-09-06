@@ -22,6 +22,12 @@
   display: grid; place-items: center; width: 36px; height: 36px;
   padding: 0; font-size: 25px; border-radius: 50%; background: #11151cbf; color: #fff;
 }
+.card-action-menu { position: absolute; z-index: 20; top: 48px; right: 8px; width: min(260px, calc(100% - 16px)); padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: #202228; box-shadow: var(--shadow-popover); }
+.card-action-menu strong { display: block; padding: 8px 10px 5px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.card-action-menu button { display: block; width: 100%; padding: 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.card-action-menu button:hover,.card-action-menu button:focus-visible { background: #ffffff10; outline: none; }
+.card-action-menu .danger-item { color: #ffaaa7; }
+.card-menu-status { padding: 10px; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .creator-card .recommendation-badge { max-width: calc(100% - 64px); background: #142436e8; border-color: #6cadde66; color: #b5dcff; font-size: 10px; text-transform: none; }
 .creator-card .image-overlay { position: static; padding: 6px 9px; min-height: 43px; gap: 4px; background: var(--panel); align-items: center; }
 .creator-card .reaction-slot { min-width: 0; flex: 1; }

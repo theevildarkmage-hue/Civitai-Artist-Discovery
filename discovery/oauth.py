@@ -36,6 +36,8 @@ AUTH_BASE = "https://auth.civitai.com/api/auth/oauth"
 CALLBACK_PORT = 8765
 REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/oauth/callback"
 SOCIAL_WRITE = 1 << 19
+COLLECTIONS_READ = 1 << 17
+COLLECTIONS_WRITE = 1 << 18
 READ_SCOPE = 1 | 32  # UserRead | MediaRead
 APP_DATA = data_root()
 TOKEN_PATH = APP_DATA / "oauth_tokens.dpapi"
@@ -252,7 +254,7 @@ def login(timeout: int = 300) -> dict:
     # Signing in is required and the app's whole point is following and reacting, so
     # it asks for those once, on Civitai's consent screen, rather than a second
     # in-app switch the user has to find.
-    requested_scope = READ_SCOPE | SOCIAL_WRITE
+    requested_scope = READ_SCOPE | COLLECTIONS_READ | COLLECTIONS_WRITE | SOCIAL_WRITE
     active = client_id()
     if not active:
         raise OAuthSetupError("No Civitai application is set up yet. Register one on Civitai "
@@ -309,9 +311,13 @@ def status() -> dict:
     # Follows and reactions are requested at sign-in, so what Civitai granted is the
     # single source of truth. A grant that came back without write access still means
     # no writes, which keeps the app from attempting one it is not allowed to make.
-    granted = (int(scope) & SOCIAL_WRITE) == SOCIAL_WRITE
+    scope_value = int(scope)
+    granted = (scope_value & SOCIAL_WRITE) == SOCIAL_WRITE
+    collections_read = (scope_value & COLLECTIONS_READ) == COLLECTIONS_READ
+    collections_write = (scope_value & COLLECTIONS_WRITE) == COLLECTIONS_WRITE
     return {"connected": True, **(tokens.get("identity") or {}), "scope": scope,
-            "scopeGrantsWrite": granted, "socialWrite": granted}
+            "scopeGrantsWrite": granted, "socialWrite": granted,
+            "collectionsRead": collections_read, "collectionsWrite": collections_write}
 
 
 def _revoke(token: str, hint: str, client: str) -> bool:

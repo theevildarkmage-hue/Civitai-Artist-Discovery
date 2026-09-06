@@ -76,6 +76,9 @@
 .preferences-menu .capture-at .link-button { font-size: 0; padding: 4px; }
 .preferences-menu .capture-at .link-button:not(.hidden)::after { content: 'Auto'; font-size: 11px; }
 .preferences-menu .settings-reset { margin-top: 8px; padding-top: 10px; }
+.hidden-artists-setting { display: grid; gap: 5px; margin: 4px 0 10px; }
+.hidden-artists-setting > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.hidden-artists-setting button { padding: 5px 8px; }
 .preferences-menu .settings-reset .panel-note { display: none; }
 @media (max-width: 700px) {
   .preferences-menu .capture-preference, .preferences-menu .capture-preference.is-off { grid-template-columns: 1fr auto; }

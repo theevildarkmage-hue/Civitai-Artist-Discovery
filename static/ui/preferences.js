@@ -1,3 +1,6 @@
+import { api } from './api.js';
+const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+
 function mirrorRange(select, { id, values, labels }) {
   const wrap = document.createElement('div');
   wrap.className = 'preference-slider';
@@ -77,6 +80,25 @@ export function mountPreferences() {
     panel.append(preference);
   }
   panel.append(profileSettings.querySelector('.settings-reset'));
+  const hiddenHeading = document.createElement('h3'); hiddenHeading.textContent = 'Hidden artists';
+  const hiddenArtists = document.createElement('div'); hiddenArtists.className = 'hidden-artists-setting';
+  panel.insertBefore(hiddenHeading, application);
+  panel.insertBefore(hiddenArtists, application);
+  async function renderHiddenArtists() {
+    try {
+      const data = await api('/api/hidden-creators');
+      hiddenArtists.innerHTML = data.artists?.length
+        ? data.artists.map(artist => `<div><span>@${escapeHtml(artist.username)}</span><button type="button" data-username="${escapeHtml(artist.username)}">Show again</button></div>`).join('')
+        : '<small>No artists hidden in this app.</small>';
+      hiddenArtists.querySelectorAll('button').forEach(button => button.onclick = async () => {
+        button.disabled = true;
+        await api('/api/hidden-creators', { method: 'POST', body: JSON.stringify({ username: button.dataset.username, hidden: false }) });
+        await renderHiddenArtists();
+      });
+    } catch (error) { hiddenArtists.innerHTML = `<small>${error.message}</small>`; }
+  }
+  document.addEventListener('hidden-creators-changed', renderHiddenArtists);
+  renderHiddenArtists();
   profileSettings.remove();
   document.querySelector('.capture-preference strong').textContent = 'Save recent days';
   document.getElementById('capturePreferenceStatus').textContent = '';

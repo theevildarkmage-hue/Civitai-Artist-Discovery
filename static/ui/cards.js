@@ -1,6 +1,14 @@
 import { showCardArtwork, wireArtworkFallback } from './artwork.js';
 import { toggleCreatorFollow } from './creator-actions.js';
 
+let activeActionMenu = null;
+document.addEventListener('click', event => {
+  if (activeActionMenu && !activeActionMenu.parentElement?.contains(event.target)) {
+    activeActionMenu.classList.add('hidden');
+    activeActionMenu = null;
+  }
+});
+
 // Shared card behavior. Page adapters supply services and a snapshot of the archive
 // being browsed; delayed carousel requests never read another page's selected date.
 export function createCreatorCard(a, context) {
@@ -31,7 +39,13 @@ export function createCreatorCard(a, context) {
   stage.after(el.querySelector('.image-overlay'));
   el.querySelector('.image-button').setAttribute('aria-label', `View artwork by ${a.username}`);
   el.querySelector('.info-button').setAttribute('aria-label', 'Image details');
-  el.querySelector('.more-menu').setAttribute('aria-label', 'More image details');
+  el.querySelector('.more-menu').setAttribute('aria-label', `More actions for ${a.username}`);
+  el.querySelector('.more-menu').setAttribute('aria-expanded', 'false');
+  const actionMenu = document.createElement('div');
+  actionMenu.className = 'card-action-menu hidden';
+  actionMenu.setAttribute('role', 'menu');
+  actionMenu.innerHTML = `<button type="button" data-action="collections" role="menuitem">♡ Add image to collection</button><button type="button" data-action="hide" class="danger-item" role="menuitem">⊘ Hide this artist</button>`;
+  el.append(actionMenu);
   const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"); wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
   function renderReactions() {
     reaction.innerHTML = reactionBar(current);
@@ -39,7 +53,12 @@ export function createCreatorCard(a, context) {
     if (navigating) reaction.querySelectorAll("[data-reaction]").forEach(button => { button.disabled = true; });
   }
   function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!context.canWrite()) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
-  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showCardArtwork(main, current.thumbnailUrl, current.url); age.textContent = ago(current.createdAt); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
+  function cardDate() {
+    const value = selectedDate || String(current.createdAt || '').slice(0, 10);
+    const date = new Date(`${value}T12:00:00`);
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showCardArtwork(main, current.thumbnailUrl, current.url); age.textContent = cardDate(); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
   async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${context.models}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
   function removeCard() {
     cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
@@ -83,7 +102,41 @@ export function createCreatorCard(a, context) {
     finally { if (document.body.contains(el)) setCardNavigationBusy(false); }
   }
   async function move(delta) { await navigateTo(index + delta, delta); }
-  wireArtworkFallback(main); el.querySelector(".previous").onclick = () => move(-1); el.querySelector(".next").onclick = () => move(1); el.querySelector(".image-button").onclick = () => showDetails(current, a, el); el.querySelector(".info-button").onclick = () => showDetails(current, a, el); el.querySelector(".more-menu").onclick = () => showDetails(current, a, el);
+  function closeActionMenu() { actionMenu.classList.add('hidden'); el.querySelector('.more-menu').setAttribute('aria-expanded', 'false'); }
+  async function showCollections() {
+    if (context.canManageCollections && !context.canManageCollections()) {
+      actionMenu.innerHTML = '<p class="card-menu-status">Sign out and back in once to allow collection access.</p>';
+      return;
+    }
+    actionMenu.innerHTML = '<p class="card-menu-status">Loading collections…</p>';
+    try {
+      const data = await api('/api/collections');
+      const collections = data.collections || [];
+      if (!collections.length) { actionMenu.innerHTML = '<p class="card-menu-status">No image collections available.</p>'; return; }
+      actionMenu.innerHTML = '<strong>Save image to</strong>' + collections.map(collection => `<button type="button" data-collection="${collection.id}" role="menuitem">${escapeHtml(collection.name)}</button>`).join('');
+      actionMenu.querySelectorAll('[data-collection]').forEach(button => button.onclick = async event => {
+        event.stopPropagation(); button.disabled = true;
+        try { const result = await api('/api/collections/add', { method: 'POST', body: JSON.stringify({ imageId: current.id, collectionId: Number(button.dataset.collection) }) }); closeActionMenu(); toast(`Added to ${result.collectionName}`); }
+        catch (error) { button.disabled = false; toast(error.message); }
+      });
+    } catch (error) {
+      actionMenu.innerHTML = `<p class="card-menu-status">${escapeHtml(error.message)}</p>`;
+    }
+  }
+  function resetActionMenu() {
+    actionMenu.innerHTML = `<button type="button" data-action="collections" role="menuitem">♡ Add image to collection</button><button type="button" data-action="hide" class="danger-item" role="menuitem">⊘ Hide this artist</button>`;
+    actionMenu.querySelector('[data-action="collections"]').onclick = event => { event.stopPropagation(); showCollections(); };
+    actionMenu.querySelector('[data-action="hide"]').onclick = async event => {
+      event.stopPropagation();
+      if (!confirm(`Hide all content from ${a.username} in this app? You can undo this in Settings.`)) return;
+      try { await api('/api/hidden-creators', { method: 'POST', body: JSON.stringify({ username: a.username, hidden: true }) }); closeActionMenu(); removeCard(); document.dispatchEvent(new Event('hidden-creators-changed')); toast(`${a.username} hidden. Manage hidden artists in Settings.`); }
+      catch (error) { toast(error.message); }
+    };
+  }
+  const more = el.querySelector('.more-menu');
+  more.onclick = event => { event.stopPropagation(); const opening = actionMenu.classList.contains('hidden'); if (activeActionMenu && activeActionMenu !== actionMenu) activeActionMenu.classList.add('hidden'); if (opening) resetActionMenu(); actionMenu.classList.toggle('hidden', !opening); activeActionMenu = opening ? actionMenu : null; more.setAttribute('aria-expanded', String(opening)); if (opening) actionMenu.querySelector('button')?.focus(); };
+  actionMenu.addEventListener('keydown', event => { if (event.key === 'Escape') { closeActionMenu(); more.focus(); } });
+  wireArtworkFallback(main); el.querySelector(".previous").onclick = () => move(-1); el.querySelector(".next").onclick = () => move(1); el.querySelector(".image-button").onclick = () => showDetails(current, a, el); el.querySelector(".info-button").onclick = () => showDetails(current, a, el);
   applyCreatorFollowers(el, a);
   // Setting src while the card is still detached defeats loading="lazy" — the browser
   // fetches immediately — so a whole page of cards requested every preview at once and

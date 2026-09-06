@@ -47,6 +47,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-write-gate-", ignore_cleanup_er
         oauth.TOKEN_PATH.write_bytes(oauth._crypt(json.dumps(payload).encode(), True))
 
     WRITE = 524321   # UserRead | MediaRead | SocialWrite
+    COLLECTIONS = (1 << 17) | (1 << 18)
     READ = 33        # UserRead | MediaRead
 
     environment = {**os.environ, "CIVITAI_HISTORY_DATA_DIR": temporary}
@@ -73,6 +74,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-write-gate-", ignore_cleanup_er
         assert granted["scopeGrantsWrite"] is True, granted
         assert granted["socialWrite"] is True, granted
         assert follow(PORT) != 403, "a granted connection was refused"
+        assert granted["collectionsRead"] is False and granted["collectionsWrite"] is False
+
+        write_token(WRITE | COLLECTIONS)
+        collection_grant = state()
+        assert collection_grant["collectionsRead"] is True
+        assert collection_grant["collectionsWrite"] is True
 
         # Signed in, but Civitai withheld write access: every write must be refused, and
         # the app must say so rather than presenting buttons that quietly do nothing.
@@ -98,4 +105,4 @@ else:
     os.environ.pop("CIVITAI_HISTORY_DATA_DIR", None)
 
 print({"grantAllowsWrites": True, "withheldGrantBlocksWrites": True,
-       "staleOptInFlagIgnored": True})
+       "collectionScopesAreIndependent": True, "staleOptInFlagIgnored": True})

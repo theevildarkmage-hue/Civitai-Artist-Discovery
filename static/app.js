@@ -12,7 +12,7 @@ let buildSegment = "all", buildCoverageRating = "Soft", currentBlocks = null, es
 // How many creators this day's Civitai content controls removed, so the count on screen
 // can explain itself rather than looking like missing data.
 let hiddenCreators = 0, preferenceHidden = 0;
-let selectedDate = null, selectedSegment = "evening", activeBuildSegment = null, selectedView = "foryou", newestDate = null, socialWrite = false, oauthConnected = false, artistTotal = 0, imageTotal = 0, loadedArtists = 0, loadingMore = false, loadCancelled = false, loadingPhaseIndex = -1, activeLoadToken = 0, dayBuilt = false, activeRebuild = false;
+let selectedDate = null, selectedSegment = "evening", activeBuildSegment = null, selectedView = "foryou", newestDate = null, socialWrite = false, collectionsWrite = false, oauthConnected = false, artistTotal = 0, imageTotal = 0, loadedArtists = 0, loadingMore = false, loadCancelled = false, loadingPhaseIndex = -1, activeLoadToken = 0, dayBuilt = false, activeRebuild = false;
 const PROFILE_REFRESH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let automaticProfileRefreshTimer = 0, automaticProfileRefreshPending = false;
 let recommendationsNeedRefresh = false, refreshRecommendationsAfterSync = false;
@@ -538,6 +538,7 @@ function card(a) {
     api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore,
     date: selectedDate, segment: selectedSegment, models: modelQuery(),
     canWrite: () => socialWrite,
+    canManageCollections: () => collectionsWrite,
   });
 }
 function displayDate(value) { return new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" }); }
@@ -699,7 +700,7 @@ async function loadArtistPage() {
     }
   }
 }
-function applyAuth(auth) { oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; const waiting = auth.oauthJob?.state === "loading";
+function applyAuth(auth) { oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; collectionsWrite = !!auth.collectionsWrite; const waiting = auth.oauthJob?.state === "loading";
   // Follows and reactions are granted at sign-in, so the normal signed-in state needs no
   // qualifier. The exception is worth naming: Civitai can complete a sign-in while
   // withholding write access, and silently dead buttons would look like a broken app.
