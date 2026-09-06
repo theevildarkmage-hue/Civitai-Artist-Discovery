@@ -1,4 +1,5 @@
 import { showCardArtwork, wireArtworkFallback } from './artwork.js';
+import { toggleCreatorFollow } from './creator-actions.js';
 
 // Shared card behavior. Page adapters supply services and a snapshot of the archive
 // being browsed; delayed carousel requests never read another page's selected date.
@@ -102,7 +103,8 @@ export function createCreatorCard(a, context) {
   el.dataset.username = a.username.toLowerCase();
   el.dataset.seenDate = selectedDate;
   if (!a.seen) seenObserver.observe(el);
-  const follow = el.querySelector(".follow-button"); follow.onclick = async () => { if (!context.canWrite()) return toast("Civitai did not grant follow access."); follow.disabled = true; try { const result = await api("/api/follow", { method: "POST", body: JSON.stringify({ userId: a.userId, username: a.username, following: !a.following }) }); a.following = result.following; a.userId = result.userId; follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; toast(a.following ? `Now following @${a.username}` : `Unfollowed @${a.username}`); } catch (error) { toast(error.message); } finally { follow.disabled = false; } };
+  const follow = el.querySelector(".follow-button");
+  follow.onclick = () => toggleCreatorFollow(follow, a, { api, canWrite: context.canWrite, toast });
   el.addEventListener("reactionstate", () => { if (document.body.contains(el)) renderReactions(); });
   el.applyCreatorMetadata = metadata => { a.avatarUrl = metadata.avatarUrl; a.following = !!metadata.following; a.userId = metadata.userId; const oldAvatar = el.querySelector(".creator-avatar"); if (a.avatarUrl && oldAvatar && oldAvatar.getAttribute("src") !== a.avatarUrl) { const image = document.createElement("img"); image.className = "creator-avatar"; image.src = a.avatarUrl; image.alt = ""; wireAvatarFallback(image, a.username); oldAvatar.replaceWith(image); } follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; applyCreatorFollowers(el, metadata); };
   el.clearAccountMetadata = () => { a.following = false; follow.classList.remove("is-following"); follow.textContent = "+ Follow"; };

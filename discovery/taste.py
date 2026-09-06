@@ -175,6 +175,8 @@ class TasteStore:
                     image_id INTEGER NOT NULL, tag_name TEXT NOT NULL,
                     PRIMARY KEY(image_id, tag_name)
                 );
+                CREATE INDEX IF NOT EXISTS archive_tags_name_image
+                    ON archive_image_tags(tag_name, image_id);
                 CREATE TABLE IF NOT EXISTS archive_image_seen (
                     image_id INTEGER PRIMARY KEY, fetched_at TEXT NOT NULL
                 );
@@ -684,8 +686,8 @@ class TasteStore:
         with self.connect() as db:
             direct = {row["image_id"] for row in db.execute("SELECT image_id FROM hidden_images")}
             tagged = {row["image_id"] for row in db.execute(
-                "SELECT DISTINCT t.image_id FROM archive_image_tags t "
-                "JOIN hidden_tags h ON h.tag_name = t.tag_name")}
+                "SELECT DISTINCT image_id FROM archive_image_tags "
+                "WHERE tag_name IN (SELECT tag_name FROM hidden_tags)")}
         return direct | tagged
 
     def hidden_summary(self) -> dict:

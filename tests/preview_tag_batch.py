@@ -21,6 +21,15 @@ with tempfile.TemporaryDirectory(prefix='preview-tag-batch-', ignore_cleanup_err
         db.execute("INSERT INTO hidden_tags(tag_id,tag_name) VALUES(1,'blocked')")
         db.execute("INSERT INTO archive_image_seen(image_id,fetched_at) VALUES(51,'now')")
     original_connect = store.connect
+    with store.connect() as db:
+        query = ('SELECT DISTINCT image_id FROM archive_image_tags '
+                 'WHERE tag_name IN (SELECT tag_name FROM hidden_tags)')
+        plan = ' '.join(str(tuple(row)) for row in db.execute('EXPLAIN QUERY PLAN ' + query))
+        assert 'SEARCH archive_image_tags USING COVERING INDEX archive_tags_name_image' in plan, plan
+        previous = {row[0] for row in db.execute(
+            'SELECT DISTINCT t.image_id FROM archive_image_tags t '
+            'JOIN hidden_tags h ON h.tag_name=t.tag_name')}
+        assert store.hidden_image_ids() == previous == {1}
     connections = []
 
     def counted_connect():

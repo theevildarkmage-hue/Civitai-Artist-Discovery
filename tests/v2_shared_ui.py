@@ -23,6 +23,34 @@ def run():
             page.goto(base_url, wait_until='networkidle')
             page.locator('.creator-card').first.wait_for()
             assert not page.evaluate('document.documentElement.scrollWidth > innerWidth + 1')
+            state = page.evaluate('''async () => {
+                const {browsingState, modelParameters, readBrowsingState} = await import('/ui/state.js');
+                const value = browsingState({date:'bad', segment:'bad', view:'bad',
+                    levels:[], models:['Flux & XL', 'Flux & XL', null, ''], loaded:Infinity, scrollY:-5});
+                return {value, query:modelParameters(value),
+                    broken:readBrowsingState({getItem:()=>'{broken'}, 'key'),
+                    roundTrip:readBrowsingState({getItem:()=>JSON.stringify(value)}, 'key')};
+            }''')
+            assert state['value'] == state['roundTrip']
+            assert state['value']['levels'] == [1, 2] and state['value']['view'] == 'foryou'
+            assert state['value']['loaded'] == 0 and state['value']['scrollY'] == 0
+            assert state['broken'] is None and state['query'] == '&model=Flux%20%26%20XL'
+            follow = page.evaluate('''async () => {
+                const {toggleCreatorFollow} = await import('/ui/creator-actions.js');
+                const button = document.createElement('button');
+                const creator = {username:'Fixture', userId:1, following:false};
+                let calls = 0, allowed = false;
+                const actions = {canWrite:()=>allowed, toast:()=>{},
+                    api:async()=>{ calls++; allowed=false; return {following:true, userId:1}; }};
+                await toggleCreatorFollow(button, creator, actions);
+                const blocked = calls === 0;
+                allowed = true;
+                await toggleCreatorFollow(button, creator, actions);
+                return {blocked, calls, following:creator.following, disabled:button.disabled,
+                    pending:!!button.dataset.followPending};
+            }''')
+            assert follow == {'blocked': True, 'calls': 1, 'following': True,
+                              'disabled': True, 'pending': False}
             trigger = page.locator('#contentFilter')
             trigger.focus()
             trigger.press('ArrowDown')

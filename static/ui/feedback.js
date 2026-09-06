@@ -12,3 +12,20 @@ export function showGallerySkeleton(gallery) {
   });
   return () => placeholders.forEach(element => element.remove());
 }
+
+export function showPageError(container, message, retry) {
+  container.replaceChildren();
+  container.setAttribute('role', 'alert');
+  const text = document.createElement('span');
+  text.textContent = `${message} `;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Try again';
+  button.onclick = async () => {
+    button.disabled = true;
+    try { await retry(); }
+    catch (error) { showPageError(container, error.message, retry); }
+    finally { button.disabled = false; }
+  };
+  container.append(text, button);
+}

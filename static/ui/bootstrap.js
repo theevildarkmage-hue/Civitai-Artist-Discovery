@@ -1,16 +1,24 @@
 import { mountShell, groupPageControls } from './shell.js';
 import { enhancePopover } from './menu.js';
 import { api } from './api.js';
-import { showArtwork, showCardArtwork, wireArtworkFallback } from './artwork.js';
-import { showGallerySkeleton } from './feedback.js';
+import { showArtwork, wireArtworkFallback } from './artwork.js';
+import { showGallerySkeleton, showPageError } from './feedback.js';
 import { bindDialog } from './dialog.js';
 import { createCreatorCard } from './cards.js';
 import { mountFilters } from './filters.js';
 import { mountPageLayout } from './pages.js';
+import { browsingState, modelParameters, readBrowsingState } from './state.js';
+import { toggleCreatorFollow } from './creator-actions.js';
+import { renderProfile } from './profile.js';
+import { startPerformanceTrace } from './performance.js';
+
+if (new URLSearchParams(location.search).get('uiPerf') === '1') {
+  window.CivitaiPerformance = startPerformanceTrace();
+}
 
 mountShell();
 // Temporary bridge for the classic page controller; new modules import directly.
-window.CivitaiUI = Object.freeze({ api, showArtwork, showCardArtwork, wireArtworkFallback, showGallerySkeleton, createCreatorCard });
+window.CivitaiUI = Object.freeze({ api, showArtwork, wireArtworkFallback, showGallerySkeleton, showPageError, createCreatorCard, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile });
 
 // Transitional classic controller preserves existing integration tests and global
 // callbacks while page behavior moves into modules one tested slice at a time.
