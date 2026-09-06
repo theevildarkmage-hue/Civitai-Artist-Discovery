@@ -128,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-browser-", ignore_clea
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1200, "height": 900})
-            page.route("**/api/auth-status", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"connected": state["connected"], "id": 111, "username": "read-only-test", "socialWrite": False, "oauthJob": {"state": "complete" if state["connected"] else "idle"}})))
+            page.route("**/api/auth-status", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"connected": state["connected"], "id": 111, "username": "read-only-test", "socialWrite": False, "collectionsRead": True, "collectionsWrite": True, "oauthJob": {"state": "complete" if state["connected"] else "idle"}})))
             def login(route):
                 state["connected"] = True
                 route.fulfill(status=202, content_type="application/json", body='{"state":"complete"}')
