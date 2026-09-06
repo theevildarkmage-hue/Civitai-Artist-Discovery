@@ -31,6 +31,18 @@ def run():
             assert page.locator('#contentMenu').is_hidden()
             assert trigger.get_attribute('aria-expanded') == 'false'
             assert trigger.evaluate('node => node === document.activeElement')
+            # Enter/Space leave focus on the opener; Escape must still dismiss.
+            for trigger_id, panel_id in [('filterToggle', 'filterPanel'),
+                                         ('contentFilter', 'filterPanel'),
+                                         ('galleryPreferences', 'preferencesMenu')]:
+                keyboard_trigger = page.locator(f'#{trigger_id}')
+                keyboard_trigger.focus()
+                keyboard_trigger.press('Enter')
+                assert page.locator(f'#{panel_id}').is_visible()
+                keyboard_trigger.press('Escape')
+                assert page.locator(f'#{panel_id}').is_hidden()
+                assert keyboard_trigger.get_attribute('aria-expanded') == 'false'
+                assert keyboard_trigger.evaluate('node => node === document.activeElement')
             page.locator('#tabTimeMachine').click()
             assert page.locator('.gallery-navigation').is_hidden()
             assert page.locator('.account-toolbar #disconnect').is_visible()

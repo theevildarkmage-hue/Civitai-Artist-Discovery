@@ -48,6 +48,11 @@ export function mountFilters(actions) {
   content.onclick = () => open(content);
   content.setAttribute('aria-controls', 'filterPanel');
   for (const trigger of [button, content]) trigger.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !panel.classList.contains('hidden')) {
+      event.preventDefault();
+      close(true);
+      return;
+    }
     if (event.key !== 'ArrowDown') return;
     event.preventDefault();
     open(trigger);
