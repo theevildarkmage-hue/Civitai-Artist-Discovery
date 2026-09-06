@@ -28,7 +28,8 @@ const controller = document.createElement('script');
 controller.src = '/app.js';
 controller.onload = () => {
   groupPageControls();
-  mountPreferences();
+  const preferences = mountPreferences();
+  window.updateGalleryPreferencesUI = preferences.update;
   const calendar = mountCalendar({ api,
     state: () => window.galleryCalendarState(),
     select: (date, segment) => window.selectGalleryDate(date, segment),

@@ -21,7 +21,8 @@ const imageTagState = new Map();
 const pendingTagChecks = new Map();
 let tagCheckTimer = 0;
 const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="contentFilter" class="filter-button" aria-expanded="false" title="Choose the content levels to display">Content: PG + PG-13</button><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><button id="galleryPreferences" class="filter-button preferences-button" aria-expanded="false" aria-label="Gallery preferences" title="Gallery preferences">&#9881;</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div><div id="preferencesMenu" class="filter-menu preferences-menu hidden" aria-label="Gallery preferences"><div class="filter-head"><strong>Gallery preferences</strong><button id="closePreferences" class="quiet-button" aria-label="Close gallery preferences">×</button></div><label class="preference-row"><span><b>Dim viewed cards</b><small>Previously viewed artists still move later either way.</small></span><input id="prefDimSeen" type="checkbox"></label><label class="preference-row"><span><b>Hide high-volume artists</b><small>Applies to every gallery view.</small></span><input id="prefHideHighVolume" type="checkbox"></label><label class="preference-field" for="prefHighVolumeThreshold"><span>High-volume threshold</span><select id="prefHighVolumeThreshold"><option value="50">50+ images</option><option value="100">100+ images</option><option value="200">200+ images</option></select></label><label class="preference-field" for="prefEmergingMode"><span>Emerging First</span><select id="prefEmergingMode"><option value="balanced">Balanced discovery</option><option value="strict">Strict discovery</option><option value="unadjusted">No adjustment</option></select></label><p id="emergingModeHelp" class="preference-help"></p><label class="preference-field" for="prefEmergingLimit"><span>Strict-mode threshold</span><select id="prefEmergingLimit"><option value="100">100+ daily reactions</option><option value="250">250+ daily reactions</option><option value="500">500+ daily reactions</option></select></label><small class="preferences-footnote">Thresholds can be set anytime and apply when their matching option is active. These controls use the saved gallery and never download the day again.</small></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
-segmentToolbar.querySelector(".preferences-footnote").textContent = "Thresholds become available when their matching option is active. These controls use the saved gallery and never download the day again.";
+$("prefHighVolumeThreshold").querySelector('option[value="100"]').insertAdjacentHTML("afterend", '<option value="150">150+ images</option>');
+segmentToolbar.querySelector(".preferences-footnote").textContent = "These controls use the saved gallery and never download the day again.";
 // A fixed element inside the sticky, backdrop-filtered toolbar is fixed to that toolbar
 // in Chromium rather than to the viewport. On short windows this placed the lower half
 // of the panel off-screen. Keep the trigger in the toolbar but portal the panel to body.
@@ -111,6 +112,7 @@ function showGalleryPreferences() {
       : "No reaction cutoff is applied. Select a limit only if you want to hide highly reacted artists.";
   $("galleryPreferences").classList.toggle("has-active-preference",
     hideHighVolumeCreators || emergingReactionMode !== "balanced" || !dimSeenCards);
+  window.updateGalleryPreferencesUI?.();
 }
 async function saveGalleryPreferences(patch, reload = true) {
   const controls = [...$("preferencesMenu").querySelectorAll("input,select,[data-mode]")];
@@ -1121,6 +1123,13 @@ $("prefHideHighVolume").onchange = () => saveGalleryPreferences({
 $("prefHighVolumeThreshold").onchange = () => saveGalleryPreferences({
   highVolumeThreshold: Number($("prefHighVolumeThreshold").value)
 }).then(saved => { if (saved) toast("High-volume artist limit updated."); });
+$("preferencesMenu").addEventListener("high-volume-change", event => {
+  const threshold = Number(event.detail);
+  saveGalleryPreferences({
+    hideHighVolumeCreators: threshold > 0,
+    highVolumeThreshold: threshold || highVolumeThreshold,
+  }).then(saved => { if (saved) toast(threshold ? "Frequent posters are hidden." : "Frequent posters are shown."); });
+});
 $("prefEmergingMode").onchange = () => saveGalleryPreferences({
   emergingReactionMode: $("prefEmergingMode").value
 }).then(saved => { if (saved) toast("Emerging First ranking updated."); });

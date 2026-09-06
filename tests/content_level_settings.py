@@ -47,6 +47,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
     saved = settings.update(check_for_updates_value=False)
     assert view(saved) == {"contentRating": "X", "browsingLevels": [4, 16],
                      "dimSeenCards": False, "checkForUpdates": False, **gallery_defaults}
+    assert settings.update(high_volume_threshold_value=150)["highVolumeThreshold"] == 150
     saved = settings.update(hide_high_volume_creators_value=True,
                             high_volume_threshold_value=200,
                             emerging_reaction_mode_value="strict",

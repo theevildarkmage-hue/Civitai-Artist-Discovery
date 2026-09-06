@@ -33,6 +33,7 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
 .segment-toolbar .ui-field:has(#dayView) label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .segment-toolbar #dayView { min-width: 132px; }
 .segment-toolbar.build-mode > :not(.calendar-toggle) { display: none !important; }
+.command-bar .sweep-note.personalization-note { position: absolute; top: calc(100% + 8px); right: 20px; width: min(760px, calc(100vw - 40px)); flex: none; }
 .filter-menu { border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-popover); }
 main { padding: 18px 20px 60px; }
 .gallery, .discovery { max-width: 1880px; }

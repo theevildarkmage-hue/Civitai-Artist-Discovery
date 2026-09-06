@@ -16,7 +16,6 @@ function mirrorRange(select, { id, values, labels }) {
   range.onchange = () => select.dispatchEvent(new Event('change', {bubbles: true}));
   select.classList.add('control-source');
   select.after(wrap);
-  new MutationObserver(sync).observe(select, {attributes: true, attributeFilter: ['disabled']});
   select.addEventListener('change', sync);
   sync();
 }
@@ -26,6 +25,7 @@ export function mountPreferences() {
   panel.querySelector('.filter-head strong').textContent = 'Preferences';
   const appearance = document.createElement('h3'); appearance.textContent = 'Appearance';
   panel.querySelector('.filter-head').after(appearance);
+
   const cardField = document.querySelector('.ui-field:has(#cardSize)');
   const cardSelect = document.getElementById('cardSize');
   cardField.classList.add('card-size-source');
@@ -38,13 +38,36 @@ export function mountPreferences() {
   cardPreference.append(clone);
   appearance.after(cardPreference);
   mirrorRange(clone, {id: 'cardSizeSlider', values: ['0.6', '0.8', '1'], labels: ['Small', 'Medium', 'Large']});
-  const discovery = document.createElement('h3'); discovery.textContent = 'Discovery';
-  const emerging = document.getElementById('emergingModeChoices').closest('label');
-  emerging.before(discovery);
-  mirrorRange(document.getElementById('prefHighVolumeThreshold'), {
-    id: 'highVolumeSlider', values: ['50', '100', '200'], labels: ['50', '100', '200 images/day'],
-  });
-  mirrorRange(document.getElementById('prefEmergingLimit'), {
-    id: 'strictLimitSlider', values: ['0', '100', '250', '500'], labels: ['None', '100', '250', '500 reactions'],
-  });
+
+  const dimRow = document.getElementById('prefDimSeen').closest('label');
+  const highToggle = document.getElementById('prefHideHighVolume');
+  const highSelect = document.getElementById('prefHighVolumeThreshold');
+  highToggle.closest('label').classList.add('retired-preference');
+  highSelect.closest('label').classList.add('retired-preference');
+  for (const id of ['prefEmergingMode', 'prefEmergingLimit']) {
+    document.getElementById(id).closest('label').classList.add('retired-preference');
+  }
+  document.getElementById('emergingModeHelp').classList.add('retired-preference');
+  document.getElementById('emergingLimitHelp').classList.add('retired-preference');
+
+  const frequent = document.createElement('label');
+  frequent.className = 'preference-field frequent-posters';
+  frequent.innerHTML = '<span><b>Hide frequent posters</b><small>Hide creators who posted at least this many images that day.</small></span><div class="preference-slider"><input id="highVolumeSlider" type="range" min="0" max="4" step="1"><div class="slider-labels"><span>Off</span><span>50</span><span>100</span><span>150</span><span>200/day</span></div></div>';
+  dimRow.after(frequent);
+  const slider = frequent.querySelector('input');
+  const values = [0, 50, 100, 150, 200];
+  const update = () => {
+    const threshold = highToggle.checked ? Number(highSelect.value) : 0;
+    slider.value = String(Math.max(0, values.indexOf(threshold)));
+    slider.setAttribute('aria-valuetext', threshold ? `${threshold} images per day` : 'Off');
+  };
+  slider.oninput = () => {
+    const threshold = values[Number(slider.value)];
+    slider.setAttribute('aria-valuetext', threshold ? `${threshold} images per day` : 'Off');
+  };
+  slider.onchange = () => panel.dispatchEvent(new CustomEvent('high-volume-change', {
+    detail: values[Number(slider.value)],
+  }));
+  update();
+  return { update };
 }
