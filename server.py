@@ -561,52 +561,21 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
         ordered = blended + remainder
         return [row["key"] for row in ordered], len(ordered)
     if view == "emerging":
-        # Emerging exists to surface creators the user has not found yet, so anyone they
-        # already follow is removed rather than merely ranked lower.
+        # Emerging is the personalised For You ranking narrowed to smaller creators.
+        # A known follower count is required so a missing profile is never presented as
+        # a small account. Followed creators and the signed-in user's own card are out;
+        # people they have reacted to may remain because that affinity is valuable.
         rows = [row for row in rows if row["key"] not in followed and row["key"] != pinned]
-        if not rows:
-            return [], 0
         counts = TASTE.follower_counts([row["username"] for row in rows])
-        reaction_mode = preferences["emergingReactionMode"]
-        reaction_limit = preferences["emergingReactionLimit"]
-        totals = HISTORY.creator_reaction_totals(key, hidden_images)
-        if reaction_mode == "strict" and reaction_limit > 0:
-            rows = [row for row in rows if totals.get(row["key"], 0) < reaction_limit]
-            if not rows:
-                return [], 0
-        quality = HISTORY.creator_quality_scores(key, hidden_images)
-        quality_values = [quality.get(row["key"], 0.0) for row in rows]
-        quality_low = min(quality_values, default=0.0)
-        quality_high = max(quality_values, default=0.0)
-
-        def balanced_score(row):
-            quality_value = quality.get(row["key"], 0.0)
-            normalized_quality = ((quality_value - quality_low) / (quality_high - quality_low)
-                                  if quality_high > quality_low else 0.0)
-            followers = counts.get(row["key"])
-            follower_discovery = (1.0 - min(EMERGING_FOLLOWERS, max(0, followers)) /
-                                  EMERGING_FOLLOWERS if followers is not None else 0.0)
-            reactions = totals.get(row["key"], 0)
-            popularity_penalty = (min(.45, .20 * math.log2(reactions / 100))
-                                  if reactions > 100 else 0.0)
-            return .70 * normalized_quality + .30 * follower_discovery - popularity_penalty
-        # Only a creator with a known count can be called emerging. Unknown counts sort
-        # after the rest rather than being presented as small accounts.
-        # Within the emerging tier, Balanced uses the strongest few images, follower
-        # scale, and a capped high-reaction penalty. It avoids both extremes: total
-        # reactions rewarding batch uploaders, and ascending reactions leading with
-        # zero-engagement throwaway accounts. No adjustment preserves the original
-        # daily popularity order; Strict uses Balanced after removing the selected cap.
-        def rank(row):
-            value = counts.get(row["key"])
-            if value is None:
-                return (2, row["rank"])
-            tier = 0 if value < EMERGING_FOLLOWERS else 1
-            if tier == 0 and reaction_mode in {"balanced", "strict"}:
-                return (tier, -balanced_score(row), row["rank"])
-            return (tier, row["rank"], row["rank"])
-        ordered = sorted(rows, key=rank)
-        return [row["key"] for row in ordered], len(ordered)
+        emerging_keys = {row["key"] for row in rows
+                         if counts.get(row["key"]) is not None and
+                         counts[row["key"]] < EMERGING_FOLLOWERS}
+        if eligible_creators is not None:
+            emerging_keys &= set(eligible_creators)
+        if not emerging_keys:
+            return [], 0
+        return day_view_order(key, "foryou", pinned_username, signals, hidden_images,
+                              hidden_creators, emerging_keys, seen)
     if not followed and not reacted:
         return (([row["key"] for row in rows], len(rows))
                 if hide_high_volume else (None, None))
@@ -1186,11 +1155,6 @@ class Handler(BaseHTTPRequestHandler):
                 preference_hidden_keys = ({row["key"] for row in preference_rows
                     if int(row.get("imageCount") or 0) >= preferences["highVolumeThreshold"]}
                     if preferences["hideHighVolumeCreators"] else set())
-                if (view == "emerging" and preferences["emergingReactionMode"] == "strict"
-                        and preferences["emergingReactionLimit"] > 0):
-                    reaction_totals = HISTORY.creator_reaction_totals(key, hidden_images)
-                    preference_hidden_keys.update(row["key"] for row in preference_rows
-                        if reaction_totals.get(row["key"], 0) >= preferences["emergingReactionLimit"])
                 session_token = query.get("session", [None])[0]
                 seen = TASTE.seen_creator_keys(value)
                 order, total = cached_day_view_order(key, view, pinned_username, signals,
@@ -1214,7 +1178,7 @@ class Handler(BaseHTTPRequestHandler):
                 artists = [decorate_history_artist(item, profiles, follows, signals, seen)
                     for item in HISTORY.artists_page(key, offset, limit, pinned_username, order,
                                                      representatives, hidden_images)]
-                if view == "foryou":
+                if view in {"foryou", "emerging"}:
                     # State why each card placed where it did, rather than presenting a
                     # personalised order the user cannot inspect.
                     page_image_ids = [(artist.get("representative") or {}).get("id")
