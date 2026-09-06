@@ -18,8 +18,35 @@
 .discovery-actions .primary-button { border-color: #4779a3; background: var(--accent-surface); color: #c1e2ff; }
 .discovery .rank-item { border-radius: var(--radius-sm); }
 .discovery .pill { border-radius: var(--radius-pill); }
+
+/* Profile dashboard: one visual system instead of a stack of independent boxes. */
+#discovery { gap: 14px; }
+#discovery .page-heading { align-items: center; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--radius-md); background: linear-gradient(120deg, #172431, var(--panel) 58%); }
+#discovery .page-heading .eyebrow { display: none; }
+#discovery .page-heading h2 { margin: 0; font-size: clamp(24px, 2.5vw, 32px); }
+#discovery .page-heading .discovery-note { margin: 4px 0 0; }
+#discovery .hidden-prefs-note { padding: 5px 0 0; border: 0; background: transparent; }
+#discovery .summary-row { gap: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
+#discovery .summary-row .metric-card { min-height: 132px; padding: 17px 18px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: transparent; }
+#discovery .summary-row .metric-card:last-child { border-right: 0; }
+#discovery .metric-card .value { font-size: clamp(30px, 3.2vw, 40px); }
+#discovery .metric-card .hint { display: none; }
+#discovery .reaction-card { align-content: center; }
+#discovery .donut-wrap, #discovery .donut { width: 88px; height: 88px; }
+#discovery .panel-grid { gap: 12px; }
+#discovery .panel { padding: 16px 18px; }
+#discovery .panel:not(.fingerprint-panel) > .panel-note { display: none; }
+#discovery .panel.lead { padding: 18px 20px; border-color: #4779a3; background: linear-gradient(120deg, #172431, var(--panel) 70%); }
+#discovery .panel.lead .rank-list { margin-top: 10px; }
+#discovery .rank-item { padding: 9px 10px; }
 @media (max-width: 700px) {
   .page-heading { gap: 12px; }
   .page-settings { padding: 14px; }
   .page-settings .update-preference { padding: 12px; }
+  #discovery .page-heading { padding: 16px; }
+  #discovery .summary-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #discovery .summary-row .metric-card { min-height: 104px; border-right: 0; border-bottom: 1px solid var(--line); }
+  #discovery .summary-row .metric-card:nth-child(odd):not(.reaction-card) { border-right: 1px solid var(--line); }
+  #discovery .summary-row .reaction-card { grid-column: 1 / -1; }
+  #discovery .summary-row .metric-card:last-child { border-bottom: 0; }
 }

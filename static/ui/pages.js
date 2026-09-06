@@ -5,6 +5,7 @@ export function mountPageLayout() {
     heading.classList.add('page-heading');
   }
   const profile = document.getElementById('discovery');
+  profile.querySelector('.page-heading h2').textContent = 'Your taste profile';
   const settings = document.createElement('section');
   settings.id = 'profileSettings';
   settings.className = 'panel page-settings';

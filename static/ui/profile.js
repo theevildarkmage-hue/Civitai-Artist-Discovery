@@ -86,6 +86,6 @@ function donut(mix, totalRecords) {
   // Suggestions moved into the For You feed, where browsing happens.
   const age = data.lastSyncAt ? (Date.now() - new Date(data.lastSyncAt).getTime()) / 1000 : 0;
   const when = age < 120 ? "moments ago" : ago(data.lastSyncAt);
-  $("discoverySubtitle").textContent = `Read from your Civitai account ${when}. ${displayCount(total)} reacted images across ${displayCount(data.distinctTags)} tags. Everything stays on this computer.`;
+  $("discoverySubtitle").textContent = `Updated ${when} · ${displayCount(total)} reactions · ${displayCount(data.distinctTags)} tags`;
 
 }
