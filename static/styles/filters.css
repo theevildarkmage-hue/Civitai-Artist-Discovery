@@ -48,6 +48,9 @@
 .preferences-menu .filter-head + h3 { margin-top: 4px; padding-top: 0; border-top: 0; }
 .preferences-menu .control-source { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .preference-slider { width: min(360px, 100%); }
+.preferences-menu .card-size-preference { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.preferences-menu .card-size-preference .preference-slider,
+.preferences-menu .frequent-posters .preference-slider { width: 100%; }
 .preference-slider input { width: 100%; accent-color: var(--accent); }
 .slider-labels { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; }
 .card-size-preference { margin-bottom: 8px; }
