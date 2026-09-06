@@ -1,12 +1,22 @@
 # Builds the portable folder application. A self-extracting one-file build would write its
 # runtime to the system temporary folder, contrary to the portable-only storage model.
-param([switch]$OneFile)
+param([switch]$OneFile, [string]$OutputRoot)
 
 $ErrorActionPreference = 'Stop'
 if ($OneFile) { throw 'Portable releases use the folder build; -OneFile is no longer supported.' }
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
+  $buildPaths = @()
+  $package = Join-Path $root 'dist\CivitaiArtistDiscovery'
+  if ($OutputRoot) {
+    # Keep preview packages, build caches, and generated specs away from release outputs.
+    $previewRoot = [System.IO.Path]::GetFullPath($OutputRoot)
+    $buildPaths = @('--distpath', (Join-Path $previewRoot 'dist'),
+                    '--workpath', (Join-Path $previewRoot 'build'),
+                    '--specpath', $previewRoot)
+    $package = Join-Path $previewRoot 'dist\CivitaiArtistDiscovery'
+  }
   python -B scripts/make_icon.py
   if ($LASTEXITCODE -ne 0) { throw "Icon generation exited with code $LASTEXITCODE" }
   python -B scripts/make_version_file.py
@@ -16,13 +26,12 @@ try {
   # pack the binary, and packed executables are a well-known heuristic trigger.
   python -m PyInstaller --noconfirm --clean --onedir --windowed --noupx `
     --name CivitaiArtistDiscovery `
-    --icon "static/app.ico" `
-    --version-file "build/version_info.txt" `
-    --add-data "static;static" `
-    server.py
+    --icon (Join-Path $root 'static/app.ico') `
+    --version-file (Join-Path $root 'build/version_info.txt') `
+    --add-data "$(Join-Path $root 'static');static" `
+    @buildPaths (Join-Path $root 'server.py')
   if ($LASTEXITCODE -ne 0) { throw "PyInstaller exited with code $LASTEXITCODE" }
 
-  $package = Join-Path $root 'dist\CivitaiArtistDiscovery'
   $licenses = Join-Path $package 'licenses'
   New-Item -ItemType Directory -Force $licenses | Out-Null
   $pystraySite = python -c "import pathlib, pystray; print(pathlib.Path(pystray.__file__).parent.parent)"
