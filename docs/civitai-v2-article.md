@@ -1,5 +1,7 @@
 # Civitai Artist Discovery 2.0: a faster, creator-first way to explore
 
+<!-- Cover image: assets/civitai-artist-discovery-v2-cover.png (1672x941) -->
+
 Version 2.0 of Civitai Artist Discovery is here. Since the 1.0 post, the app has grown
 well beyond a visual refresh: the gallery, filters, calendar, Time Machine, profile, card
 actions, and loading behavior now work as one shared experience.
@@ -20,7 +22,7 @@ of your collections, or add the creator to your Civitai Hidden Users list. The a
 your Civitai Content Controls after a hide, so there is no separate hidden-artist list to
 manage locally.
 
-_Screenshot: `release-assets/v2.0.0/gallery.png`_
+![Daily gallery: one image-first card per creator, with recommendation badges, reactions, follower counts, and Follow](release-assets/v2.0.0/gallery.png)
 
 ## Find the day you want
 
@@ -29,7 +31,7 @@ partially collected days are visible at a glance, and Morning, Evening, and All 
 selected in the same place. You can jump to the latest saved gallery or rebuild the
 selected date without assembling a row of controls every time.
 
-_Screenshot: `release-assets/v2.0.0/calendar.png`_
+![Calendar navigation showing saved and partially collected days, with All day, Morning, and Evening](release-assets/v2.0.0/calendar.png)
 
 ## Filters without the wall of options
 
@@ -39,7 +41,9 @@ Less frequently changed controls moved under the Settings cog: card size, dimmin
 cards, hiding frequent posters, automatic day collection, update checks, and local profile
 data.
 
-_Screenshot: `release-assets/v2.0.0/filters.png`_
+![The combined Filters panel: browsing level, model search, and per-model image counts](release-assets/v2.0.0/filters.png)
+
+![Settings: card size, dimming viewed cards, hiding frequent posters, automatic day collection, updates, and local profile data](release-assets/v2.0.0/settings.png)
 
 ## For You and Emerging
 
@@ -55,7 +59,7 @@ same image-first cards as the daily gallery, and it remembers progress as you mo
 the feed. It is a fun way to see where a familiar creator started and how their work
 changed over time.
 
-_Screenshot: `release-assets/v2.0.0/time-machine.png`_
+![Time Machine showing the oldest artwork of creators you already follow](release-assets/v2.0.0/time-machine.png)
 
 ## A clearer profile
 
@@ -64,7 +68,7 @@ mix, distinctive tags, common models, favorite creators, and artists whose work 
 liking without following. The analysis stays on your computer and is never uploaded by
 the app.
 
-_Screenshot: `release-assets/v2.0.0/profile.png`_
+![My Profile: reaction mix, worth-following creators, creative fingerprint, and model signals](release-assets/v2.0.0/profile.png)
 
 ## Faster where it matters
 
