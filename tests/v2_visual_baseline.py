@@ -120,7 +120,7 @@ def install_fixture(page, base_url, *, cached_tags=False):
         elif path == "/api/reaction-status":
             data = {"images": {}}
         elif path == "/api/update/status":
-            data = {"currentVersion": "1.0.4", "supported": False}
+            data = {"currentVersion": "2.0.0", "supported": False}
         route.fulfill(content_type="application/json", body=json.dumps(data))
 
     page.route("**/*", route_request)

@@ -196,6 +196,14 @@ body>header h1{line-height:1.15}
 /* The prompt is the last thing in the panel and needs room to breathe when scrolled. */
 #detailPrompt{margin-bottom:4px}
 
+/* Never leave the previous image visible while a newly opened detail view downloads. */
+#details.detail-loading::before{content:'Loading image…';position:absolute;z-index:1;
+  left:calc((100% - 350px)/2);top:50%;transform:translate(-50%,-50%);
+  padding:10px 14px;border:1px solid #3c4652;border-radius:999px;background:#15191fee;
+  color:#cbd3dd;font-size:13px;letter-spacing:.01em;pointer-events:none}
+#details.detail-loading>img{background:#06080b}
+@media(max-width:700px){#details.detail-loading::before{left:50%;top:27.5%}}
+
 /* Constrain the dialog's single grid row to the dialog itself. Without an explicit row
    size the row is auto-sized and grows past the fixed-height dialog, so the details
    column hung below it and its overflow could never engage — long tag lists were

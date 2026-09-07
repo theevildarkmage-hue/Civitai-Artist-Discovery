@@ -50,6 +50,7 @@ docs/*
 !docs/beta-release.md
 !docs/release-notes.md
 !docs/civitai-page.md
+!docs/civitai-v2-article.md
 !docs/updates.md
 !docs/time-machine-spec.md
 !docs/2.0-project-plan.md
@@ -77,6 +78,7 @@ reports/v2/baseline/*
 !assets/
 assets/*
 !assets/civitai-artist-discovery-v1-cover.png
+!assets/civitai-artist-discovery-v2-cover.png
 
 # Local server logs from development runs; CONTRIBUTING forbids committing logs.
 logs/

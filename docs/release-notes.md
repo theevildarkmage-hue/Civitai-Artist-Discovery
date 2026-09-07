@@ -1,13 +1,70 @@
-# 2.0 local preview — unreleased
+# Civitai Artist Discovery 2.0.0
 
-- Shared image-first cards across Daily Gallery and Time Machine; unified Profile styling.
-- Combined content/model Filters, active chips, safe-default reset, and advanced preferences.
-- Smaller first page, responsive thumbnails, cached tag decisions, cancellation, and retry.
-- Indexed hidden-tag lookup for large archives; no content-safety rules removed.
-- Shared Profile Follow action, keyboard improvements, and Settings below profile insights.
+Version 2.0 is a full interface and interaction refresh focused on making a very large
+daily Civitai feed feel fast, understandable, and centered on creators rather than rows
+of disconnected images.
 
-See [testing notes](2.0-testing.md) for measured results and known limitations. This is not
-a stable or public beta release; version promotion and publication await acceptance.
+## A new gallery experience
+
+- Image-first creator cards now share one visual and interaction system across Daily
+  Gallery and Time Machine.
+- Each artist stays in one card with an image carousel, visible navigation feedback,
+  reaction totals, follower information, Follow, details, and direct Civitai links.
+- Card menus can save the current image to a Civitai collection or add the artist to the
+  account's Civitai Hidden Users list. Civitai Content Controls remain the source of truth.
+- Recommendation, familiarity, and Emerging badges live together at the top of the image.
+
+## Simpler navigation and filtering
+
+- A shared command bar keeps Daily Gallery, Time Machine, and My Profile in one consistent
+  shell.
+- Calendar navigation replaces the older day-by-day controls and marks saved and partially
+  collected days, with Morning, Evening, and All day choices in the same panel.
+- Content and generation-model filters are combined into one compact panel with search,
+  active filter chips, and a safe-default reset.
+- Settings contains card size, viewed-card dimming, frequent-poster filtering, automatic
+  day collection, update checks, and local profile-data management without duplicated UI.
+
+## Personal discovery
+
+- For You combines reaction taste with a cached fingerprint of the account's public work
+  and explains why a creator is being recommended.
+- Emerging uses the same personal ranking while limiting the pool to creators with fewer
+  than 1,000 followers.
+- My Profile has a redesigned hierarchy for reaction mix, distinctive tags, model signals,
+  favorite creators, and creators worth following.
+- Time Machine uses the shared cards while walking through the oldest work of creators the
+  account follows.
+
+## Faster and clearer loading
+
+- The first page is smaller, previews are sized responsively, and artwork begins loading
+  only as cards approach the viewport.
+- Cached tag decisions and an indexed hidden-tag lookup reduce repeat work on large
+  archives without weakening content filtering.
+- Skeletons, retry actions, carousel progress, cancellation, and empty states replace
+  unexplained blank cards or controls that appear unresponsive.
+- Opening an image at full size clears the previous artwork immediately and shows a
+  loading state, instead of leaving the last image on screen until the new one arrives.
+- Gallery depth, scroll position, date/window/view, models, and card size survive an
+  ordinary refresh within the browser session.
+
+## Updating
+
+Packaged versions 1.0.0 through 1.0.4 can install 2.0.0 through the normal in-app update
+dialog. The updater verifies the GitHub-provided SHA-256 digest, preserves the portable
+`data/` folder, rolls back a failed replacement, and restarts automatically.
+
+The exact release asset is `CivitaiArtistDiscovery-2.0.0.zip`. Its SHA-256 is
+`0783c3f1f78f0262cb60a0cb32bba17f21d6ccef03eb1ad3a761c188436c9ee8`; it is also recorded in the
+accompanying checksum file and verified automatically by the app.
+
+The Hide Artist action needs Civitai's profile-settings permission. Existing users should
+sign out and back in once after updating if they want to use it; saved galleries and local
+profile analysis are not removed.
+
+Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
+unsigned, so Windows SmartScreen or managed-device policy may warn or block it.
 
 # Civitai Artist Discovery 1.0.4
 
