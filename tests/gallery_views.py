@@ -77,11 +77,15 @@ with tempfile.TemporaryDirectory(prefix="gallery-views-", ignore_cleanup_errors=
     default_page = history.artists_page(day, 0, 3, "Me")
     assert [item["username"] for item in default_page] == ["Me", "Popular", "Mid"], default_page
 
-    # Emerging first: known small accounts lead, ordered by follower count. Creators whose
-    # count is unknown sort last rather than being presented as small.
+    # Emerging is For You constrained to known small, unfollowed accounts. Personal
+    # taste must beat the archive's generic engagement order.
+    reps = {row["key"]: row["representativeId"] for row in history.day_artist_keys(day)}
     class FakeTaste:
         def follower_counts(self, names):
             return {"popular": 40000, "mid": 120, "followed_one": 5, "unknown_a": 990}
+        def score_images(self, ids):
+            scores = {reps["unknown_a"]: 3.0, reps["mid"]: 1.0}
+            return {image_id: scores.get(image_id, 0.0) for image_id in ids}
     real_taste = server.TASTE
     server.TASTE = FakeTaste()
     try:
@@ -90,19 +94,14 @@ with tempfile.TemporaryDirectory(prefix="gallery-views-", ignore_cleanup_errors=
         server.TASTE = real_taste
     # Emerging is for finding creators you do not have yet, so anyone already followed and
     # your own card are removed outright rather than ranked lower.
-    assert total == 4, (order, total)
+    assert total == 2, (order, total)
     for gone in ("followed_one", "followed_two", "me"):
         assert gone not in order, (gone, order)
-    # Under the threshold first, ordered by the day's engagement rank rather than by
-    # ascending follower count, so a one-follower account does not lead the gallery.
-    assert order[:2] == ["mid", "unknown_a"], order
-    assert order[2] == "popular", order
-    # The creator with no known count trails the one with 40,000 followers.
-    assert order[3] == "reacted_one", order
+    assert order == ["unknown_a", "mid"], order
+    for ineligible in ("popular", "reacted_one"):
+        assert ineligible not in order, order
 
     # For you: highest taste score first, unscored creators behind everyone scored.
-    reps = {row["key"]: row["representativeId"] for row in history.day_artist_keys(day)}
-
     class FakeScores:
         def score_images(self, ids):
             wanted = {reps["unknown_a"]: 3.1, reps["popular"]: 2.8,

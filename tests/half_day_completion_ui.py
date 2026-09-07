@@ -75,7 +75,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-half-completion-", ignore_clean
             assert "Build Evening only" in full.inner_text()
             assert full.get_attribute("class") == "selected"
             assert page.locator("#startLoading").inner_text() == "Build missing half"
-            assert page.locator(".segment-toolbar").is_hidden()
+            assert page.locator("#calendarToggle").is_visible()
+            assert page.locator("#dayView").is_hidden()
             browser.close()
     finally:
         try:

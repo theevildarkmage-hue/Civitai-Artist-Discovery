@@ -8,7 +8,7 @@ import threading
 from .site import (DEFAULT_CONTENT_RATING, browsing_levels, content_rating,
                    levels_for_rating, rating_for_levels)
 
-HIGH_VOLUME_THRESHOLDS = (50, 100, 200)
+HIGH_VOLUME_THRESHOLDS = (50, 100, 150, 200)
 EMERGING_REACTION_MODES = ("balanced", "strict", "unadjusted")
 EMERGING_REACTION_LIMITS = (0, 100, 250, 500)
 # Civitai's feed can only be paged back a couple of days, so a day not captured inside
@@ -120,7 +120,7 @@ class AppSettings:
                                  if high_volume_threshold_value is None
                                  else high_volume_threshold_value)
         if high_volume_threshold not in HIGH_VOLUME_THRESHOLDS:
-            raise ValueError("highVolumeThreshold must be 50, 100, or 200")
+            raise ValueError("highVolumeThreshold must be 50, 100, 150, or 200")
         emerging_reaction_mode = (current["emergingReactionMode"]
                                   if emerging_reaction_mode_value is None
                                   else emerging_reaction_mode_value)

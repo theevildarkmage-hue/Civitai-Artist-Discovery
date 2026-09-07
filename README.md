@@ -14,11 +14,13 @@ sponsored by Civitai.
 
 ## Project status
 
-Version `1.0.1` is the current stable release. The 1.x line focuses on compatibility and
-bug fixes; a broader interface redesign is planned separately for 2.x. Windows is the
-primary and only routinely tested platform.
+Version 2.0 is the current stable release. It introduces the shared image-first interface,
+calendar navigation, streamlined filters and settings, richer artist cards, Time Machine,
+and the redesigned taste profile. Windows is the primary and only routinely tested
+platform.
 
-See the [1.0 release notes](docs/release-notes.md) for the release highlights.
+See the [2.0 release notes](docs/release-notes.md) for release highlights and upgrade
+details.
 
 The underlying application is Python, SQLite, HTML, CSS, and JavaScript. Running from
 source on desktop Linux is experimental: secure OAuth storage is implemented through the
@@ -50,11 +52,13 @@ Windows-only.
   the tag-backed personalization is ready.
 - Shows creator avatars and follower counts and highlights emerging creators under 1,000
   followers.
-- Collects secondary display controls under **Gallery preferences**: viewed-card dimming,
-  an optional 50/100/200-image daily limit, and Balanced, Strict, or original ordering
-  for **Emerging first**. These preferences re-filter saved data without another download.
+- Collects secondary display controls under the shared Settings cog: card size,
+  viewed-card dimming, and an optional 50/100/150/200-image daily limit. These preferences
+  re-filter saved data without another download.
 - Supports Like, Heart, Laugh, and Cry reactions plus follow/unfollow when Civitai grants
   social-write access.
+- Saves the current image to one of the connected account's Civitai collections from the
+  card menu, and adds unwanted creators directly to Civitai Hidden Users.
 - Imports Civitai Content Controls, including hidden creators, hidden images, hidden tags,
   blocked-by accounts, and category switches.
 - Defaults to PG and PG-13. PG, PG-13, R, X, and XXX can be displayed independently;

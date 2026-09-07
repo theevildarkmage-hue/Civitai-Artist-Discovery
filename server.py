@@ -42,7 +42,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "1.0.4"
+APP_VERSION = "2.0.0"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
@@ -169,6 +169,21 @@ def connected_user_id() -> int | None:
         return int(value) if value is not None else None
     except (RuntimeError, TypeError, ValueError):
         return None
+
+
+def attach_preview_tags(artists: list[dict]) -> list[dict]:
+    """Ship already-known safety decisions with cards, avoiding a second browser read.
+
+    Missing tags still go through the normal viewport verification endpoint. Attaching
+    tags never initiates a remote lookup or treats unknown content as verified.
+    """
+    ids = [(artist.get("representative") or {}).get("id") for artist in artists]
+    tags = TASTE.image_tags_many(value for value in ids if value is not None)
+    for artist, image_id in zip(artists, ids):
+        state = tags.get(image_id)
+        if state and state["known"]:
+            artist["representative"] = {**artist["representative"], "tagState": state}
+    return artists
 
 
 def followed_usernames(user_id: int | None = None) -> set[str]:
@@ -546,52 +561,21 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
         ordered = blended + remainder
         return [row["key"] for row in ordered], len(ordered)
     if view == "emerging":
-        # Emerging exists to surface creators the user has not found yet, so anyone they
-        # already follow is removed rather than merely ranked lower.
+        # Emerging is the personalised For You ranking narrowed to smaller creators.
+        # A known follower count is required so a missing profile is never presented as
+        # a small account. Followed creators and the signed-in user's own card are out;
+        # people they have reacted to may remain because that affinity is valuable.
         rows = [row for row in rows if row["key"] not in followed and row["key"] != pinned]
-        if not rows:
-            return [], 0
         counts = TASTE.follower_counts([row["username"] for row in rows])
-        reaction_mode = preferences["emergingReactionMode"]
-        reaction_limit = preferences["emergingReactionLimit"]
-        totals = HISTORY.creator_reaction_totals(key, hidden_images)
-        if reaction_mode == "strict" and reaction_limit > 0:
-            rows = [row for row in rows if totals.get(row["key"], 0) < reaction_limit]
-            if not rows:
-                return [], 0
-        quality = HISTORY.creator_quality_scores(key, hidden_images)
-        quality_values = [quality.get(row["key"], 0.0) for row in rows]
-        quality_low = min(quality_values, default=0.0)
-        quality_high = max(quality_values, default=0.0)
-
-        def balanced_score(row):
-            quality_value = quality.get(row["key"], 0.0)
-            normalized_quality = ((quality_value - quality_low) / (quality_high - quality_low)
-                                  if quality_high > quality_low else 0.0)
-            followers = counts.get(row["key"])
-            follower_discovery = (1.0 - min(EMERGING_FOLLOWERS, max(0, followers)) /
-                                  EMERGING_FOLLOWERS if followers is not None else 0.0)
-            reactions = totals.get(row["key"], 0)
-            popularity_penalty = (min(.45, .20 * math.log2(reactions / 100))
-                                  if reactions > 100 else 0.0)
-            return .70 * normalized_quality + .30 * follower_discovery - popularity_penalty
-        # Only a creator with a known count can be called emerging. Unknown counts sort
-        # after the rest rather than being presented as small accounts.
-        # Within the emerging tier, Balanced uses the strongest few images, follower
-        # scale, and a capped high-reaction penalty. It avoids both extremes: total
-        # reactions rewarding batch uploaders, and ascending reactions leading with
-        # zero-engagement throwaway accounts. No adjustment preserves the original
-        # daily popularity order; Strict uses Balanced after removing the selected cap.
-        def rank(row):
-            value = counts.get(row["key"])
-            if value is None:
-                return (2, row["rank"])
-            tier = 0 if value < EMERGING_FOLLOWERS else 1
-            if tier == 0 and reaction_mode in {"balanced", "strict"}:
-                return (tier, -balanced_score(row), row["rank"])
-            return (tier, row["rank"], row["rank"])
-        ordered = sorted(rows, key=rank)
-        return [row["key"] for row in ordered], len(ordered)
+        emerging_keys = {row["key"] for row in rows
+                         if counts.get(row["key"]) is not None and
+                         counts[row["key"]] < EMERGING_FOLLOWERS}
+        if eligible_creators is not None:
+            emerging_keys &= set(eligible_creators)
+        if not emerging_keys:
+            return [], 0
+        return day_view_order(key, "foryou", pinned_username, signals, hidden_images,
+                              hidden_creators, emerging_keys, seen)
     if not followed and not reacted:
         return (([row["key"] for row in rows], len(rows))
                 if hide_high_volume else (None, None))
@@ -996,7 +980,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({**auth_status(), "oauthJob": job})
             except Exception:
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
-                self.json_response({"connected": False, "socialWrite": False, "readOnly": True, "oauthJob": job})
+                self.json_response({"connected": False, "socialWrite": False,
+                                    "userWrite": False,
+                                    "collectionsRead": False, "collectionsWrite": False,
+                                    "readOnly": True, "oauthJob": job})
             return
         if parsed.path == "/api/oauth/client":
             try:
@@ -1088,8 +1075,8 @@ class Handler(BaseHTTPRequestHandler):
                 signals = gallery_signals()
                 profiles, follows = creator_profiles(), signals["followed"]
                 self.json_response({
-                    "cards": [decorate_history_artist(card, profiles, follows, signals)
-                              for card in TIME_MACHINE.cards()],
+                    "cards": attach_preview_tags([decorate_history_artist(card, profiles, follows, signals)
+                              for card in TIME_MACHINE.cards()]),
                     "status": TIME_MACHINE.status()})
             except Exception as error: self.internal_error("Time machine", error)
             return
@@ -1129,6 +1116,21 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 self.internal_error("History day summary", error)
             return
+        if parsed.path == "/api/collections":
+            try:
+                if not auth_status().get("collectionsRead"):
+                    self.json_response({"error": "Sign out and back in once to allow collection access."}, 403)
+                    return
+                self.json_response({"collections": SocialClient().writable_image_collections(connected_user_id())})
+            except Exception as error:
+                self.internal_error("Civitai collections", error)
+            return
+        if parsed.path == "/api/history/calendar":
+            try:
+                self.json_response({"days": HISTORY.calendar_days()})
+            except Exception as error:
+                self.internal_error("History calendar", error)
+            return
         if parsed.path == "/api/history/artists":
             try:
                 value = query.get("date", [previous_local_day()])[0]; key = HISTORY.archive_key(value, query.get("segment", ["all"])[0])
@@ -1151,11 +1153,6 @@ class Handler(BaseHTTPRequestHandler):
                 preference_hidden_keys = ({row["key"] for row in preference_rows
                     if int(row.get("imageCount") or 0) >= preferences["highVolumeThreshold"]}
                     if preferences["hideHighVolumeCreators"] else set())
-                if (view == "emerging" and preferences["emergingReactionMode"] == "strict"
-                        and preferences["emergingReactionLimit"] > 0):
-                    reaction_totals = HISTORY.creator_reaction_totals(key, hidden_images)
-                    preference_hidden_keys.update(row["key"] for row in preference_rows
-                        if reaction_totals.get(row["key"], 0) >= preferences["emergingReactionLimit"])
                 session_token = query.get("session", [None])[0]
                 seen = TASTE.seen_creator_keys(value)
                 order, total = cached_day_view_order(key, view, pinned_username, signals,
@@ -1179,7 +1176,7 @@ class Handler(BaseHTTPRequestHandler):
                 artists = [decorate_history_artist(item, profiles, follows, signals, seen)
                     for item in HISTORY.artists_page(key, offset, limit, pinned_username, order,
                                                      representatives, hidden_images)]
-                if view == "foryou":
+                if view in {"foryou", "emerging"}:
                     # State why each card placed where it did, rather than presenting a
                     # personalised order the user cannot inspect.
                     page_image_ids = [(artist.get("representative") or {}).get("id")
@@ -1229,7 +1226,7 @@ class Handler(BaseHTTPRequestHandler):
                             artist["recommendationLabel"] = "New match"
                             reasons.append("New to you")
                         artist["recommendationReasons"] = reasons
-                self.json_response({"date": value, "offset": offset, "artists": artists,
+                self.json_response({"date": value, "offset": offset, "artists": attach_preview_tags(artists),
                     "view": view, "total": total,
                     "preferenceHidden": len(preference_hidden_keys),
                     "hasMore": offset + len(artists) < total
@@ -1554,6 +1551,35 @@ class Handler(BaseHTTPRequestHandler):
                 marked = TASTE.mark_seen(value, keys)
                 self.json_response({"date": value, "marked": marked})
                 return
+            if parsed.path == "/api/content-controls/hide-artist":
+                if not auth_status().get("userWrite"):
+                    self.json_response({"error": "Sign out and back in once to allow Civitai Content Control changes."}, 403)
+                    return
+                username = str(body.get("username") or "").strip()
+                if not username:
+                    raise ValueError("Provide an artist username")
+                client = SocialClient()
+                profile = client.query("user.getCreator", {"username": username})
+                if not isinstance(profile, dict) or not profile.get("id"):
+                    raise ValueError("Civitai could not find that artist")
+                user_id = int(profile["id"])
+                if not (HISTORY.has_creator(username) or TASTE.has_creator(user_id)):
+                    raise ValueError("Artist is not in this app's saved gallery")
+                supplied_id = body.get("userId")
+                if supplied_id is not None and int(supplied_id) != user_id:
+                    raise ValueError("Artist identity changed; refresh the gallery and try again")
+                already_hidden = username.casefold() in TASTE.hidden_creator_keys()
+                if not already_hidden:
+                    client.hide_user(user_id, str(profile.get("username") or username))
+                imported = TASTE.import_hidden_preferences(client)
+                with WRITE_LOCK:
+                    VISIBLE_CACHE.update({"token": None, "keys": {}})
+                    ORDER_CACHE.clear()
+                if username.casefold() not in TASTE.hidden_creator_keys():
+                    raise RuntimeError("Civitai accepted the change but has not returned it in Content Controls yet. Refresh and try again shortly.")
+                self.json_response({"username": username, "userId": user_id, "hidden": True,
+                                    "changed": not already_hidden, "contentControls": imported})
+                return
             # Discovery analysis is read-only, so it stays above the social-write gate
             # below and remains available to read-only OAuth connections.
             if parsed.path == "/api/history/prepare":
@@ -1577,7 +1603,7 @@ class Handler(BaseHTTPRequestHandler):
                 if any(not collected_image(image_id) for image_id in image_ids):
                     self.json_response({"error": "An image is not in this history archive"}, 400)
                     return
-                tags = {image_id: TASTE.image_tags(image_id) for image_id in image_ids}
+                tags = TASTE.image_tags_many(image_ids)
                 # Cached checks remain useful in read-only/offline test and recovery
                 # states. A live lookup needs OAuth, but the ordinary signed-in gallery
                 # always has it before reaching this endpoint.
@@ -1608,6 +1634,23 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/app/close":
                 self.json_response({"closing": True})
                 request_app_shutdown(self.server)
+                return
+            if parsed.path == "/api/collections/add":
+                if not auth_status().get("collectionsWrite"):
+                    self.json_response({"error": "Sign out and back in once to allow collection changes."}, 403)
+                    return
+                image_id = int(body.get("imageId"))
+                collection_id = int(body.get("collectionId"))
+                if not collected_image(image_id):
+                    raise ValueError("Image is not in this app's saved gallery")
+                client = SocialClient()
+                collection = next((row for row in client.writable_image_collections(connected_user_id())
+                                   if int(row["id"]) == collection_id), None)
+                if collection is None:
+                    raise ValueError("That collection is not available for images")
+                client.add_image_to_collection(image_id, collection)
+                self.json_response({"imageId": image_id, "collectionId": collection_id,
+                                    "collectionName": collection["name"], "added": True})
                 return
             try:
                 can_write = bool(auth_status().get("socialWrite"))

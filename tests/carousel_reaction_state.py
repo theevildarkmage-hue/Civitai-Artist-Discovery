@@ -27,7 +27,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
         "createdAt": f"{value}T{hour:02d}:00:00Z", "url": pixel, "width": 768,
         "height": 900, "type": "image", "nsfwLevel": "None", "baseModel": "Test",
         "stats": {"likeCount": 0, "heartCount": 0, "laughCount": 0, "cryCount": 0,
-            "reactionCount": 0}}
+            # Force the initial representative into the middle of the full list.
+            # The first Next must move relative to this image, and Back must return
+            # here rather than jumping to the beginning of the artist's history.
+            "reactionCount": 10 if image_id == 8102 else 0}}
         for image_id, hour in ((8101, 12), (8102, 13), (8103, 14))]
     history._upsert_normalized(items, forced_date=value)
     with history.connect() as db:
@@ -80,15 +83,22 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
             card = page.locator(".creator-card")
             card.wait_for()
             first_id = card.get_attribute("data-id")
+            assert first_id == "8102", "fixture must open on the middle image"
             card.locator('[data-reaction="Laugh"].selected').wait_for()
 
             like = card.locator('[data-reaction="Like"]')
             like.click(); page.wait_for_timeout(50)
             assert like.evaluate("element => element.classList.contains('selected')")
 
-            card.locator(".next").click(); page.wait_for_function(
+            card.locator(".next").evaluate("button => button.click()")
+            assert card.get_attribute("aria-busy") == "true"
+            assert card.locator(".card-nav-status").is_visible()
+            assert card.locator(".next").is_disabled()
+            assert "image" in card.locator(".card-nav-status").inner_text().lower()
+            page.wait_for_function(
                 "([selector, oldId]) => document.querySelector(selector)?.dataset.id !== oldId",
                 arg=[".creator-card", first_id])
+            card.locator(".card-nav-status").wait_for(state="hidden")
             second_id = card.get_attribute("data-id")
             assert not card.locator('[data-reaction="Like"]').evaluate("e => e.classList.contains('selected')")
             card.locator('[data-reaction="Heart"]').click(); page.wait_for_timeout(50)
@@ -122,4 +132,5 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
         process.wait(timeout=10)
 
 print(json.dumps({"revisitPreserved": True, "removalPreserved": True,
-    "imagesIndependent": True, "failureDidNotMutate": True}))
+    "imagesIndependent": True, "navigationFeedback": True,
+    "failureDidNotMutate": True}))

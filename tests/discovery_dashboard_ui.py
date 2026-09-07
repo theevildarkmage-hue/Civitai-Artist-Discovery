@@ -276,7 +276,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             page.set_viewport_size({"width": 1440, "height": 900})
             page.click("#tabGallery")
             page.wait_for_selector(".creator-card")
-            assert page.is_hidden("#discovery") and page.is_visible("#daySegment")
+            assert page.is_hidden("#discovery") and page.is_visible("#calendarToggle")
             page.screenshot(path=str(SHOTS / "gallery-after-return.png"))
 
             # Artwork must not be requested for cards nowhere near the viewport. Setting
@@ -305,6 +305,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             assert len(shown) == len(set(shown)), sorted(shown)
 
             page.click("#tabDiscovery")
+            page.click("#galleryPreferences")
             page.on("dialog", lambda dialog: dialog.accept())
             page.click("#resetDiscovery")
             page.wait_for_selector("#discoveryBody", state="hidden")

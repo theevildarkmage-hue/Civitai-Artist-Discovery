@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-model-filter-", ignore_cleanup_
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.wait_for_selector(".creator-card", timeout=15000)
 
-            page.click("#modelFilter")
+            page.click("#filterToggle")
             page.wait_for_selector('#modelMenu input[value="Pony"]')
             with page.expect_response(lambda response: "/api/history/artists?" in response.url
                                       and "model=Pony" in response.url):

@@ -12,7 +12,7 @@ let buildSegment = "all", buildCoverageRating = "Soft", currentBlocks = null, es
 // How many creators this day's Civitai content controls removed, so the count on screen
 // can explain itself rather than looking like missing data.
 let hiddenCreators = 0, preferenceHidden = 0;
-let selectedDate = null, selectedSegment = "evening", activeBuildSegment = null, selectedView = "foryou", newestDate = null, socialWrite = false, oauthConnected = false, artistTotal = 0, imageTotal = 0, loadedArtists = 0, loadingMore = false, loadCancelled = false, loadingPhaseIndex = -1, activeLoadToken = 0, dayBuilt = false, activeRebuild = false;
+let selectedDate = null, selectedSegment = "evening", activeBuildSegment = null, selectedView = "foryou", newestDate = null, socialWrite = false, userWrite = false, collectionsWrite = false, oauthConnected = false, artistTotal = 0, imageTotal = 0, loadedArtists = 0, loadingMore = false, loadCancelled = false, loadingPhaseIndex = -1, activeLoadToken = 0, dayBuilt = false, activeRebuild = false;
 const PROFILE_REFRESH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let automaticProfileRefreshTimer = 0, automaticProfileRefreshPending = false;
 let recommendationsNeedRefresh = false, refreshRecommendationsAfterSync = false;
@@ -21,7 +21,8 @@ const imageTagState = new Map();
 const pendingTagChecks = new Map();
 let tagCheckTimer = 0;
 const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="contentFilter" class="filter-button" aria-expanded="false" title="Choose the content levels to display">Content: PG + PG-13</button><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><button id="galleryPreferences" class="filter-button preferences-button" aria-expanded="false" aria-label="Gallery preferences" title="Gallery preferences">&#9881;</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div><div id="preferencesMenu" class="filter-menu preferences-menu hidden" aria-label="Gallery preferences"><div class="filter-head"><strong>Gallery preferences</strong><button id="closePreferences" class="quiet-button" aria-label="Close gallery preferences">×</button></div><label class="preference-row"><span><b>Dim viewed cards</b><small>Previously viewed artists still move later either way.</small></span><input id="prefDimSeen" type="checkbox"></label><label class="preference-row"><span><b>Hide high-volume artists</b><small>Applies to every gallery view.</small></span><input id="prefHideHighVolume" type="checkbox"></label><label class="preference-field" for="prefHighVolumeThreshold"><span>High-volume threshold</span><select id="prefHighVolumeThreshold"><option value="50">50+ images</option><option value="100">100+ images</option><option value="200">200+ images</option></select></label><label class="preference-field" for="prefEmergingMode"><span>Emerging First</span><select id="prefEmergingMode"><option value="balanced">Balanced discovery</option><option value="strict">Strict discovery</option><option value="unadjusted">No adjustment</option></select></label><p id="emergingModeHelp" class="preference-help"></p><label class="preference-field" for="prefEmergingLimit"><span>Strict-mode threshold</span><select id="prefEmergingLimit"><option value="100">100+ daily reactions</option><option value="250">250+ daily reactions</option><option value="500">500+ daily reactions</option></select></label><small class="preferences-footnote">Thresholds can be set anytime and apply when their matching option is active. These controls use the saved gallery and never download the day again.</small></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
-segmentToolbar.querySelector(".preferences-footnote").textContent = "Thresholds become available when their matching option is active. These controls use the saved gallery and never download the day again.";
+$("prefHighVolumeThreshold").querySelector('option[value="100"]').insertAdjacentHTML("afterend", '<option value="150">150+ images</option>');
+segmentToolbar.querySelector(".preferences-footnote").textContent = "These controls use the saved gallery and never download the day again.";
 // A fixed element inside the sticky, backdrop-filtered toolbar is fixed to that toolbar
 // in Chromium rather than to the viewport. On short windows this placed the lower half
 // of the panel off-screen. Keep the trigger in the toolbar but portal the panel to body.
@@ -32,7 +33,7 @@ $("prefEmergingLimit").prepend(noReactionLimit);
 const emergingModeField = $("prefEmergingMode").closest("label");
 emergingModeField.querySelector("span").textContent = "Emerging First ranking";
 $("prefEmergingMode").classList.add("hidden");
-emergingModeField.insertAdjacentHTML("beforeend", '<div id="emergingModeChoices" class="preference-choice-group" role="radiogroup" aria-label="Emerging First ranking"><button type="button" data-mode="balanced">Balanced</button><button type="button" data-mode="strict">Strict</button><button type="button" data-mode="unadjusted">Unadjusted</button></div>');
+emergingModeField.insertAdjacentHTML("beforeend", '<div id="emergingModeChoices" class="preference-choice-group" role="radiogroup" aria-label="Emerging First ranking"><button type="button" data-mode="balanced">Balanced</button><button type="button" data-mode="strict">Strict</button><button type="button" data-mode="unadjusted">Original</button></div>');
 $("prefEmergingLimit").closest("label").insertAdjacentHTML("afterend",
   '<p id="emergingLimitHelp" class="preference-help"></p>');
 // Put the ranking choice near the top of the panel. On short tablet windows the old
@@ -61,7 +62,7 @@ const CARD_SCALE_KEY = "civitai-card-scale";
     try { localStorage.setItem(CARD_SCALE_KEY, select.value); } catch (_) {}
   };
 })();
-async function api(url, options = {}) { const response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options }); const body = await response.json(); if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`); return body; }
+const api = window.CivitaiUI.api;
 const contentLabels = { Soft: "PG + PG-13", Mature: "PG through R", X: "All ratings" };
 const browsingLevelLabels = new Map([[1, "PG"], [2, "PG-13"], [4, "R"], [8, "X"], [16, "XXX"]]);
 function contentButtonLabel() {
@@ -111,6 +112,7 @@ function showGalleryPreferences() {
       : "No reaction cutoff is applied. Select a limit only if you want to hide highly reacted artists.";
   $("galleryPreferences").classList.toggle("has-active-preference",
     hideHighVolumeCreators || emergingReactionMode !== "balanced" || !dimSeenCards);
+  window.updateGalleryPreferencesUI?.();
 }
 async function saveGalleryPreferences(patch, reload = true) {
   const controls = [...$("preferencesMenu").querySelectorAll("input,select,[data-mode]")];
@@ -158,7 +160,7 @@ async function chooseContentRating(nextLevels) {
   $("contentMenu").classList.add("hidden"); $("contentFilter").setAttribute("aria-expanded", "false");
   try {
     const result = await api("/api/settings", { method: "POST", body: JSON.stringify({ browsingLevels: nextLevels }) });
-    contentRating = result.contentRating; visibleBrowsingLevels = new Set(result.browsingLevels); showContentRating(); selectedModels.clear();
+    contentRating = result.contentRating; visibleBrowsingLevels = new Set(result.browsingLevels); showContentRating();
     const lowering = ({ Soft: 0, Mature: 1, X: 2 }[contentRating] || 0) < ({ Soft: 0, Mature: 1, X: 2 }[previous] || 0);
     toast(lowering ? `Showing ${contentButtonLabel()} from saved galleries. No download needed.`
       : `Showing ${contentButtonLabel()}. Incomplete coverage will be marked for upgrade.`);
@@ -292,19 +294,14 @@ $("updateChecks").onchange = async () => {
 // to stop it. Off until switched on.
 let captureState = null;
 function describeNextRun(state) {
-  if (!state.enabled) return "Off. Days older than Civitai’s reach cannot be collected later.";
+  if (!state.enabled) return "Off";
   const seconds = Number(state.nextRunInSeconds);
   const when = state.nextRunAt ? new Date(state.nextRunAt) : null;
-  if (!when || !Number.isFinite(seconds)) return "Next collection is being scheduled.";
+  if (!when || !Number.isFinite(seconds)) return "Scheduling next collection";
   const hours = Math.floor(seconds / 3600), minutes = Math.round((seconds % 3600) / 60);
   const away = hours ? `${hours}h ${minutes}m` : `${minutes}m`;
   const clock = when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  const automatic = state.atMinute === null || state.atMinute === undefined;
-  const twice = Number(state.intervalHours) === 12 && !automatic;
-  return `Next collection ${clock} (in ${away})` +
-    (automatic ? " · time picked automatically so installs do not all arrive at once."
-     : twice ? " · your chosen time, and again 12 hours later."
-     : " · the time you chose.");
+  return `Next: ${clock} · ${away}`;
 }
 function renderCaptureState(state) {
   captureState = state;
@@ -317,12 +314,6 @@ function renderCaptureState(state) {
     : `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
   $("captureAtClear").classList.toggle("hidden", minute === null || minute === undefined);
   $("captureNextRun").textContent = describeNextRun(state);
-  const last = state.lastResult;
-  if (last && state.enabled) {
-    const got = (last.captured || []).length, missed = (last.failed || []).length;
-    $("captureNextRun").textContent += ` Last run collected ${got} block${got === 1 ? "" : "s"}` +
-      (missed ? `, ${missed} did not finish.` : ".");
-  }
 }
 async function refreshCaptureState() {
   try { renderCaptureState(await api("/api/history/capture")); }
@@ -385,10 +376,10 @@ let saveTimer = 0;
 function saveFeedState() {
   if (!dayBuilt || !selectedDate) return;
   try {
-    sessionStorage.setItem(FEED_STATE, JSON.stringify({
+    sessionStorage.setItem(FEED_STATE, JSON.stringify(window.CivitaiUI.browsingState({
       date: selectedDate, segment: selectedSegment, view: selectedView,
       models: [...selectedModels], loaded: loadedArtists, scrollY: Math.round(window.scrollY),
-    }));
+    })));
   } catch (_) {}
 }
 function scheduleFeedSave() {
@@ -396,7 +387,7 @@ function scheduleFeedSave() {
   saveTimer = setTimeout(saveFeedState, 250);
 }
 function readFeedState() {
-  try { return JSON.parse(sessionStorage.getItem(FEED_STATE) || "null"); } catch (_) { return null; }
+  try { return window.CivitaiUI.readBrowsingState(sessionStorage, FEED_STATE); } catch (_) { return null; }
 }
 window.addEventListener("scroll", scheduleFeedSave, { passive: true });
 window.addEventListener("pagehide", saveFeedState);
@@ -522,6 +513,7 @@ function resumeSeenTracking() {
   document.querySelectorAll(".creator-card:not(.is-seen)").forEach(el => seenObserver.observe(el));
 }
 function clearGallery() {
+  cancelPageLoad();
   document.querySelectorAll(".creator-card").forEach(el => {
     seenObserver.unobserve(el);
     cardImageObserver.unobserve(el);
@@ -536,122 +528,19 @@ function wireAvatarFallback(image, username) { if (!image) return; image.addEven
 // still available. Retry the original once, then retain the normal broken-image state;
 // the one-shot marker prevents a bad original from creating an error loop.
 function wireArtworkFallback(image) {
-  if (!image || image.dataset.fallbackWired) return;
-  image.dataset.fallbackWired = "1";
-  image.addEventListener("load", () => image.classList.remove("image-error"));
-  image.addEventListener("error", () => {
-    const fallback = image.dataset.fallbackUrl;
-    if (fallback && image.dataset.fallbackPending === "1") {
-      image.dataset.fallbackPending = "0";
-      image.src = fallback;
-      return;
-    }
-    image.classList.add("image-error");
-  });
+  window.CivitaiUI.wireArtworkFallback(image);
 }
 function showArtwork(image, previewUrl, originalUrl) {
-  wireArtworkFallback(image);
-  const preview = previewUrl || originalUrl || "";
-  const fallback = originalUrl && originalUrl !== preview ? originalUrl : "";
-  image.classList.remove("image-error");
-  image.dataset.fallbackUrl = fallback;
-  image.dataset.fallbackPending = fallback ? "1" : "0";
-  if (preview) image.src = preview;
-  else { image.removeAttribute("src"); image.classList.add("image-error"); }
+  window.CivitaiUI.showArtwork(image, previewUrl, originalUrl);
 }
 function card(a) {
-  let images = [a.representative], index = 0, current = images[0], imagesLoaded = a.imageCount <= 1;
-  let navigating = false;
-  const el = document.createElement("article"); el.className = a.seen ? "creator-card is-seen" : "creator-card"; el.dataset.id = current.id;
-  el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
-  [[".previous", "Previous image", "15 5 8 12 15 19"], [".next", "Next image", "9 5 16 12 9 19"]].forEach(([selector, label, points]) => {
-    const button = el.querySelector(selector);
-    button.setAttribute("aria-label", label);
-    button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="${points}"></polyline></svg>`;
+  return window.CivitaiUI.createCreatorCard(a, {
+    api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore,
+    date: selectedDate, segment: selectedSegment, models: modelQuery(),
+    canWrite: () => socialWrite,
+    canManageContentControls: () => userWrite,
+    canManageCollections: () => collectionsWrite,
   });
-  if (a.recommendationLabel) {
-    const reason = document.createElement("span");
-    reason.className = "recommendation-badge";
-    reason.textContent = a.recommendationLabel;
-    reason.title = (a.recommendationReasons || []).join(" · ");
-    el.querySelector(".image-stage").appendChild(reason);
-  }
-  const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"); wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
-  function renderReactions() {
-    reaction.innerHTML = reactionBar(current);
-    wireReactions();
-    if (navigating) reaction.querySelectorAll("[data-reaction]").forEach(button => { button.disabled = true; });
-  }
-  function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!socialWrite) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
-  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showArtwork(main, current.thumbnailUrl, current.url); age.textContent = ago(current.createdAt); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
-  async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${modelQuery()}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
-  function removeCard() {
-    cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
-    el.remove();
-    loadMore().catch(error => toast(error.message));
-  }
-  async function selectAllowed(candidate, delta = 1) {
-    while (images.length) {
-      candidate = (candidate + images.length) % images.length;
-      const result = await checkImageTags(images[candidate].id);
-      if (!tagsHideImage(result)) { index = candidate; paint(); return true; }
-      images.splice(candidate, 1); a.imageCount = images.length;
-      if (delta < 0) candidate--;
-    }
-    removeCard(); return false;
-  }
-  async function prepareArtwork() {
-    const result = await checkImageTags(current.id);
-    if (tagsHideImage(result)) {
-      await ensureImages();
-      images = images.filter(image => String(image.id) !== String(current.id));
-      a.imageCount = images.length;
-      if (!await selectAllowed(0, 1)) return;
-    }
-    el.dataset.imagesActive = "1";
-    paint();
-  }
-  function setCardNavigationBusy(value) {
-    navigating = value;
-    el.setAttribute("aria-busy", value ? "true" : "false");
-    el.querySelectorAll(".previous, .next, .image-progress button").forEach(button => { button.disabled = value; });
-    renderReactions();
-  }
-  async function navigateTo(candidate, delta) {
-    if (navigating) return;
-    setCardNavigationBusy(true);
-    try {
-      await ensureImages();
-      if (images.length) await selectAllowed(candidate, delta);
-    } catch (error) { toast(error.message); }
-    finally { if (document.body.contains(el)) setCardNavigationBusy(false); }
-  }
-  async function move(delta) { await navigateTo(index + delta, delta); }
-  wireArtworkFallback(main); el.querySelector(".previous").onclick = () => move(-1); el.querySelector(".next").onclick = () => move(1); el.querySelector(".image-button").onclick = () => showDetails(current, a, el); el.querySelector(".info-button").onclick = () => showDetails(current, a, el); el.querySelector(".more-menu").onclick = () => showDetails(current, a, el);
-  applyCreatorFollowers(el, a);
-  // Setting src while the card is still detached defeats loading="lazy" — the browser
-  // fetches immediately — so a whole page of cards requested every preview at once and
-  // saturated the connection. Artwork is attached only as a card nears the viewport.
-  el.paintImages = paint;
-  el.prepareArtwork = prepareArtwork;
-  el.removeHiddenImage = async imageId => {
-    imageTagState.delete(String(imageId));
-    if (!imagesLoaded) await ensureImages();
-    images = images.filter(image => String(image.id) !== String(imageId));
-    a.imageCount = images.length;
-    if (!images.length) { removeCard(); return; }
-    index = Math.min(index, images.length - 1);
-    await selectAllowed(index, 1);
-  };
-  cardImageObserver.observe(el);
-  el.dataset.username = a.username.toLowerCase();
-  el.dataset.seenDate = selectedDate;
-  if (!a.seen) seenObserver.observe(el);
-  const follow = el.querySelector(".follow-button"); follow.onclick = async () => { if (!socialWrite) return toast("Civitai did not grant follow access."); follow.disabled = true; try { const result = await api("/api/follow", { method: "POST", body: JSON.stringify({ userId: a.userId, username: a.username, following: !a.following }) }); a.following = result.following; a.userId = result.userId; follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; toast(a.following ? `Now following @${a.username}` : `Unfollowed @${a.username}`); } catch (error) { toast(error.message); } finally { follow.disabled = false; } };
-  el.addEventListener("reactionstate", () => { if (document.body.contains(el)) renderReactions(); });
-  el.applyCreatorMetadata = metadata => { a.avatarUrl = metadata.avatarUrl; a.following = !!metadata.following; a.userId = metadata.userId; const oldAvatar = el.querySelector(".creator-avatar"); if (a.avatarUrl && oldAvatar && oldAvatar.getAttribute("src") !== a.avatarUrl) { const image = document.createElement("img"); image.className = "creator-avatar"; image.src = a.avatarUrl; image.alt = ""; wireAvatarFallback(image, a.username); oldAvatar.replaceWith(image); } follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; applyCreatorFollowers(el, metadata); };
-  el.clearAccountMetadata = () => { a.following = false; follow.classList.remove("is-following"); follow.textContent = "+ Follow"; };
-  paint(); return el;
 }
 function displayDate(value) { return new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" }); }
 function shiftDate(value, delta) { const date = new Date(`${value}T12:00:00`); date.setDate(date.getDate() + delta); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
@@ -737,9 +626,82 @@ let galleryToken = 0;
 // page loads could send the same value and collide on the server's cache. This adds the
 // per-page-load part that makes the combination unique across reloads, not just within one.
 const PAGE_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-async function loadMore() { if (loadingMore || loadedArtists >= artistTotal) return; loadingMore = true; const token = galleryToken; try { const data = await api(`/api/history/artists?date=${selectedDate}&segment=${selectedSegment}&offset=${loadedArtists}&limit=50&view=${selectedView}&session=${PAGE_SESSION}-${galleryToken}${modelQuery()}`); if (token !== galleryToken) return; if (Number.isFinite(data.total)) artistTotal = data.total; preferenceHidden = safeCount(data.preferenceHidden); const fragment = document.createDocumentFragment(), cards = []; data.artists.forEach(artist => { const element = card(artist); cards.push(element); fragment.appendChild(element); }); $("gallery").insertBefore(fragment, $("loadSentinel")); loadedArtists += data.artists.length; $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}${preferenceHidden ? ` · ${displayCount(preferenceHidden)} hidden by Gallery preferences` : ""}`;
-  $("summary").title = [hiddenCreators ? "Creators you hide on Civitai, or who have blocked you, are left out of this gallery." : "", preferenceHidden ? "Gallery preferences are hiding high-volume or high-reaction creators." : ""].filter(Boolean).join(" "); enrichCards(data.artists, cards); hydrateReactionStates(data.artists.map(artist => artist.representative)).catch(error => console.warn("Reaction history could not be loaded", error)); } finally { loadingMore = false; } }
-function applyAuth(auth) { oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; const waiting = auth.oauthJob?.state === "loading";
+let activePageRequest = null;
+let activePageTask = null;
+let pageLoadFailed = false;
+function cancelPageLoad() {
+  activePageRequest?.abort();
+  activePageRequest = null;
+  activePageTask = null;
+  pageLoadFailed = false;
+  loadingMore = false;
+}
+function loadMore() {
+  // Scroll restoration and the sentinel can request the same page concurrently.
+  // Both callers must await its actual completion instead of burning restore retries.
+  if (loadingMore) return activePageTask;
+  if (pageLoadFailed) return Promise.resolve();
+  if (loadedArtists >= artistTotal) return Promise.resolve();
+  activePageTask = loadArtistPage();
+  return activePageTask;
+}
+async function loadArtistPage() {
+  const request = new AbortController(), token = galleryToken;
+  activePageRequest = request;
+  loadingMore = true;
+  const clearSkeleton = !loadedArtists ? window.CivitaiUI.showGallerySkeleton($("gallery")) : () => {};
+  const limit = loadedArtists === 0 ? 24 : 50;
+  try {
+    const data = await api(`/api/history/artists?date=${selectedDate}&segment=${selectedSegment}&offset=${loadedArtists}&limit=${limit}&view=${selectedView}&session=${PAGE_SESSION}-${galleryToken}${modelQuery()}`, { signal: request.signal });
+    if (token !== galleryToken || activePageRequest !== request) return;
+    if (Number.isFinite(data.total)) artistTotal = data.total;
+    preferenceHidden = safeCount(data.preferenceHidden);
+    const fragment = document.createDocumentFragment(), cards = [];
+    data.artists.forEach(artist => {
+      const element = card(artist);
+      cards.push(element);
+      fragment.appendChild(element);
+    });
+    $("gallery").insertBefore(fragment, $("loadSentinel"));
+    loadedArtists += data.artists.length;
+    if (data.hasMore === false || !data.artists.length) artistTotal = loadedArtists;
+    const sentinel = $("loadSentinel");
+    if (sentinel) {
+      sentinel.setAttribute("role", "status");
+      sentinel.textContent = loadedArtists >= artistTotal
+        ? (loadedArtists ? "You're caught up for this view." : "No creators match these filters.")
+        : "Loading more artists…";
+    }
+    $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}${preferenceHidden ? ` · ${displayCount(preferenceHidden)} hidden by Gallery preferences` : ""}`;
+    $("summary").title = [hiddenCreators ? "Creators you hide on Civitai, or who have blocked you, are left out of this gallery." : "", preferenceHidden ? "Gallery preferences are hiding high-volume or high-reaction creators." : ""].filter(Boolean).join(" ");
+    enrichCards(data.artists, cards);
+    hydrateReactionStates(data.artists.map(artist => artist.representative)).catch(error => console.warn("Reaction history could not be loaded", error));
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      if (activePageRequest === request && $("loadSentinel")) {
+        // A pending intersection notification may arrive after this failure. Keep it
+        // from silently retrying in a loop; the button or a new view clears the flag.
+        pageLoadFailed = true;
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "filter-button";
+        retry.textContent = "Retry loading artists";
+        retry.onclick = () => { pageLoadFailed = false; loadMore().catch(error => toast(error.message)); };
+        $("loadSentinel").replaceChildren("Could not load this page. ", retry);
+      }
+      throw error;
+    }
+  } finally {
+    clearSkeleton();
+    // An older aborted request must not unlock a newer request's paging guard.
+    if (activePageRequest === request) {
+      activePageRequest = null;
+      activePageTask = null;
+      loadingMore = false;
+    }
+  }
+}
+function applyAuth(auth) { oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; userWrite = !!auth.userWrite; collectionsWrite = !!auth.collectionsWrite; const waiting = auth.oauthJob?.state === "loading";
   // Follows and reactions are granted at sign-in, so the normal signed-in state needs no
   // qualifier. The exception is worth naming: Civitai can complete a sign-in while
   // withholding write access, and silently dead buttons would look like a broken app.
@@ -790,10 +752,23 @@ async function refreshBlockLabels(value) {
   } catch (error) { console.warn("Block states could not be read", error); }
 }
 function setNavigationBusy(busy) { $("olderDay").disabled = busy; $("newerDay").disabled = busy || selectedDate >= newestDate; $("daySegment").disabled = busy; $("dayView").disabled = busy; $("rebuildDay").textContent = selectedSegment === "all" ? "Rebuild day" : "Rebuild block"; $("rebuildDay").disabled = busy || !dayBuilt; $("rebuildDay").title = dayBuilt ? (busy ? "Wait for the current operation to finish" : `Rescan this ${selectedSegment === "all" ? "day" : "12-hour block"} and merge updated listings`) : `Build this ${selectedSegment === "all" ? "day" : "block"} before rebuilding it`; }
+function galleryCalendarState() {
+  return { date: selectedDate, segment: selectedSegment, newest: newestDate, built: dayBuilt };
+}
+async function selectGalleryDate(date, segment) {
+  if (!date) return;
+  const explicitSegment = !!segment;
+  if (explicitSegment) selectedSegment = segment;
+  $("daySegment").value = selectedSegment;
+  await loadDay(date, !explicitSegment);
+  window.updateGalleryCalendar?.();
+}
+window.galleryCalendarState = galleryCalendarState;
+window.selectGalleryDate = selectGalleryDate;
 function showBuildSetup(visible) {
   $("buildSetup").classList.toggle("hidden", !visible);
   $("loading").classList.toggle("ready-to-build", visible);
-  if (visible) segmentToolbar.classList.add("hidden");
+  segmentToolbar.classList.toggle("build-mode", visible);
 }
 const coverageRank = { Soft: 0, Mature: 1, X: 2 };
 function blockReadyForBuild(segment) {
@@ -976,7 +951,7 @@ async function beginFullDay(rebuild = false) {
 }
 async function loadDay(value, preferAvailable = true, preserveCurrent = false) {
   const token = ++activeLoadToken; selectedDate = value; dayBuilt = false; activeRebuild = false; loadCancelled = false;
-  $("selectedDate").textContent = displayDate(value); setNavigationBusy(false); await refreshBlockLabels(value);
+  $("selectedDate").textContent = displayDate(value); window.updateGalleryCalendar?.(); setNavigationBusy(false); await refreshBlockLabels(value);
   if (!preserveCurrent) {
     $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery();
     $("summary").textContent = ""; $("startLoading").classList.add("hidden"); $("stopLoading").classList.add("hidden");
@@ -1002,7 +977,7 @@ async function loadDay(value, preferAvailable = true, preserveCurrent = false) {
     }
   }
   clearGallery(); $("summary").textContent = "";
-  if (status.complete) { await showCompletedDay(value, token); return; }
+  if (status.complete) { await showCompletedDay(value, token); window.updateGalleryCalendar?.(); return; }
   $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden");
   $("startLoading").classList.add("hidden"); $("stopLoading").classList.add("hidden"); showBuildReady(status);
 }
@@ -1023,7 +998,8 @@ function renderDetailTags(detail) {
     `<span class="tag-chip${tag.hidden ? " is-hidden" : ""}"${tag.hidden
       ? ' title="You hide this tag on Civitai"' : ""}>${escapeHtml(tag.name)}</span>`).join("")}`;
 }
-async function showDetails(image, artist, artistCard) { showArtwork($("detailImage"), image.thumbnailUrl, image.url); $("detailTags").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; $("detailPrompt").textContent = "Loading generation details…"; $("details").showModal(); try { const detail = await api(`/api/history/image?id=${image.id}`); showArtwork($("detailImage"), detail.detailImageUrl || detail.thumbnailUrl, detail.url); $("detailMeta").innerHTML = `<div><dt>Image</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
+let detailRequestToken = 0;
+async function showDetails(image, artist, artistCard) { const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); showArtwork(artwork, image.thumbnailUrl, image.url); $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(`/api/history/image?id=${image.id}`); if (token !== detailRequestToken || !dialog.open) return; showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.url); $("detailMeta").innerHTML = `<div><dt>Image</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
     $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url;
     imageTagState.set(String(image.id), { known: detail.known, tags: detail.tags || [] });
     if (detail.tags?.some(tag => tag.hidden)) {
@@ -1032,10 +1008,10 @@ async function showDetails(image, artist, artistCard) { showArtwork($("detailIma
       toast("This image matches a tag you hide on Civitai. Removing it from the gallery…");
       artistCard?.removeHiddenImage?.(image.id).catch(error => toast(error.message));
     }
-  } catch (error) { $("detailPrompt").textContent = error.message; } }
+  } catch (error) { if (token === detailRequestToken) { dialog.classList.remove("detail-loading"); $("detailPrompt").textContent = error.message; } } }
 const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) loadMore().catch(error => toast(error.message)); }, { rootMargin: "800px" });
 new MutationObserver(() => { const sentinel = $("loadSentinel"); if (sentinel) observer.observe(sentinel); }).observe($("gallery"), { childList: true });
-$("close").onclick = () => $("details").close(); $("details").onclick = event => { if (event.target === $("details")) $("details").close(); }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
+$("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
   const outage = error.kind === "service_unavailable";
   const historyWindow = error.kind === "history_window";
   // A rejected search service is not something retrying fixes, so it offers "Try again"
@@ -1115,22 +1091,7 @@ $("connect").onclick = () => connectCivitai(); $("disconnect").onclick = async (
     toast("Signed out. The saved session was removed from this computer.");
   } catch (error) { toast(error.message); }
 };
-$("modelFilter").onclick = () => {
-  const menu = $("modelMenu"), open = menu.classList.toggle("hidden");
-  $("modelFilter").setAttribute("aria-expanded", String(!open));
-  $("contentMenu").classList.add("hidden");
-  $("preferencesMenu").classList.add("hidden");
-  $("galleryPreferences").setAttribute("aria-expanded", "false");
-  $("contentFilter").setAttribute("aria-expanded", "false");
-  if (!open) refreshModelMenu();
-};
-$("contentFilter").onclick = () => {
-  const opening = $("contentMenu").classList.toggle("hidden");
-  $("contentFilter").setAttribute("aria-expanded", String(!opening));
-  $("modelMenu").classList.add("hidden");
-  $("preferencesMenu").classList.add("hidden");
-  $("galleryPreferences").setAttribute("aria-expanded", "false");
-};
+// Filter popover lifecycle is owned by ui/filters.js.
 $("galleryPreferences").onclick = () => {
   const hidden = $("preferencesMenu").classList.toggle("hidden");
   $("galleryPreferences").setAttribute("aria-expanded", String(!hidden));
@@ -1154,6 +1115,13 @@ $("prefHideHighVolume").onchange = () => saveGalleryPreferences({
 $("prefHighVolumeThreshold").onchange = () => saveGalleryPreferences({
   highVolumeThreshold: Number($("prefHighVolumeThreshold").value)
 }).then(saved => { if (saved) toast("High-volume artist limit updated."); });
+$("preferencesMenu").addEventListener("high-volume-change", event => {
+  const threshold = Number(event.detail);
+  saveGalleryPreferences({
+    hideHighVolumeCreators: threshold > 0,
+    highVolumeThreshold: threshold || highVolumeThreshold,
+  }).then(saved => { if (saved) toast(threshold ? "Frequent posters are hidden." : "Frequent posters are shown."); });
+});
 $("prefEmergingMode").onchange = () => saveGalleryPreferences({
   emergingReactionMode: $("prefEmergingMode").value
 }).then(saved => { if (saved) toast("Emerging First ranking updated."); });
@@ -1174,14 +1142,7 @@ $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
   };
 });
 document.addEventListener("click", event => {
-  if (!event.target.closest("#modelMenu") && !event.target.closest("#modelFilter")) {
-    $("modelMenu").classList.add("hidden");
-    $("modelFilter").setAttribute("aria-expanded", "false");
-  }
-  if (!event.target.closest("#contentMenu") && !event.target.closest("#contentFilter")) {
-    $("contentMenu").classList.add("hidden");
-    $("contentFilter").setAttribute("aria-expanded", "false");
-  }
+  // Shared filters own outside dismissal and expanded state.
   if (!event.target.closest("#preferencesMenu") && !event.target.closest("#galleryPreferences")) {
     $("preferencesMenu").classList.add("hidden");
     $("galleryPreferences").setAttribute("aria-expanded", "false");
@@ -1278,12 +1239,10 @@ async function ensureViewData(kind) {
 }
 async function reloadView() {
   const token = ++activeLoadToken;
-  // Invalidate any page already in flight, then wait for it to actually finish. Without
-  // the wait, the fresh load is refused by the in-flight guard and the discarded one
-  // never retries, leaving the gallery empty.
+  // Cancel stale browser work immediately. The new view must not wait (formerly up to
+  // eight seconds) for an irrelevant page to finish before requesting its own results.
   galleryToken++;
-  const deadline = Date.now() + 8000;
-  while (loadingMore && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  cancelPageLoad();
   if (token !== activeLoadToken) return;
   loadedArtists = 0;
   artistTotal = Number.MAX_SAFE_INTEGER;
@@ -1339,9 +1298,13 @@ async function applyPendingRestore() {
   const saved = pendingRestore; pendingRestore = null;
   if (!saved || saved.date !== selectedDate || (saved.segment || "evening") !== selectedSegment) return;
   const target = Math.min(saved.loaded || 0, artistTotal || 0);
-  let guard = 0;
-  while (loadedArtists < target && guard++ < 40) { await loadMore(); }
-  if (saved.scrollY) window.scrollTo({ top: saved.scrollY, behavior: "auto" });
+  const token = galleryToken;
+  while (loadedArtists < target && token === galleryToken) {
+    const before = loadedArtists;
+    await loadMore();
+    if (loadedArtists <= before) break;
+  }
+  if (saved.scrollY && token === galleryToken) window.scrollTo({ top: saved.scrollY, behavior: "auto" });
 }
 async function runFirstAnalysis() {
   $("welcomeStatus").textContent = "Reading the artwork you have reacted to…";
@@ -1500,7 +1463,25 @@ let discoveryPolling = false, discoveryLoaded = false;
 // between days, windows and views, because a filter you have to reapply is a filter you
 // stop using.
 function modelQuery() {
-  return [...selectedModels].map(name => `&model=${encodeURIComponent(name)}`).join("");
+  return window.CivitaiUI.modelParameters(galleryFilterState());
+}
+function galleryFilterState() {
+  return window.CivitaiUI.browsingState({ date: selectedDate, segment: selectedSegment,
+    view: selectedView, models: selectedModels, levels: visibleBrowsingLevels });
+}
+async function removeGalleryModel(model) {
+  if (!selectedModels.delete(model)) return;
+  $("modelFilter").textContent = modelButtonLabel();
+  saveFeedState();
+  refreshModelMenu();
+  if (dayBuilt) await reloadView();
+}
+async function resetGalleryFilters() {
+  selectedModels.clear();
+  $("modelFilter").textContent = modelButtonLabel();
+  saveFeedState();
+  refreshModelMenu();
+  await chooseContentRating([1, 2]);
 }
 function modelButtonLabel() {
   const count = selectedModels.size;
@@ -1530,114 +1511,26 @@ async function refreshModelMenu() {
       saveFeedState();
       reloadView();
     };
+    window.applyGalleryModelSearch?.();
   } catch (error) { menu.innerHTML = `<p class="filter-empty">${escapeHtml(error.message)}</p>`; }
-}
-function profileUrl(username) { return `https://civitai.red/user/${encodeURIComponent(username || "")}`; }
-function followerText(creator) { return creator.followers === null || creator.followers === undefined ? "" : ` · ${displayCount(creator.followers)} followers`; }
-function emergingPill(creator) { return creator.emerging ? '<span class="pill emerging" title="Fewer than 1,000 followers">EMERGING</span>' : ""; }
-// Widths are applied through CSSOM afterwards because the page's Content Security
-// Policy forbids inline style attributes.
-function barRow(label, value, fraction) { return `<div class="bar-row"><span class="bar-label">${escapeHtml(label)}</span><span class="bar-track"><span class="bar-fill" data-fill="${Math.max(0, Math.min(100, fraction * 100)).toFixed(1)}"></span></span><span class="bar-value">${escapeHtml(value)}</span></div>`; }
-function applyBarWidths(container) { container.querySelectorAll(".bar-fill").forEach(fill => { fill.style.width = `${fill.dataset.fill}%`; }); }
-function rankList(items, empty, extra = "") { return items.length ? `<div class="rank-list ${extra}">${items.join("")}</div>` : `<p class="empty-note">${escapeHtml(empty)}</p>`; }
-function metricCard(label, value, hint, accent) { return `<div class="metric-card${accent ? " accent" : ""}"><span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(displayCount(value))}</span><span class="hint">${escapeHtml(hint)}</span></div>`; }
-// Categorical slots validated against this dark surface: adjacent-pair separation
-// holds for normal vision and for colour-vision deficiency. Fixed order, never cycled.
-const reactionColors = { Like: "#3987e5", Heart: "#d95926", Laugh: "#199e70", Cry: "#c98500", Dislike: "#9085e9" };
-const DONUT_RADIUS = 38, DONUT_GAP = 2;
-function donut(mix, totalRecords) {
-  const circumference = 2 * Math.PI * DONUT_RADIUS;
-  const drawn = mix.filter(entry => entry.count > 0);
-  let offset = 0;
-  const arcs = drawn.map(entry => {
-    const raw = (entry.count / (totalRecords || 1)) * circumference;
-    // Keep a hairline for tiny shares; the legend beside it carries the exact count.
-    const length = drawn.length > 1 ? Math.max(raw - DONUT_GAP, 1) : circumference;
-    const arc = `<circle class="donut-arc" cx="50" cy="50" r="${DONUT_RADIUS}" fill="none" stroke="${reactionColors[entry.reaction] || "#9085e9"}" stroke-width="13" stroke-dasharray="${length.toFixed(2)} ${(circumference - length).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}"><title>${escapeHtml(entry.reaction)}: ${displayCount(entry.count)} (${entry.percent}%)</title></circle>`;
-    offset += raw;
-    return arc;
-  }).join("");
-  const chart = drawn.length
-    ? `<svg class="donut" viewBox="0 0 100 100" role="img" aria-label="Reaction mix"><g transform="rotate(-90 50 50)"><circle cx="50" cy="50" r="${DONUT_RADIUS}" fill="none" stroke="#2b2d34" stroke-width="13"></circle>${arcs}</g></svg>`
-    : `<svg class="donut" viewBox="0 0 100 100" role="img" aria-label="No reactions yet"><circle cx="50" cy="50" r="${DONUT_RADIUS}" fill="none" stroke="#2b2d34" stroke-width="13"></circle></svg>`;
-  const legend = mix.map(entry => `<div class="donut-legend-row"><span class="swatch" data-swatch="${escapeHtml(entry.reaction)}"></span><span class="donut-legend-name">${escapeHtml(entry.reaction)}</span><span class="donut-legend-value">${displayCount(entry.count)} · ${entry.percent}%</span></div>`).join("");
-  return `<div class="metric-card reaction-card"><span class="label">Reaction mix</span><div class="donut-body"><div class="donut-wrap">${chart}<span class="donut-centre"><b>${displayCount(totalRecords)}</b><small>reactions</small></span></div><div class="donut-legend">${legend}</div></div></div>`;
 }
 async function followFromDashboard(row) {
   const button = row.querySelector(".follow-button");
-  if (!socialWrite) return toast("Civitai did not grant follow access.");
-  const following = button.classList.contains("is-following");
-  button.disabled = true;
-  try {
-    const result = await api("/api/follow", { method: "POST", body: JSON.stringify({
-      userId: Number(row.dataset.userId), username: row.dataset.username, following: !following }) });
-    button.classList.toggle("is-following", result.following);
-    button.textContent = result.following ? "✓ Following" : "+ Follow";
-    toast(result.following ? `Now following @${row.dataset.username}` : `Unfollowed @${row.dataset.username}`);
-    // The headline count is derived from the same record the server just updated, so
-    // refresh it rather than guessing. The row stays put until the next analysis.
+  return window.CivitaiUI.toggleCreatorFollow(button, {
+    userId: Number(row.dataset.userId), username: row.dataset.username,
+    following: button.classList.contains("is-following"),
+  }, { api, canWrite: () => socialWrite, toast, onChange: async () => {
     const data = await api("/api/discovery/summary");
-    $("summaryRow").querySelectorAll(".metric-card .value")[3].textContent = displayCount(data.creatorsNotFollowed);
-    $("summaryRow").querySelectorAll(".metric-card .value")[0].textContent = displayCount(data.followedCreators);
-  } catch (error) { toast(error.message); }
-  finally { button.disabled = !socialWrite; }
+    const values = $("summaryRow").querySelectorAll(".metric-card .value");
+    if (values.length >= 4) {
+      values[3].textContent = displayCount(data.creatorsNotFollowed);
+      values[0].textContent = displayCount(data.followedCreators);
+    }
+  } });
 }
 function renderDiscovery(data) {
-  const body = $("discoveryBody"), has = !!data.hasData;
-  body.classList.toggle("hidden", !has);
-  $("resetDiscovery").classList.toggle("hidden", !has);
-  $("syncDiscovery").textContent = has ? "Refresh from Civitai" : "Analyse my reactions";
-  if (!has) return;
-  const total = safeCount(data.reactedImages);
-  $("summaryRow").innerHTML = [
-    metricCard("Creators you follow", data.followedCreators, "Exact count from your Civitai account", true),
-    metricCard("Images you reacted to", total, "Your complete reaction history"),
-    metricCard("Creators you reacted to", data.creatorsReactedTo, "Distinct artists in that history"),
-    metricCard("Not yet followed", data.creatorsNotFollowed, `Reacted to ${data.worthFollowingThreshold || 10}+ images, but you do not follow them`),
-    donut(data.reactionMix || [], data.reactionRecords),
-  ].join("");
-  let fingerprintPanel = $("creativeFingerprint");
-  if (!fingerprintPanel) {
-    fingerprintPanel = document.createElement("section");
-    fingerprintPanel.id = "creativeFingerprint";
-    fingerprintPanel.className = "panel wide fingerprint-panel";
-    fingerprintPanel.innerHTML = `<div class="panel-head"><div><h3>Your creative fingerprint</h3><p id="fingerprintNote" class="panel-note"></p></div></div><div class="fingerprint-grid"><div><h4>Strong visual signals</h4><div id="fingerprintTags" class="fingerprint-tags"></div></div><div><h4>Model signals</h4><div id="fingerprintModels"></div></div></div>`;
-    document.querySelector(".panel-grid").prepend(fingerprintPanel);
-  }
-  const fingerprint = data.recentWork || {};
-  fingerprintPanel.classList.toggle("hidden", !safeCount(fingerprint.images));
-  if (safeCount(fingerprint.images)) {
-    const coverage = fingerprint.complete ? "your public upload history" : "the uploads collected so far";
-    $("fingerprintNote").textContent = `Built from ${displayCount(fingerprint.images)} images across ${coverage}. Future refreshes stop at the first known upload and add only new images. Strong tags appear in at least 10% of the archive and occur at least 50% more often here than in the Civitai comparison sample; generic and one-off tags are left out.`;
-    $("fingerprintTags").innerHTML = (fingerprint.strongTags || []).map(tag =>
-      `<span class="fingerprint-tag"><b>${escapeHtml(tag.name)}</b><small>${displayCount(tag.images)} of ${displayCount(fingerprint.images)}${tag.lift ? ` · ×${tag.lift} distinctive` : ""}</small></span>`).join("") || '<span class="empty-note">More comparison data is needed to identify strong tags.</span>';
-    $("fingerprintModels").innerHTML = rankList((fingerprint.models || []).slice(0, 8).map(model => {
-      const version = model.versionName && model.versionName !== model.modelName ? ` · ${model.versionName}` : "";
-      const label = model.modelName ? `${model.modelName}${version}` : (model.versionName || `Model version ${model.id}`);
-      const name = model.modelId
-        ? `<a href="https://civitai.red/models/${escapeHtml(model.modelId)}?modelVersionId=${escapeHtml(model.id)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`
-        : escapeHtml(label);
-      return `<div class="rank-item"><span class="rank-name">${name}</span><span class="rank-value">${displayCount(model.images)} images · ${model.percent}%</span></div>`;
-    }), "No model information was published with these images.");
-  }
-  const topTagMax = Math.max(1, ...(data.topTags || []).map(tag => tag.images));
-  $("topTags").innerHTML = (data.topTags || []).map(tag => barRow(tag.name, `${displayCount(tag.images)} · ${tag.percent}%`, tag.images / topTagMax)).join("");
-  applyBarWidths($("topTags"));
-  $("distinctiveNote").textContent = data.baselineImages ? `Tags you react to far more often than a ${displayCount(data.baselineImages)}-image sample of Civitai shows. “×4” means four times the usual rate.` : "A Civitai comparison sample is not available yet.";
-  $("distinctiveTags").innerHTML = rankList((data.distinctiveTags || []).map(tag => `<div class="rank-item"><span class="rank-name">${escapeHtml(tag.name)}</span><span class="rank-value"><span class="pill lift">×${tag.lift}</span> ${displayCount(tag.images)} images</span></div>`), "No tag stands out from the sample yet.");
-  $("topCreators").innerHTML = rankList((data.topCreators || []).map(creator => `<div class="rank-item"><span class="rank-name"><a href="${escapeHtml(profileUrl(creator.username))}" target="_blank" rel="noopener">@${escapeHtml(creator.username)}</a>${creator.following ? '<span class="pill">FOLLOWING</span>' : ""}${emergingPill(creator)}</span><span class="rank-value">${displayCount(creator.images)} images${followerText(creator)}</span></div>`), "No creators recorded yet.");
-  const notFollowed = data.reactedNotFollowed || [];
-  const worthThreshold = data.worthFollowingThreshold || 10;
-  const heartThreshold = data.galleryHeartThreshold || 5;
-  $("notFollowed").innerHTML = rankList(notFollowed.map(creator => `<div class="rank-item" data-user-id="${escapeHtml(creator.id)}" data-username="${escapeHtml(creator.username)}"><span class="rank-name"><a href="${escapeHtml(profileUrl(creator.username))}" target="_blank" rel="noopener">@${escapeHtml(creator.username)}</a>${emergingPill(creator)}</span><span class="rank-value">${displayCount(creator.images)} images${followerText(creator)}</span><button class="follow-button" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">+ Follow</button></div>`), `No creator you react to ${worthThreshold} or more times goes unfollowed.`, "dense");
-  $("notFollowed").querySelectorAll(".rank-item").forEach(row => { row.querySelector(".follow-button").onclick = () => followFromDashboard(row); });
-  $("notFollowedNote").textContent = notFollowed.length
-    ? `Creators whose work you have reacted to on ${worthThreshold} or more distinct images without following. Showing the top ${notFollowed.length} of ${displayCount(data.creatorsNotFollowed)}. A ♥ in the daily gallery marks unfollowed artists at the broader ${heartThreshold}+ image threshold.`
-    : `Creators you've reacted to on ${worthThreshold} or more distinct images without following.`;
-  // Suggestions moved into the For You feed, where browsing happens.
-  const age = data.lastSyncAt ? (Date.now() - new Date(data.lastSyncAt).getTime()) / 1000 : 0;
-  const when = age < 120 ? "moments ago" : ago(data.lastSyncAt);
-  $("discoverySubtitle").textContent = `Read from your Civitai account ${when}. ${displayCount(total)} reacted images across ${displayCount(data.distinctTags)} tags. Everything stays on this computer.`;
+  return window.CivitaiUI.renderProfile(data, { $, safeCount, displayCount, escapeHtml,
+    ago, socialWrite, followFromDashboard });
 }
 // Content Controls are read from Civitai at sign-in and applied to the daily gallery.
 // That filtering is otherwise invisible unless the user notices fewer creators than
@@ -1725,7 +1618,8 @@ function showView(name) {
   $("loading").classList.toggle("hidden", !gallery || dayBuilt);
   $("gallery").classList.toggle("hidden", !gallery || !dayBuilt);
   if (timeMachine) {
-    refreshTimeMachine().catch(error => { $("timeMachineMessage").textContent = error.message; });
+    refreshTimeMachine().catch(error => window.CivitaiUI.showPageError(
+      $("timeMachineMessage"), error.message, refreshTimeMachine));
     return;
   }
   if (!discovery) {
@@ -1742,7 +1636,11 @@ function showView(name) {
   if (discoveryLoaded) return;
   discoveryLoaded = true;
   loadHiddenPreferencesNote();
-  refreshDiscovery().then(() => pollDiscovery()).catch(error => { $("discoveryMessage").textContent = error.message; });
+  const loadProfile = async () => { await refreshDiscovery(); pollDiscovery(); };
+  loadProfile().catch(error => {
+    discoveryLoaded = false;
+    window.CivitaiUI.showPageError($("discoveryMessage"), error.message, loadProfile);
+  });
 }
 $("tabGallery").onclick = () => showView("gallery");
 $("tabDiscovery").onclick = () => showView("discovery");
@@ -1896,10 +1794,16 @@ async function flushTimeMachineSeen() {
   return advanced;
 }
 async function refreshTimeMachine() {
-  await flushTimeMachineSeen();
-  const data = await api("/api/timemachine");
-  renderTimeMachineStatus(data.status);
-  renderTimeMachineCards(data.cards);
+  const grid = $("timeMachineGrid");
+  const clearSkeleton = !grid.children.length ? window.CivitaiUI.showGallerySkeleton(grid) : () => {};
+  grid.setAttribute("aria-busy", "true");
+  try {
+    await flushTimeMachineSeen();
+    const data = await api("/api/timemachine");
+    clearSkeleton();
+    renderTimeMachineStatus(data.status);
+    renderTimeMachineCards(data.cards);
+  } finally { clearSkeleton(); grid.removeAttribute("aria-busy"); }
 }
 $("timeMachinePrime").onclick = async () => {
   $("timeMachinePrime").disabled = true;

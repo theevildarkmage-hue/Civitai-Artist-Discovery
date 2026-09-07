@@ -123,12 +123,12 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-browser-", ignore_clea
             except Exception:
                 if time.monotonic() > deadline: raise
                 time.sleep(.2)
-        state = {"connected": True, "metadataCalls": 0, "writes": 0}
+        state = {"connected": True, "metadataCalls": 0, "writes": 0, "collectionWrites": 0}
         avatar = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Ccircle cx='48' cy='48' r='48' fill='%2355d6c2'/%3E%3C/svg%3E"
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1200, "height": 900})
-            page.route("**/api/auth-status", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"connected": state["connected"], "id": 111, "username": "read-only-test", "socialWrite": False, "oauthJob": {"state": "complete" if state["connected"] else "idle"}})))
+            page.route("**/api/auth-status", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"connected": state["connected"], "id": 111, "username": "read-only-test", "socialWrite": False, "collectionsRead": True, "collectionsWrite": True, "oauthJob": {"state": "complete" if state["connected"] else "idle"}})))
             def login(route):
                 state["connected"] = True
                 route.fulfill(status=202, content_type="application/json", body='{"state":"complete"}')
@@ -142,6 +142,12 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-browser-", ignore_clea
                 route.fulfill(status=200, content_type="application/json", body='{"connected":false}')
             page.route("**/api/oauth/disconnect", disconnect)
             page.route("**/api/follow", lambda route: (state.__setitem__("writes", state["writes"] + 1), route.fulfill(status=500, body="unexpected")))
+            page.route("**/api/collections", lambda route: route.fulfill(status=200,
+                content_type="application/json", body='{"collections":[{"id":12,"name":"Favorites"}]}'))
+            page.route("**/api/collections/add", lambda route: (
+                state.__setitem__("collectionWrites", state["collectionWrites"] + 1),
+                route.fulfill(status=200, content_type="application/json",
+                              body='{"added":true,"collectionName":"Favorites"}')))
             page.route("**/api/discovery/summary", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"hasData":true}'))
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
@@ -157,9 +163,13 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-browser-", ignore_clea
             assert card.locator(".creator-followers").text_content().strip() == "· 640 followers"
             assert card.locator(".creator-badge").text_content() == "EMERGING"
             assert "emerging" in card.locator(".creator-badge").get_attribute("class")
+            assert card.locator(".creator-badge").evaluate(
+                "badge => badge.parentElement.classList.contains('card-badge-rail')")
             # The follower text lives in its own node beside the date, because the carousel
             # rewrites the date on every image and would otherwise erase it.
             assert card.locator(".image-age").text_content() != ""
+            assert "ago" not in card.locator(".image-age").text_content()
+            assert str((datetime.now() - timedelta(days=1)).year) in card.locator(".image-age").text_content()
             assert card.evaluate("el => el.querySelector('.image-age')"
                                  ".contains(el.querySelector('.creator-followers'))") is False
             # The username still resolves alone, which the metadata batch depends on.
@@ -168,6 +178,15 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-browser-", ignore_clea
             card.locator(".creator-avatar.fallback").wait_for(timeout=10000)
             assert state["writes"] == 0
 
+            # The dots are actions, not a second details button. Collection choices
+            # apply to the image currently selected in the carousel.
+            card.locator(".more-menu").click()
+            card.locator('[data-action="collections"]').click()
+            card.locator('[data-collection="12"]').click()
+            assert state["collectionWrites"] == 1
+            card.locator(".more-menu").click()
+            assert card.locator('[data-action="hide"]').is_visible()
+
             # Signing out returns to the front door: there is no signed-out gallery.
             page.locator("#disconnect").click()
             page.wait_for_selector("#welcome:not(.hidden)", timeout=15000)
@@ -175,7 +194,8 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-browser-", ignore_clea
             assert state["writes"] == 0
             browser.close()
         print(json.dumps({"accountIsolation": True, "visibleCardsRefresh": True, "blueeyesFollowing": True,
-            "writesWithoutGrant": state["writes"], "brokenAvatarFallback": True, "metadataCalls": state["metadataCalls"]}))
+            "writesWithoutGrant": state["writes"], "collectionWrites": state["collectionWrites"],
+            "absoluteCardDate": True, "brokenAvatarFallback": True, "metadataCalls": state["metadataCalls"]}))
     finally:
         process.terminate()
         try: process.wait(timeout=10)

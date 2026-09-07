@@ -41,34 +41,29 @@ with tempfile.TemporaryDirectory(prefix="gallery-preferences-", ignore_cleanup_e
         db.execute("INSERT INTO days(day,complete,updated_at) VALUES(?,1,?)",
                    (day, datetime.now().isoformat()))
     history.build_artist_index(day)
+    representatives = {row["key"]: row["representativeId"] for row in history.day_artist_keys(day)}
 
     class Followers:
         def follower_counts(self, names):
             return {name.casefold(): 100 for name in names}
+        def score_images(self, image_ids):
+            scores = {representatives["quiet"]: 5, representatives["quality"]: 3,
+                      representatives["breakout"]: 2, representatives["batch"]: 1}
+            return {image_id: scores.get(image_id, 0) for image_id in image_ids}
 
     real_taste = server.TASTE
     server.TASTE = Followers()
     signals = {"followed": set(), "reacted": {}}
     try:
         balanced, _ = server.day_view_order(day, "emerging", None, signals)
-        assert balanced[0] == "quality", balanced
+        personalized, _ = server.day_view_order(day, "foryou", None, signals)
+        assert balanced == personalized and balanced[0] == "quiet", (balanced, personalized)
 
+        # Retired Emerging modes no longer alter this view: it is one understandable
+        # rule, For You limited to small creators.
         server.SETTINGS.update(emerging_reaction_mode_value="unadjusted")
         unadjusted, _ = server.day_view_order(day, "emerging", None, signals)
-        assert unadjusted[0] == "breakout", unadjusted
-
-        server.SETTINGS.update(emerging_reaction_mode_value="strict",
-                               emerging_reaction_limit_value=250)
-        strict, strict_total = server.day_view_order(day, "emerging", None, signals)
-        assert "breakout" not in strict and strict_total == 3, strict
-
-        # Strict ranking is useful without necessarily excluding anyone. "None" is
-        # represented by zero and is the safe default until a cutoff is chosen.
-        server.SETTINGS.update(emerging_reaction_limit_value=0)
-        strict_without_cutoff, strict_without_cutoff_total = \
-            server.day_view_order(day, "emerging", None, signals)
-        assert "breakout" in strict_without_cutoff
-        assert strict_without_cutoff_total == 4
+        assert unadjusted == balanced, (unadjusted, balanced)
 
         server.SETTINGS.update(hide_high_volume_creators_value=True,
                                high_volume_threshold_value=100)
@@ -82,7 +77,11 @@ with tempfile.TemporaryDirectory(prefix="gallery-preferences-", ignore_cleanup_e
 app = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
 assert 'id="galleryPreferences"' in app and 'id="preferencesMenu"' in app
 assert 'id="prefDimSeen"' in app and 'id="seenDimming"' not in app
+preferences = (ROOT / "static" / "ui" / "preferences.js").read_text(encoding="utf-8")
+profile = (ROOT / "static" / "ui" / "profile.js").read_text(encoding="utf-8")
+assert "reset.classList.remove('hidden')" in preferences
+assert 'closest("#preferencesMenu")' in profile
 
 print({"cogPanel": True, "dimmingMoved": True, "hundredPlusHidden": True,
-       "balancedDemotesBreakout": True, "strictFiltersReactionLimit": True,
-       "strictDefaultsToNoCutoff": True, "unadjustedPreservesPopularity": True})
+       "emergingUsesForYou": True, "retiredModesIgnored": True,
+       "localDataActionVisible": True})

@@ -175,6 +175,8 @@ class TasteStore:
                     image_id INTEGER NOT NULL, tag_name TEXT NOT NULL,
                     PRIMARY KEY(image_id, tag_name)
                 );
+                CREATE INDEX IF NOT EXISTS archive_tags_name_image
+                    ON archive_image_tags(tag_name, image_id);
                 CREATE TABLE IF NOT EXISTS archive_image_seen (
                     image_id INTEGER PRIMARY KEY, fetched_at TEXT NOT NULL
                 );
@@ -201,6 +203,10 @@ class TasteStore:
                 CREATE INDEX IF NOT EXISTS seen_creators_day ON seen_creators(day);
                 CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value TEXT);
             """)
+
+            # v2 uses Civitai Content Controls as the only hidden-artist source. Remove
+            # the obsolete app-only list so stale local choices cannot keep filtering.
+            db.execute("DROP TABLE IF EXISTS app_hidden_creators")
 
             seen_columns = {row[1] for row in db.execute("PRAGMA table_info(seen_creators)")}
             if "tracking_version" not in seen_columns:
@@ -684,8 +690,8 @@ class TasteStore:
         with self.connect() as db:
             direct = {row["image_id"] for row in db.execute("SELECT image_id FROM hidden_images")}
             tagged = {row["image_id"] for row in db.execute(
-                "SELECT DISTINCT t.image_id FROM archive_image_tags t "
-                "JOIN hidden_tags h ON h.tag_name = t.tag_name")}
+                "SELECT DISTINCT image_id FROM archive_image_tags "
+                "WHERE tag_name IN (SELECT tag_name FROM hidden_tags)")}
         return direct | tagged
 
     def hidden_summary(self) -> dict:
@@ -1082,16 +1088,35 @@ class TasteStore:
         caller is told whether this image was ever looked at — an image with no tags
         and an image nobody asked about are different states and must not look alike.
         """
+        return self.image_tags_many([image_id])[int(image_id)]
+
+    def image_tags_many(self, image_ids) -> dict[int, dict]:
+        """Read a page's cached tags using one connection and one hidden-tag snapshot.
+
+        Unknown and known-but-untagged remain distinct. This method performs no remote
+        lookup, so listing a page does not wait for Civitai's tag API.
+        """
+        wanted = list(dict.fromkeys(int(value) for value in image_ids))
+        if not wanted:
+            return {}
+        names = {value: [] for value in wanted}
+        known = set()
         with self.connect() as db:
-            names = sorted(row["tag_name"] for row in db.execute(
-                "SELECT tag_name FROM archive_image_tags WHERE image_id=?", (int(image_id),)))
-            # Holding tags is itself proof the image was read; the bookkeeping table is
-            # only needed to tell "read, and genuinely untagged" from "never read".
-            seen = names or db.execute("SELECT 1 FROM archive_image_seen WHERE image_id=?",
-                                       (int(image_id),)).fetchone() is not None
             hidden = {row["tag_name"] for row in db.execute("SELECT tag_name FROM hidden_tags")}
-        return {"known": bool(seen), "tags": [{"name": name, "hidden": name in hidden}
-                                              for name in names]}
+            for start in range(0, len(wanted), 800):
+                chunk = wanted[start:start + 800]
+                holes = ",".join("?" for _ in chunk)
+                for row in db.execute(
+                        f"SELECT image_id,tag_name FROM archive_image_tags WHERE image_id IN ({holes})",
+                        chunk):
+                    names[row["image_id"]].append(row["tag_name"])
+                    known.add(row["image_id"])
+                known.update(row["image_id"] for row in db.execute(
+                    f"SELECT image_id FROM archive_image_seen WHERE image_id IN ({holes})", chunk))
+        return {value: {"known": value in known,
+                        "tags": [{"name": name, "hidden": name in hidden}
+                                 for name in sorted(names[value])]}
+                for value in wanted}
 
     def ensure_image_tags(self, client: SocialClient, image_id: int) -> dict:
         """Fetch and cache one image's tags when its details are explicitly opened.
@@ -1137,7 +1162,7 @@ class TasteStore:
                 db.executemany(
                     "INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)",
                     [(image_id, stamp) for image_id in missing])
-        return {image_id: self.image_tags(image_id) for image_id in wanted}
+        return self.image_tags_many(wanted)
 
     def gallery_signals(self) -> dict:
         """Username sets the daily gallery needs to order a day by personal signal."""

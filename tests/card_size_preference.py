@@ -80,6 +80,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
             page.wait_for_selector(".creator-card", timeout=30000)
             page.wait_for_selector(".recommendation-badge:has-text('New match')")
             assert "New to you" in page.locator(".recommendation-badge").first.get_attribute("title")
+            assert page.locator(".recommendation-badge").first.evaluate(
+                "badge => badge.parentElement.classList.contains('card-badge-rail')")
+            assert page.locator(".match-badge").first.evaluate(
+                "badge => badge.parentElement.classList.contains('card-badge-rail')")
 
             # Choosing a mature level is itself the explicit opt-in; it must not summon a
             # blocking browser confirmation every time. Returning to the safe level uses
@@ -95,13 +99,15 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
             page.click("#contentFilter")
             page.click('#contentMenu [data-level="4"]')
             page.wait_for_selector("#contentFilter:has-text('PG-13')")
+            page.wait_for_selector("#contentFilter:enabled")
             page.wait_for_selector(".creator-card", timeout=30000)
             assert not dialogs, dialogs
             assert not history_starts, history_starts
             assert page.is_hidden("#loading"), "a local content downgrade looked like a download"
 
             def card_metrics():
-                return page.eval_on_selector(".creator-card", """card => {
+                return page.evaluate("""() => {
+                    const card = document.querySelector('.creator-card');
                     const stage = card.querySelector('.image-stage').getBoundingClientRect();
                     const strip = card.querySelector('.creator-strip');
                     const stripBox = strip.getBoundingClientRect();
@@ -117,11 +123,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
             assert page.eval_on_selector("#cardSize", "n => n.value") == "1"
             large = card_metrics()
 
-            page.select_option("#cardSize", "0.8")
+            page.locator("#galleryPreferences").click()
+            page.locator("#cardSizeSlider").evaluate("n => { n.value='1'; n.dispatchEvent(new Event('input')); n.dispatchEvent(new Event('change')); }")
             page.wait_for_timeout(300)
             medium = card_metrics()
 
-            page.select_option("#cardSize", "0.6")
+            page.locator("#cardSizeSlider").evaluate("n => { n.value='0'; n.dispatchEvent(new Event('input')); n.dispatchEvent(new Event('change')); }")
             page.wait_for_timeout(300)
             small = card_metrics()
             assert small["stage"] < medium["stage"] < large["stage"], (small, medium, large)
@@ -139,10 +146,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
                 const icon = button.querySelector('svg').getBoundingClientRect();
                 return {x: Math.abs((circle.left + circle.width / 2) - (icon.left + icon.width / 2)),
                         y: Math.abs((circle.top + circle.height / 2) - (icon.top + icon.height / 2)),
+                        visible: getComputedStyle(button).opacity === '1',
                         labelled: button.getAttribute('aria-label') === 'Next image'};
             }""")
             assert arrow_alignment["x"] < .6 and arrow_alignment["y"] < .6, arrow_alignment
             assert arrow_alignment["labelled"], arrow_alignment
+            assert arrow_alignment["visible"], arrow_alignment
             # A pure display preference: no request to Civitai for a smaller box.
             assert not civitai_requests, civitai_requests
             assert page.evaluate(

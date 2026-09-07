@@ -107,7 +107,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
                 page.wait_for_timeout(50)
             assert "/original=true/fallback-test.svg" in fallback_image.get_attribute("src")
             assert page.locator("#rebuildDay").is_enabled()
-            page.locator("#rebuildDay").click()
+            page.locator("#calendarToggle").click()
+            page.locator("#calendarPanel .rebuild-calendar").click()
             page.wait_for_selector(".creator-card")
             deadline = time.monotonic() + 5
             while len(rebuilds) < 2 and time.monotonic() < deadline:
@@ -134,13 +135,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
             page.wait_for_selector(".creator-card")
             after_reload = page.locator(".creator-card").count()
             page.screenshot(path=str(SCREENSHOTS / "portable-clean-profile.png"))
-            page.locator("#daySegment").select_option("evening")
+            page.locator("#calendarToggle").click()
+            page.locator('#calendarPanel [data-segment="evening"]').click()
             page.locator("#startLoading").wait_for()
             assert page.locator("#rebuildDay").is_disabled()
             browser.close()
         # Reloading restores where you were rather than starting over, so the card
         # count after a reload is at least what had been loaded before it.
-        assert initial == 50 and after_scroll > initial and after_reload >= 50
+        assert initial == 24 and after_scroll > initial and after_reload >= after_scroll
         assert not errors, errors
         assert not any("buzz" in url.casefold() for url in requests)
         print({"readOnlyStartup": True, "missingPreviewFallsBack": True,

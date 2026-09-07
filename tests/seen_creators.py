@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
     day = (datetime.now() - timedelta(days=1)).date().isoformat()
     pixel = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3C/svg%3E"
     history = HistoryArchive(Path(temporary) / "history")
-    # Sixty creators: the browser loads 50 first, which makes the reported page-boundary
+    # Sixty creators: more than one initial page, which makes the reported page-boundary
     # failure reproducible while still leaving a second page to fetch.
     items = [{"id": 9800 + n, "postId": 9800 + n, "username": f"Artist{n}",
               "createdAt": f"{day}T13:{n:02d}:00Z", "url": pixel, "width": 8, "height": 8,
@@ -205,7 +205,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
             initial = cards()
             assert initial, "no cards rendered"
             subject = initial[0]["username"]
-            page_boundary_subject = initial[49]["username"]
+            page_boundary_subject = initial[-1]["username"]
             selector = f'.creator-card[data-username="{subject}"]'
             # Bring the card fully onto screen (the toolbar above the gallery means the
             # first card is not necessarily visible at scrollY=0) and let the dwell window
@@ -290,7 +290,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
                                   "dimSeenCards", False)
             page.locator("html.disable-seen-dimming").wait_for(state="attached")
             assert page.locator("#prefDimSeen").is_enabled()
-            assert page.locator("#prefHideHighVolume").is_enabled()
+            assert page.locator("#highVolumeSlider").is_enabled()
 
             def change_and_wait(selector, action, key, expected):
                 page.eval_on_selector(selector, "node => node.scrollIntoView({block: 'center'})")
@@ -306,68 +306,29 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
                 page.wait_for_function("() => loadingMore === false")
                 assert get("/api/settings")[key] == expected
 
-            # Enabling high-volume filtering must survive the resulting gallery reorder
-            # and enable its dependent threshold control.
-            change_and_wait("#prefHideHighVolume", lambda item: item.check(),
-                            "hideHighVolumeCreators", True)
-            assert page.locator("#prefHideHighVolume").is_checked()
-            assert page.locator("#prefDimSeen").is_enabled()
-            assert page.locator("#prefHideHighVolume").is_enabled()
-            assert page.locator("#prefHighVolumeThreshold").is_enabled()
-            for threshold in ("50", "100", "200"):
-                change_and_wait("#prefHighVolumeThreshold",
-                                lambda item, value=threshold: item.select_option(value),
-                                "highVolumeThreshold", int(threshold))
-                assert page.locator("#prefHideHighVolume").is_checked()
-                assert page.locator("#prefHighVolumeThreshold").is_enabled()
+            # One plain slider owns both the opt-in and its threshold.
+            def set_high_volume(item, index):
+                item.evaluate("""(node, value) => {
+                    node.value = value;
+                    node.dispatchEvent(new Event('input', {bubbles:true}));
+                    node.dispatchEvent(new Event('change', {bubbles:true}));
+                }""", index)
 
-            change_and_wait("#prefHideHighVolume", lambda item: item.uncheck(),
+            for index, threshold in enumerate((50, 100, 150, 200), start=1):
+                change_and_wait("#highVolumeSlider",
+                                lambda item, value=index: set_high_volume(item, value),
+                                "highVolumeThreshold", threshold)
+                assert get("/api/settings")["hideHighVolumeCreators"] is True
+            change_and_wait("#highVolumeSlider", lambda item: set_high_volume(item, 0),
                             "hideHighVolumeCreators", False)
-            assert page.locator("#prefHideHighVolume").is_checked() is False
-            assert page.locator("#prefHighVolumeThreshold").is_disabled()
-
-            # Strict mode owns the reaction threshold. Exercise every threshold and all
-            # three modes, checking both the real POST and the state after each reorder.
-            assert page.locator("#prefEmergingLimit").is_disabled()
-            assert page.locator("#prefEmergingLimit").input_value() == "0"
-            assert page.locator("#emergingLimitHelp").is_visible()
-            assert "Available when Strict discovery" in \
-                page.locator("#emergingLimitHelp").inner_text()
-            change_and_wait("#prefEmergingMode",
-                            lambda _item: page.locator('[data-mode="strict"]').click(),
-                            "emergingReactionMode", "strict")
-            assert page.locator("#prefEmergingLimit").is_enabled()
-            assert page.locator('[data-mode="strict"]').get_attribute("aria-pressed") == "true"
-            for threshold in ("0", "100", "250", "500"):
-                change_and_wait("#prefEmergingLimit",
-                                lambda item, value=threshold: item.select_option(value),
-                                "emergingReactionLimit", int(threshold))
-                assert page.locator("#prefEmergingMode").input_value() == "strict"
-                assert page.locator("#prefEmergingLimit").is_enabled()
-                if threshold == "0":
-                    assert "No reaction cutoff" in \
-                        page.locator("#emergingLimitHelp").inner_text()
-            change_and_wait("#prefEmergingMode",
-                            lambda _item: page.locator('[data-mode="unadjusted"]').click(),
-                            "emergingReactionMode", "unadjusted")
-            assert page.locator("#prefEmergingLimit").is_disabled()
-            change_and_wait("#prefEmergingMode",
-                            lambda _item: page.locator('[data-mode="balanced"]').click(),
-                            "emergingReactionMode", "balanced")
-            assert page.locator("#prefEmergingLimit").is_disabled()
+            assert page.locator("#highVolumeSlider").input_value() == "0"
             preferences = get("/api/settings")
             assert preferences["highVolumeThreshold"] == 200
-            assert preferences["emergingReactionMode"] == "balanced"
-            assert preferences["emergingReactionLimit"] == 500
             page.locator("#closePreferences").click()
             assert page.locator("#preferencesMenu").is_hidden()
             page.locator("#galleryPreferences").click()
-            assert page.locator("#prefHideHighVolume").is_checked() is False
-            assert page.locator("#prefHighVolumeThreshold").input_value() == "200"
-            assert page.locator("#prefHighVolumeThreshold").is_disabled()
-            assert page.locator("#prefEmergingMode").input_value() == "balanced"
-            assert page.locator("#prefEmergingLimit").input_value() == "500"
-            assert page.locator("#prefEmergingLimit").is_disabled()
+            assert page.locator("#highVolumeSlider").input_value() == "0"
+            assert page.locator("#prefEmergingMode").is_hidden()
             page.locator("#closePreferences").click()
             assert page.eval_on_selector(selector, "n => getComputedStyle(n).opacity") == "1"
             assert get("/api/settings")["dimSeenCards"] is False
@@ -385,12 +346,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
             page.wait_for_selector(".creator-card")
             page.locator("#galleryPreferences").click()
             assert page.locator("#prefDimSeen").is_checked() is False
-            assert page.locator("#prefHideHighVolume").is_checked() is False
-            assert page.locator("#prefHighVolumeThreshold").input_value() == "200"
-            assert page.locator("#prefHighVolumeThreshold").is_disabled()
-            assert page.locator("#prefEmergingMode").input_value() == "balanced"
-            assert page.locator("#prefEmergingLimit").input_value() == "500"
-            assert page.locator("#prefEmergingLimit").is_disabled()
+            assert page.locator("#highVolumeSlider").input_value() == "0"
+            assert page.locator("#prefEmergingMode").is_hidden()
             assert page.evaluate(
                 "document.documentElement.classList.contains('disable-seen-dimming')") is True
             reloaded = cards()

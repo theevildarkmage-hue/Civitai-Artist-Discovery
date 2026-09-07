@@ -20,6 +20,10 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+app_source = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+assert 'artwork.removeAttribute("src")' in app_source
+assert 'dialog.classList.add("detail-loading")' in app_source
+assert "token !== detailRequestToken" in app_source
 PORT = 8897
 SHOTS = ROOT / "reports" / "detail-dialog"
 SHOTS.mkdir(parents=True, exist_ok=True)
@@ -123,7 +127,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-detail-", ignore_cleanup_errors
             browser.close()
 
         print({"allTagsRendered": len(TAGS), "noOverhangAtAnySize": True, "lastTagReachable": True,
-               "linksReachable": True, "sizes": 5})
+               "linksReachable": True, "staleArtworkCleared": True,
+               "staleDetailResponseIgnored": True, "sizes": 5})
     finally:
         process.terminate()
         try:

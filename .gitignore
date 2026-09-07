@@ -50,13 +50,35 @@ docs/*
 !docs/beta-release.md
 !docs/release-notes.md
 !docs/civitai-page.md
+!docs/civitai-v2-article.md
 !docs/updates.md
 !docs/time-machine-spec.md
+!docs/2.0-project-plan.md
+!docs/2.0-progress.md
+!docs/2.0-checkpoint.md
+!docs/2.0-testing.md
+
+# Shared v2 browser modules and design system
+!static/ui/
+!static/ui/*.js
+!static/styles/
+!static/styles/*.css
+
+# Synthetic UI baseline only; account-derived reports remain private.
+!reports/
+reports/*
+!reports/v2/
+reports/v2/*
+!reports/v2/baseline/
+reports/v2/baseline/*
+!reports/v2/baseline/*.png
+!reports/v2/baseline/metrics.json
 
 # Deliberately published release artwork
 !assets/
 assets/*
 !assets/civitai-artist-discovery-v1-cover.png
+!assets/civitai-artist-discovery-v2-cover.png
 
 # Local server logs from development runs; CONTRIBUTING forbids committing logs.
 logs/

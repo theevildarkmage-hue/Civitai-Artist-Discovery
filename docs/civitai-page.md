@@ -1,10 +1,20 @@
-# Civitai page copy for 1.0.1
+# Civitai page copy for 2.0.0
+
+## Version 2.0 announcement
+
+Version 2.0 puts artwork first while keeping one card per creator.
+Daily Gallery, Time Machine, and My Profile share a consistent layout. Common content
+and model choices live in one Filters panel, with active chips and a simple reset;
+less-used settings live under one cog. Loading improvements include
+smaller first pages, appropriately sized previews, and faster local content checks.
+The calendar, card collection actions, Civitai Hidden Users integration, personalized
+Emerging view, and visible loading/retry feedback are also new in the stable 2.0 release.
 
 Canonical model: https://civitai.red/models/2829529/civitai-artist-discovery
 
 ## Model description
 
-### Civitai Artist Discovery — Version 1.0
+### Civitai Artist Discovery — Version 2.0
 
 Civitai Artist Discovery is a free, local, artist-first Windows app for exploring Civitai
 Red one day at a time. Instead of another image-first popularity feed, it groups a day's
@@ -15,21 +25,19 @@ First, and Emerging First; filter by model and content level; and react or follo
 losing your place. Your archive, preferences, discovery profile, credentials, and logs
 stay in the portable `data` folder on your computer.
 
-#### New in Version 1.0
+#### New in Version 2.0
 
-- One-click, user-approved updates inside the app
-- Installed version shown beside the app name
-- Release notes and verified download progress before installation
-- SHA-256 verification, portable-data preservation, rollback, and automatic restart
-- Resumable, boundary-verified Morning, Evening, and full-day collection
-- Clear terminal recovery when Civitai remains unavailable
-- A rotating diagnostic journal for future API status codes and redacted response details
-- Local visual-hash coverage and duplicate metrics without extra API calls
-- Personalized artist discovery, Gallery preferences, Content Controls, and My Profile
+- Image-first creator cards shared by Daily Gallery and Time Machine
+- A calendar showing saved and partially collected Morning, Evening, and All day galleries
+- Combined content/model filters with search, active chips, and safe reset
+- A simplified Settings panel for appearance, frequent posters, collection, and local data
+- Personalized For You explanations and an under-1,000-follower Emerging view
+- Save-to-collection and Civitai Hidden Users actions on every artist card
+- A redesigned private taste profile and clearer loading, retry, and empty states
+- Faster repeat gallery opening through responsive previews, lazy loading, and cached checks
 
-Version 1.0 begins the stable 1.x line. Going forward, 1.x will focus on compatible bug
-fixes and reliability work; a larger interface revamp is planned separately for Version
-2. Windows 10 and 11 are the supported packaged platforms.
+Packaged 1.x installs can update through the normal in-app updater without moving their
+portable data. Windows 10 and 11 are the supported packaged platforms.
 
 This is an independent community project and is not affiliated with, endorsed by, or
 sponsored by Civitai. The portable Windows package is unsigned, so Windows SmartScreen or
@@ -40,27 +48,21 @@ https://github.com/theevildarkmage-hue/Civitai-Artist-Discovery
 
 ## Version name
 
-`Red-1.0.1`
+`Red-2.0.0`
 
 ## Version notes
 
-Civitai Artist Discovery 1.0.1 is the current stable release. Its headline feature is
-secure in-app updating: the app shows its installed version, presents release notes,
-downloads only after approval, verifies GitHub's SHA-256 digest, preserves the portable
-`data` folder, rolls back a failed replacement, and restarts automatically.
+Civitai Artist Discovery 2.0.0 is the current stable release. It introduces a shared,
+image-first interface across Daily Gallery and Time Machine, calendar navigation,
+streamlined filtering and settings, richer Civitai card actions, personalized Emerging
+discovery, and a redesigned local taste profile.
 
-The 1.0.1 hotfix separates PG and PG-13 collection so older dates do not exhaust one
-combined cursor window. It retries unexpected empty locator pages, caps cursor seeking,
-and distinguishes an unavailable Civitai history window from a device or connection
-problem. Long gallery builds use boundary-verified, resumable collection and bounded
-outage recovery. Failed Civitai API responses are recorded in a size-limited,
-rotating diagnostic journal with status codes, safe headers, redacted request context,
-and truncated response excerpts. This release also retains listing visual hashes for
-request-free duplicate metrics and includes the complete artist-first discovery,
-personalization, Content Controls, Gallery preferences, and profile experience.
+Packaged 1.x installs receive this release through the normal in-app updater. Downloads
+remain user-approved and SHA-256 verified; the portable `data/` folder is preserved,
+failed replacement rolls back, and the app restarts automatically.
 
-Manual beta upgrade: close the old app, extract the entire new portable folder, and move
-the old folder's `data` directory into the new `CivitaiArtistDiscovery` folder before
-first launch. Keep a backup until the new build opens successfully.
+Existing users should sign out and back in once if they want to add artists to Civitai
+Hidden Users from a card. Civitai requires a profile-settings permission that older OAuth
+sessions do not contain.
 
-SHA-256: `d9425fb005ef609036195f1fa52cbd96d8c44b47921d5858cef1a7785fac9fc1`
+SHA-256: `0783c3f1f78f0262cb60a0cb32bba17f21d6ccef03eb1ad3a761c188436c9ee8`
