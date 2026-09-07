@@ -36,6 +36,7 @@ AUTH_BASE = "https://auth.civitai.com/api/auth/oauth"
 CALLBACK_PORT = 8765
 REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/oauth/callback"
 SOCIAL_WRITE = 1 << 19
+USER_WRITE = 1 << 1
 COLLECTIONS_READ = 1 << 17
 COLLECTIONS_WRITE = 1 << 18
 READ_SCOPE = 1 | 32  # UserRead | MediaRead
@@ -254,7 +255,7 @@ def login(timeout: int = 300) -> dict:
     # Signing in is required and the app's whole point is following and reacting, so
     # it asks for those once, on Civitai's consent screen, rather than a second
     # in-app switch the user has to find.
-    requested_scope = READ_SCOPE | COLLECTIONS_READ | COLLECTIONS_WRITE | SOCIAL_WRITE
+    requested_scope = READ_SCOPE | USER_WRITE | COLLECTIONS_READ | COLLECTIONS_WRITE | SOCIAL_WRITE
     active = client_id()
     if not active:
         raise OAuthSetupError("No Civitai application is set up yet. Register one on Civitai "
@@ -313,10 +314,12 @@ def status() -> dict:
     # no writes, which keeps the app from attempting one it is not allowed to make.
     scope_value = int(scope)
     granted = (scope_value & SOCIAL_WRITE) == SOCIAL_WRITE
+    user_write = (scope_value & USER_WRITE) == USER_WRITE
     collections_read = (scope_value & COLLECTIONS_READ) == COLLECTIONS_READ
     collections_write = (scope_value & COLLECTIONS_WRITE) == COLLECTIONS_WRITE
     return {"connected": True, **(tokens.get("identity") or {}), "scope": scope,
             "scopeGrantsWrite": granted, "socialWrite": granted,
+            "userWrite": user_write,
             "collectionsRead": collections_read, "collectionsWrite": collections_write}
 
 

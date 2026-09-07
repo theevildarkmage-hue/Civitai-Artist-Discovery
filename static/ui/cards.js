@@ -165,8 +165,12 @@ export function createCreatorCard(a, context) {
     actionMenu.querySelector('[data-action="collections"]').onclick = event => { event.stopPropagation(); showCollections(); };
     actionMenu.querySelector('[data-action="hide"]').onclick = async event => {
       event.stopPropagation();
-      if (!confirm(`Hide all content from ${a.username} in this app? You can undo this in Settings.`)) return;
-      try { await api('/api/hidden-creators', { method: 'POST', body: JSON.stringify({ username: a.username, hidden: true }) }); closeActionMenu(); removeCard(); document.dispatchEvent(new Event('hidden-creators-changed')); toast(`${a.username} hidden. Manage hidden artists in Settings.`); }
+      if (context.canManageContentControls && !context.canManageContentControls()) {
+        toast('Sign out and back in once to allow Civitai Content Control changes.');
+        return;
+      }
+      if (!confirm(`Hide all content from ${a.username} on Civitai? You can undo this in Civitai Content Controls.`)) return;
+      try { await api('/api/content-controls/hide-artist', { method: 'POST', body: JSON.stringify({ username: a.username, userId: a.userId }) }); closeActionMenu(); removeCard(); toast(`${a.username} added to your Civitai Hidden Users.`); }
       catch (error) { toast(error.message); }
     };
   }

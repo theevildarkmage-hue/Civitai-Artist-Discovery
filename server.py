@@ -981,6 +981,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
                 self.json_response({"connected": False, "socialWrite": False,
+                                    "userWrite": False,
                                     "collectionsRead": False, "collectionsWrite": False,
                                     "readOnly": True, "oauthJob": job})
             return
@@ -1114,9 +1115,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"error": str(error)}, 400)
             except Exception as error:
                 self.internal_error("History day summary", error)
-            return
-        if parsed.path == "/api/hidden-creators":
-            self.json_response({"artists": TASTE.app_hidden_creators()})
             return
         if parsed.path == "/api/collections":
             try:
@@ -1553,16 +1551,34 @@ class Handler(BaseHTTPRequestHandler):
                 marked = TASTE.mark_seen(value, keys)
                 self.json_response({"date": value, "marked": marked})
                 return
-            if parsed.path == "/api/hidden-creators":
-                username = str(body.get("username") or "").strip()
-                hidden = body.get("hidden")
-                if not isinstance(hidden, bool):
-                    self.json_response({"error": "Choose whether to hide this artist"}, 400)
+            if parsed.path == "/api/content-controls/hide-artist":
+                if not auth_status().get("userWrite"):
+                    self.json_response({"error": "Sign out and back in once to allow Civitai Content Control changes."}, 403)
                     return
-                result = TASTE.hide_creator(username) if hidden else TASTE.unhide_creator(username)
+                username = str(body.get("username") or "").strip()
+                if not username:
+                    raise ValueError("Provide an artist username")
+                client = SocialClient()
+                profile = client.query("user.getCreator", {"username": username})
+                if not isinstance(profile, dict) or not profile.get("id"):
+                    raise ValueError("Civitai could not find that artist")
+                user_id = int(profile["id"])
+                if not (HISTORY.has_creator(username) or TASTE.has_creator(user_id)):
+                    raise ValueError("Artist is not in this app's saved gallery")
+                supplied_id = body.get("userId")
+                if supplied_id is not None and int(supplied_id) != user_id:
+                    raise ValueError("Artist identity changed; refresh the gallery and try again")
+                already_hidden = username.casefold() in TASTE.hidden_creator_keys()
+                if not already_hidden:
+                    client.hide_user(user_id, str(profile.get("username") or username))
+                imported = TASTE.import_hidden_preferences(client)
                 with WRITE_LOCK:
                     VISIBLE_CACHE.update({"token": None, "keys": {}})
-                self.json_response(result)
+                    ORDER_CACHE.clear()
+                if username.casefold() not in TASTE.hidden_creator_keys():
+                    raise RuntimeError("Civitai accepted the change but has not returned it in Content Controls yet. Refresh and try again shortly.")
+                self.json_response({"username": username, "userId": user_id, "hidden": True,
+                                    "changed": not already_hidden, "contentControls": imported})
                 return
             # Discovery analysis is read-only, so it stays above the social-write gate
             # below and remains available to read-only OAuth connections.

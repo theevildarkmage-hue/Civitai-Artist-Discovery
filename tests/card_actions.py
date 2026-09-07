@@ -12,18 +12,18 @@ from discovery.taste import TasteStore
 
 with tempfile.TemporaryDirectory(prefix="civitai-card-actions-") as temporary:
     store = TasteStore(Path(temporary))
-    store.hide_creator("Silly_Goose_92")
-    assert "silly_goose_92" in store.hidden_creator_keys()
-    assert store.app_hidden_creators()[0]["username"] == "Silly_Goose_92"
-    class EmptyPreferences:
-        def query(self, procedure, payload):
-            return {"hiddenUsers": [], "blockedUsers": [], "blockedByUsers": [],
-                    "hiddenTags": [], "hiddenImages": []}
 
-    store.import_hidden_preferences(EmptyPreferences())
-    assert "silly_goose_92" in store.hidden_creator_keys(), "Civitai refresh erased a local hide"
-    store.unhide_creator("SILLY_GOOSE_92")
-    assert not store.app_hidden_creators()
+    class CivitaiPreferences:
+        def query(self, procedure, payload):
+            assert procedure == "hiddenPreferences.getHidden"
+            return {"hiddenUsers": [{"id": 42, "username": "Silly_Goose_92", "hidden": True}],
+                    "blockedUsers": [], "blockedByUsers": [], "hiddenTags": [],
+                    "hiddenImages": []}
+
+    store.import_hidden_preferences(CivitaiPreferences())
+    assert store.hidden_creator_keys() == {"silly_goose_92"}
+    with store.connect() as db:
+        assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='app_hidden_creators'").fetchone()
 
 
 class FakeSocial(SocialClient):
@@ -49,14 +49,25 @@ assert client.mutation == ("collection.saveItem", {
     "collections": [{"collectionId": 12, "userId": 7, "read": "Private"}],
     "removeFromCollectionIds": [],
 })
+client.hide_user(42, "Silly_Goose_92")
+assert client.mutation == ("hiddenPreferences.toggleHidden", {
+    "kind": "user", "data": [{"id": 42, "username": "Silly_Goose_92"}],
+    "hidden": True,
+})
 
 cards = Path("static/ui/cards.js").read_text(encoding="utf-8")
+oauth = Path("discovery/oauth.py").read_text(encoding="utf-8")
+server = Path("server.py").read_text(encoding="utf-8")
 assert "ago(current.createdAt)" not in cards
 assert "toLocaleDateString" in cards
 assert "data-action=\"collections\"" in cards and "data-action=\"hide\"" in cards
+assert "/api/content-controls/hide-artist" in cards
+assert "/api/hidden-creators" not in cards
+assert "READ_SCOPE | USER_WRITE | COLLECTIONS_READ" in oauth
+assert 'client.hide_user(user_id' in server and "TASTE.import_hidden_preferences(client)" in server
 assert 'class="card-nav-status"' in cards, "fresh cards would render as an unexplained black box"
 assert "await waitForArtwork()" in cards, "loading feedback ends before artwork renders"
 
-print({"absoluteCardDates": True, "localHideIsReversible": True,
-       "localHideSurvivesCivitaiRefresh": True, "collectionPayload": True,
+print({"absoluteCardDates": True, "civitaiHiddenUsersAreMirrored": True,
+       "civitaiHidePayload": True, "collectionPayload": True,
        "initialArtworkFeedback": True})

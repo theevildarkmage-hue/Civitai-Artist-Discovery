@@ -162,6 +162,13 @@ class SocialClient:
             "removeFromCollectionIds": [],
         })
 
+    def hide_user(self, user_id: int, username: str | None = None) -> object:
+        """Add one creator to the connected account's Civitai Content Controls."""
+        data = {"id": int(user_id), "username": username or None}
+        return self.mutate("hiddenPreferences.toggleHidden", {
+            "kind": "user", "data": [data], "hidden": True,
+        })
+
     def images_page(self, *, cursor: object = None, limit: int = 100,
                     reactions: list[str] | None = None, with_tags: bool = True,
                     tags: list[int] | None = None, period: str = "AllTime") -> dict:
