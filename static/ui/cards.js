@@ -125,9 +125,15 @@ export function createCreatorCard(a, context) {
   }
   async function navigateTo(candidate, delta) {
     if (navigating) return;
+    const hadFullList = imagesLoaded;
     setCardNavigationBusy(true, imagesLoaded ? 'Checking next image…' : 'Loading artist images…');
     try {
       await ensureImages();
+      // Before the first arrow click, `index` belongs to the one-item placeholder
+      // array. ensureImages replaces it with the representative's real position in
+      // the artist list, so apply the direction from that position—not the stale
+      // placeholder destination calculated by move().
+      if (!hadFullList) candidate = index + delta;
       if (images.length) await selectAllowed(candidate, delta);
     } catch (error) { toast(error.message); }
     finally { if (document.body.contains(el)) setCardNavigationBusy(false); }
