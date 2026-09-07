@@ -29,7 +29,11 @@
 .card-action-menu button:hover,.card-action-menu button:focus-visible { background: #ffffff10; outline: none; }
 .card-action-menu .danger-item { color: #ffaaa7; }
 .card-menu-status { padding: 10px; color: var(--muted); font-size: 12px; line-height: 1.4; }
-.creator-card .recommendation-badge { max-width: calc(100% - 64px); background: #142436e8; border-color: #6cadde66; color: #b5dcff; font-size: 10px; text-transform: none; }
+.creator-card .card-badge-rail { position: absolute; z-index: 6; top: 10px; left: 10px; right: 54px; display: flex; align-items: center; gap: 6px; min-width: 0; pointer-events: none; }
+.creator-card .card-badge-rail:empty { display: none; }
+.creator-card .recommendation-badge { position: static; flex: 0 1 auto; min-width: 0; max-width: 100%; background: #142436e8; border-color: #6cadde66; color: #b5dcff; font-size: 10px; text-transform: none; }
+.creator-card .card-badge-rail .match-badge,.creator-card .card-badge-rail .worth-badge { flex: none; width: 22px; height: 22px; background-color: #201c31e8; box-shadow: 0 3px 12px #0007; }
+.creator-card .card-badge-rail .creator-badge { flex: none; text-shadow: none; box-shadow: 0 3px 12px #0007; }
 .creator-card .image-overlay { position: static; padding: 6px 9px; min-height: 43px; gap: 4px; background: var(--panel); align-items: center; }
 .creator-card .reaction-slot { min-width: 0; flex: 1; }
 .creator-card .reaction-bar { flex-wrap: wrap; background: transparent; backdrop-filter: none; padding: 0; gap: 1px; }

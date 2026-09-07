@@ -20,20 +20,24 @@ export function createCreatorCard(a, context) {
   if (current.tagState?.known) imageTagState.set(String(current.id), current.tagState);
   let navigating = false;
   const el = document.createElement("article"); el.className = a.seen ? "creator-card is-seen" : "creator-card"; el.dataset.id = current.id;
-  el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${context.canWrite() ? "" : "disabled"} title="${context.canWrite() ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="card-nav-status hidden" role="status" aria-live="polite"><span class="card-nav-spinner" aria-hidden="true"></span><span>Loading image…</span></div><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
+  el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${context.canWrite() ? "" : "disabled"} title="${context.canWrite() ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="card-nav-status" role="status" aria-live="polite"><span class="card-nav-spinner" aria-hidden="true"></span><span>Loading image…</span></div><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
   [[".previous", "Previous image", "15 5 8 12 15 19"], [".next", "Next image", "9 5 16 12 9 19"]].forEach(([selector, label, points]) => {
     const button = el.querySelector(selector);
     button.setAttribute("aria-label", label);
     button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="${points}"></polyline></svg>`;
   });
+  const stage = el.querySelector('.image-stage');
+  const badgeRail = document.createElement('div');
+  badgeRail.className = 'card-badge-rail';
+  stage.append(badgeRail);
   if (a.recommendationLabel) {
     const reason = document.createElement("span");
     reason.className = "recommendation-badge";
     reason.textContent = a.recommendationLabel;
     reason.title = (a.recommendationReasons || []).join(" · ");
-    el.querySelector(".image-stage").appendChild(reason);
+    badgeRail.appendChild(reason);
   }
-  const stage = el.querySelector('.image-stage');
+  for (const badge of el.querySelectorAll('.match-badge, .worth-badge, .creator-badge')) badgeRail.appendChild(badge);
   stage.append(el.querySelector('.creator-strip'));
   stage.append(el.querySelector('.more-menu'));
   stage.after(el.querySelector('.image-overlay'));
@@ -77,15 +81,24 @@ export function createCreatorCard(a, context) {
     removeCard(); return false;
   }
   async function prepareArtwork() {
-    const result = await checkImageTags(current.id);
-    if (tagsHideImage(result)) {
-      await ensureImages();
-      images = images.filter(image => String(image.id) !== String(current.id));
-      a.imageCount = images.length;
-      if (!await selectAllowed(0, 1)) return;
+    setCardNavigationBusy(true, 'Loading image…');
+    try {
+      const result = await checkImageTags(current.id);
+      if (tagsHideImage(result)) {
+        setCardNavigationBusy(true, 'Skipping a filtered image…');
+        await ensureImages();
+        images = images.filter(image => String(image.id) !== String(current.id));
+        a.imageCount = images.length;
+        el.dataset.imagesActive = "1";
+        if (!await selectAllowed(0, 1)) return;
+      } else {
+        el.dataset.imagesActive = "1";
+        paint();
+        await waitForArtwork();
+      }
+    } finally {
+      if (document.body.contains(el)) setCardNavigationBusy(false);
     }
-    el.dataset.imagesActive = "1";
-    paint();
   }
   function waitForArtwork() {
     if (main.complete && main.naturalWidth > 0 && !main.classList.contains('image-pending')) return Promise.resolve();
@@ -179,5 +192,6 @@ export function createCreatorCard(a, context) {
   el.addEventListener("reactionstate", () => { if (document.body.contains(el)) renderReactions(); });
   el.applyCreatorMetadata = metadata => { a.avatarUrl = metadata.avatarUrl; a.following = !!metadata.following; a.userId = metadata.userId; const oldAvatar = el.querySelector(".creator-avatar"); if (a.avatarUrl && oldAvatar && oldAvatar.getAttribute("src") !== a.avatarUrl) { const image = document.createElement("img"); image.className = "creator-avatar"; image.src = a.avatarUrl; image.alt = ""; wireAvatarFallback(image, a.username); oldAvatar.replaceWith(image); } follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; applyCreatorFollowers(el, metadata); };
   el.clearAccountMetadata = () => { a.following = false; follow.classList.remove("is-following"); follow.textContent = "+ Follow"; };
+  el.setAttribute('aria-busy', 'true');
   paint(); return el;
 }

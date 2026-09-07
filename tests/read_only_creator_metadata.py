@@ -163,6 +163,8 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-browser-", ignore_clea
             assert card.locator(".creator-followers").text_content().strip() == "· 640 followers"
             assert card.locator(".creator-badge").text_content() == "EMERGING"
             assert "emerging" in card.locator(".creator-badge").get_attribute("class")
+            assert card.locator(".creator-badge").evaluate(
+                "badge => badge.parentElement.classList.contains('card-badge-rail')")
             # The follower text lives in its own node beside the date, because the carousel
             # rewrites the date on every image and would otherwise erase it.
             assert card.locator(".image-age").text_content() != ""

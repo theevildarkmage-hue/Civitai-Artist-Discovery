@@ -80,6 +80,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
             page.wait_for_selector(".creator-card", timeout=30000)
             page.wait_for_selector(".recommendation-badge:has-text('New match')")
             assert "New to you" in page.locator(".recommendation-badge").first.get_attribute("title")
+            assert page.locator(".recommendation-badge").first.evaluate(
+                "badge => badge.parentElement.classList.contains('card-badge-rail')")
+            assert page.locator(".match-badge").first.evaluate(
+                "badge => badge.parentElement.classList.contains('card-badge-rail')")
 
             # Choosing a mature level is itself the explicit opt-in; it must not summon a
             # blocking browser confirmation every time. Returning to the safe level uses

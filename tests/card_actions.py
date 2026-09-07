@@ -54,6 +54,9 @@ cards = Path("static/ui/cards.js").read_text(encoding="utf-8")
 assert "ago(current.createdAt)" not in cards
 assert "toLocaleDateString" in cards
 assert "data-action=\"collections\"" in cards and "data-action=\"hide\"" in cards
+assert 'class="card-nav-status"' in cards, "fresh cards would render as an unexplained black box"
+assert "await waitForArtwork()" in cards, "loading feedback ends before artwork renders"
 
 print({"absoluteCardDates": True, "localHideIsReversible": True,
-       "localHideSurvivesCivitaiRefresh": True, "collectionPayload": True})
+       "localHideSurvivesCivitaiRefresh": True, "collectionPayload": True,
+       "initialArtworkFeedback": True})
