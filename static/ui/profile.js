@@ -34,7 +34,10 @@ function donut(mix, totalRecords) {
 
   const body = $("discoveryBody"), has = !!data.hasData;
   body.classList.toggle("hidden", !has);
-  $("resetDiscovery").classList.toggle("hidden", !has);
+  // The reset action now lives in Settings. It must remain available before this
+  // profile page has been opened; otherwise Settings renders a heading with no action.
+  $("resetDiscovery").classList.toggle("hidden",
+    !has && !$("resetDiscovery").closest("#preferencesMenu"));
   $("syncDiscovery").textContent = has ? "Refresh from Civitai" : "Analyse my reactions";
   if (!has) return;
   const total = safeCount(data.reactedImages);

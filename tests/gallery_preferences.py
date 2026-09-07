@@ -77,6 +77,11 @@ with tempfile.TemporaryDirectory(prefix="gallery-preferences-", ignore_cleanup_e
 app = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
 assert 'id="galleryPreferences"' in app and 'id="preferencesMenu"' in app
 assert 'id="prefDimSeen"' in app and 'id="seenDimming"' not in app
+preferences = (ROOT / "static" / "ui" / "preferences.js").read_text(encoding="utf-8")
+profile = (ROOT / "static" / "ui" / "profile.js").read_text(encoding="utf-8")
+assert "reset.classList.remove('hidden')" in preferences
+assert 'closest("#preferencesMenu")' in profile
 
 print({"cogPanel": True, "dimmingMoved": True, "hundredPlusHidden": True,
-       "emergingUsesForYou": True, "retiredModesIgnored": True})
+       "emergingUsesForYou": True, "retiredModesIgnored": True,
+       "localDataActionVisible": True})

@@ -83,6 +83,9 @@ export function mountPreferences() {
   document.getElementById('updateChecks').parentElement.lastChild.textContent = ' Automatic';
   document.getElementById('captureEnabled').parentElement.lastChild.textContent = ' On';
   document.querySelector('.settings-reset strong').textContent = 'Local profile data';
+  const reset = document.getElementById('resetDiscovery');
+  reset.textContent = 'Delete local data';
+  reset.classList.remove('hidden');
   update();
   return { update };
 }
