@@ -1,3 +1,59 @@
+# Civitai Artist Discovery 2.1.0
+
+A maintenance release built around one theme: settings that quietly narrowed what the app
+saved, or hid what it had already saved, now say what they do and stay reversible.
+
+## Automatic collection has its own coverage
+
+- **Save recent days** now chooses its own artwork coverage instead of following the
+  browsing levels being viewed. Previously, narrowing what you looked at also narrowed
+  what was downloaded, and because a day is stamped with the coverage it was collected at,
+  those days could never show the wider ratings later without being rebuilt.
+- A new install collects all ratings so its archives are complete from the start. An
+  existing install keeps collecting exactly what it already was; the coverage only widens
+  when it is asked to.
+
+## Viewing ratings no longer hide finished galleries
+
+- Choosing a rating wider than a day was collected at used to replace the gallery with the
+  build screen, hiding thousands of images that rating was perfectly happy to show. The
+  day is now shown, and says what it is missing.
+- Only a filter the archive can show nothing for still offers the build screen.
+- The content filter stays reachable from the build screen. It was previously hidden
+  there, which stranded the reader on the one screen where the choice could not be undone.
+
+## Reach the app from another device
+
+- **Allow LAN access** lets other devices on the same network open the app by IP address,
+  off by default. Turning it on explains what it exposes, asks before restarting, and then
+  opens on the network address so it can be read off the address bar and typed into a
+  phone or tablet.
+- Anyone who can reach that address can use the app, including follow and reaction actions
+  on the signed-in account. Windows asks for firewall permission the first time.
+
+## Fixes
+
+- Restoring your place in a gallery no longer marks creators as seen that were never
+  looked at. The jump to a saved position moved cards past the viewport exactly as
+  scrolling does, so each reload quietly buried a few more artists.
+- After a refresh the gallery opens at the top, where the first artist you have not seen
+  now is, instead of a saved offset measured against the previous order.
+- Background work shares one paced request lane with day collection, so a Time Machine
+  prime running alongside a collection no longer doubles the request rate. Reactions,
+  follows and other actions you are waiting on stay outside the lane and are unaffected.
+- A restart now waits for the outgoing copy to release its port and single-instance lock
+  rather than exiting, which could leave no application running.
+
+## Updating
+
+Packaged versions 1.0.0 through 2.0.0 can install 2.1.0 through the normal in-app update
+dialog. The updater verifies the GitHub-provided SHA-256 digest, preserves the portable
+`data/` folder, rolls back a failed replacement, and restarts automatically.
+
+Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
+unsigned, so Windows SmartScreen or managed-device policy may warn or block it.
+
+
 # Civitai Artist Discovery 2.0.0
 
 Version 2.0 is a full interface and interaction refresh focused on making a very large

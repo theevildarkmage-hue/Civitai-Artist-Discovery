@@ -12,16 +12,18 @@ import math
 import mimetypes
 import os
 import re
+import socket
 import subprocess
 from pathlib import Path
 from statistics import mean
 import threading
+import time
 import sys
 import urllib.parse
 import webbrowser
 import traceback
 
-from discovery.civitai import CandidateCache
+from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
 from discovery.timemachine import TimeMachine
 from discovery.history import HistoryArchive, parse_day, previous_local_day
@@ -42,7 +44,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
@@ -85,6 +87,11 @@ OAUTH_JOB = {"state": "idle", "error": None}
 REACTIONS = {"Like": "likeCount", "Heart": "heartCount", "Laugh": "laughCount", "Cry": "cryCount"}
 INSTANCE_FILE = DATA_ROOT / "running-instance.json"
 INSTANCE_MUTEX = None
+RUNNING_PORT = None
+# How long a restarting copy waits for the outgoing one to release the single-instance
+# mutex and its port. Both are held until that process finishes its shutdown, and a
+# replacement that gave up immediately would leave the reader with no app running.
+RESTART_HANDOVER_SECONDS = 30.0
 
 
 def creator_profiles() -> dict:
@@ -296,7 +303,7 @@ def run_sweep(kind: str, key: str, targets, known: int, total: int) -> None:
         def progress(done: int, outstanding: int) -> None:
             with SWEEP_LOCK:
                 SWEEP_JOBS[kind]["done"] = min(total, known + done)
-        client = SocialClient()
+        client = SocialClient(API_LANE)
         if kind == "followers":
             processed = TASTE.sweep_followers(client, targets, SWEEP_CANCEL[kind], progress)
         else:
@@ -846,31 +853,93 @@ def log_internal_error(context: str, error: BaseException) -> None:
         pass
 
 
-def claim_single_instance(no_browser: bool) -> bool:
-    """Return False after directing a second Windows launch to the first one."""
+def claim_single_instance(no_browser: bool, replacing: bool = False) -> bool:
+    """Return False after directing a second Windows launch to the first one.
+
+    ``replacing`` marks the copy a restart just started. It waits for the outgoing
+    process to let go rather than handing itself back to it: the two overlap by however
+    long that one takes to finish its shutdown, and a replacement that treated the
+    overlap as "already running" would exit silently and leave no app at all.
+    """
     global INSTANCE_MUTEX
     if os.name != "nt":
         return True
     import ctypes
     identity = hashlib.sha256(str(DATA_ROOT.resolve()).casefold().encode()).hexdigest()[:20]
-    handle = ctypes.windll.kernel32.CreateMutexW(None, False, f"Local\\CivitaiArtistDiscovery-{identity}")
-    if not handle:
-        raise ctypes.WinError()
-    if ctypes.windll.kernel32.GetLastError() != 183:  # ERROR_ALREADY_EXISTS
-        INSTANCE_MUTEX = handle
-        return True
-    ctypes.windll.kernel32.CloseHandle(handle)
+    name = f"Local\\CivitaiArtistDiscovery-{identity}"
+    deadline = time.monotonic() + (RESTART_HANDOVER_SECONDS if replacing else 0)
+    while True:
+        handle = ctypes.windll.kernel32.CreateMutexW(None, False, name)
+        if not handle:
+            raise ctypes.WinError()
+        if ctypes.windll.kernel32.GetLastError() != 183:  # ERROR_ALREADY_EXISTS
+            INSTANCE_MUTEX = handle
+            return True
+        ctypes.windll.kernel32.CloseHandle(handle)
+        if time.monotonic() >= deadline:
+            break
+        threading.Event().wait(.2)
     for _ in range(30):
         try:
             existing = json.loads(INSTANCE_FILE.read_text(encoding="utf-8"))
             url = str(existing.get("url") or "")
-            if url.startswith("http://127.0.0.1:") or url.startswith("http://localhost:") or url.startswith("http://[::1]:"):
+            if is_own_app_url(url):
                 if not no_browser: webbrowser.open(url, new=1)
                 return False
         except (OSError, json.JSONDecodeError):
             pass
         threading.Event().wait(.1)
     return False
+
+
+def lan_addresses() -> list[str]:
+    """Return this computer's own network addresses, for reaching the app from a phone.
+
+    The route lookup is asked first and answered alone when it succeeds: a machine with
+    virtual adapters (VMware, Hyper-V, WSL) also owns addresses no other device on the
+    network can reach, and listing those alongside the real one only invites typing the
+    wrong one. Nothing is sent; connecting a UDP socket just resolves the route.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 53))  # Reserved documentation address.
+            address = probe.getsockname()[0]
+        if not address.startswith("127."):
+            return [address]
+    except OSError:
+        pass
+    try:
+        found = {entry[4][0] for entry in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
+    except (OSError, UnicodeError):
+        return []
+    return sorted(value for value in found if not value.startswith("127."))
+
+
+def is_own_address(hostname: str | None) -> bool:
+    """Decide whether a Host or Origin header names this computer.
+
+    Both the DNS-rebinding guard and the cross-site guard ask this one question, so they
+    cannot drift apart and leave one of them accepting an address the other refuses.
+    Enabling LAN access widens it to this computer's own network addresses and no
+    further: a name that merely resolves to one of them is still a stranger.
+    """
+    host = (hostname or "").lower().rstrip(".")
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return True
+    return bool(host) and SETTINGS.load()["allowLanAccess"] and host in set(lan_addresses())
+
+
+def is_own_app_url(url: str) -> bool:
+    """Guard what a second launch is willing to open: only this computer's own app."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "http" or not port:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"} or host in set(lan_addresses())
 
 
 def save_instance_url(url: str) -> None:
@@ -886,6 +955,18 @@ def clear_instance_url(url: str) -> None:
         if value.get("url") == url: INSTANCE_FILE.unlink()
     except (OSError, json.JSONDecodeError):
         pass
+
+
+def bind_http_server(host: str, port: int, replacing: bool) -> ThreadingHTTPServer:
+    """Bind the app's socket, waiting out a restart's overlap with the outgoing copy."""
+    deadline = time.monotonic() + (RESTART_HANDOVER_SECONDS if replacing else 0)
+    while True:
+        try:
+            return ThreadingHTTPServer((host, port), Handler)
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            threading.Event().wait(.2)
 
 
 def request_app_shutdown(server: ThreadingHTTPServer) -> None:
@@ -917,9 +998,9 @@ class Handler(BaseHTTPRequestHandler):
     def host_allowed(self) -> bool:
         try:
             hostname = urllib.parse.urlsplit(f"//{self.headers.get('Host') or ''}").hostname
-            return bool(hostname) and hostname.lower().rstrip(".") in {"127.0.0.1", "localhost", "::1"}
         except ValueError:
             return False
+        return is_own_address(hostname)
 
     def internal_error(self, context: str, error: BaseException) -> None:
         log_internal_error(context, error)
@@ -1003,7 +1084,8 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/settings":
             self.json_response({**SETTINGS.load(), "siteOrigin": SITE_ORIGIN,
                 "ratings": ["Soft", "Mature", "X"],
-                "browsingLevelOptions": [1, 2, 4, 8, 16]})
+                "browsingLevelOptions": [1, 2, 4, 8, 16],
+                "lanAddresses": lan_addresses()})
             return
         if parsed.path == "/api/update/status":
             enabled = SETTINGS.load()["checkForUpdates"]
@@ -1229,6 +1311,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"date": value, "offset": offset, "artists": attach_preview_tags(artists),
                     "view": view, "total": total,
                     "preferenceHidden": len(preference_hidden_keys),
+                    # Tells the client the list it is being handed has already had seen
+                    # creators moved to the end, which makes a scroll offset saved
+                    # against the previous order meaningless.
+                    "seenCount": len(seen),
                     "hasMore": offset + len(artists) < total
                         if total is not None else len(artists) == limit})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
@@ -1364,7 +1450,7 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin:
             parsed = urllib.parse.urlparse(origin)
-            if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            if parsed.scheme != "http" or not is_own_address(parsed.hostname):
                 raise PermissionError("Request origin is not allowed")
         if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
             raise ValueError("Content-Type must be application/json")
@@ -1426,7 +1512,8 @@ class Handler(BaseHTTPRequestHandler):
                                         hide_high_volume_creators_value=body.get("hideHighVolumeCreators"),
                                         high_volume_threshold_value=body.get("highVolumeThreshold"),
                                         emerging_reaction_mode_value=body.get("emergingReactionMode"),
-                                        emerging_reaction_limit_value=body.get("emergingReactionLimit"))
+                                        emerging_reaction_limit_value=body.get("emergingReactionLimit"),
+                                        allow_lan_access_value=body.get("allowLanAccess"))
                 if content_change:
                     try:
                         HISTORY.set_content_filter(value["browsingLevels"])
@@ -1475,6 +1562,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"installing": True, "version": UPDATES.status().get("release", {}).get("version")})
                 request_app_shutdown(self.server)
                 return
+            if parsed.path == "/api/app/restart":
+                # Reuse the same port so any tab already pointed at this app (including
+                # this settings page) reconnects on its own once the new process is up,
+                # instead of being stranded on a port that no longer answers.
+                restart_args = ["--port", str(RUNNING_PORT), "--no-browser", "--replacing"]
+                command = ([str(UPDATES.executable), *restart_args] if UPDATES.supported
+                           else [str(UPDATES.executable), str(Path(__file__).resolve()), *restart_args])
+                flags = 0
+                if os.name == "nt":
+                    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                subprocess.Popen(command, cwd=UPDATES.install_root, close_fds=True,
+                                 creationflags=flags)
+                self.json_response({"restarting": True})
+                request_app_shutdown(self.server)
+                return
             if parsed.path == "/api/update/result/acknowledge":
                 UPDATES.clear_result()
                 self.json_response({"acknowledged": True})
@@ -1493,7 +1595,8 @@ class Handler(BaseHTTPRequestHandler):
                 minute = body["atMinute"] if "atMinute" in body else "keep"
                 SETTINGS.update(auto_capture_value=enabled if isinstance(enabled, bool) else None,
                                 auto_capture_hours_value=hours if hours is not None else None,
-                                auto_capture_minute_value=minute)
+                                auto_capture_minute_value=minute,
+                                capture_coverage_value=body.get("coverage"))
                 if SETTINGS.load()["autoCapture"]:
                     CAPTURE.start()
                     if body.get("runNow"):
@@ -1505,7 +1608,7 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/timemachine/prime":
                 if not connected_or_false():
                     raise PermissionError("Connect Civitai to read the creators you follow")
-                self.json_response(TIME_MACHINE.start_prime(SocialClient()), 202)
+                self.json_response(TIME_MACHINE.start_prime(SocialClient(API_LANE)), 202)
                 return
             if parsed.path == "/api/timemachine/stop":
                 TIME_MACHINE.stop_prime()
@@ -1753,27 +1856,38 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--replacing", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.host not in {"127.0.0.1", "localhost", "::1"}:
-        raise ValueError("For your privacy, this app can only listen on the local computer")
-    if not claim_single_instance(args.no_browser):
+    allow_lan_access = SETTINGS.load()["allowLanAccess"]
+    bind_host = args.host or ("0.0.0.0" if allow_lan_access else "127.0.0.1")
+    allowed_hosts = {"127.0.0.1", "localhost", "::1"} | ({"0.0.0.0"} if allow_lan_access else set())
+    if bind_host not in allowed_hosts:
+        raise ValueError("For your privacy, this app can only listen on the local computer "
+                          "unless LAN access is turned on in settings")
+    if not claim_single_instance(args.no_browser, args.replacing):
         return
     # The OAuth redirect is registered against one fixed port, so the app must never
     # occupy it: doing so leaves the callback listener unable to bind and Civitai's
     # redirect lands on this server, which answers 404 and strands the sign-in.
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = bind_http_server(bind_host, args.port, args.replacing)
     if server.server_address[1] == CALLBACK_PORT:
         server.server_close()
-        server = ThreadingHTTPServer((args.host, 0), Handler)
+        server = bind_http_server(bind_host, 0, False)
         if server.server_address[1] == CALLBACK_PORT:
             raise SystemExit(f"Port {CALLBACK_PORT} is reserved for signing in to Civitai")
     actual_port = server.server_address[1]
-    display_host = f"[{args.host}]" if ":" in args.host else args.host
-    url = f"http://{display_host}:{actual_port}"
+    global RUNNING_PORT
+    RUNNING_PORT = actual_port
+    # With LAN access on, the window opens on this computer's network address rather
+    # than loopback. Both reach the same server, but only the network one can be read
+    # off the address bar and typed into a phone, which is the entire point of the
+    # setting: loopback would leave the reader to hunt for the address themselves.
+    addresses = lan_addresses() if bind_host == "0.0.0.0" else []
+    url = f"http://{addresses[0]}:{actual_port}" if addresses else f"http://127.0.0.1:{actual_port}"
     save_instance_url(url)
     UPDATES.schedule_success_cleanup()
     # Only starts a worker when the preference is on; otherwise nothing runs.
@@ -1781,6 +1895,10 @@ def main() -> None:
         CAPTURE.start()
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
+    if bind_host == "0.0.0.0":
+        print(f"LAN access is ON: other devices on your network can reach this app at {url}. "
+              f"Anyone who can reach that address can use the app, including follow/react "
+              f"actions. Turn this off in Settings if you don't want that.")
     tray = None
     if not args.no_browser:
         try:

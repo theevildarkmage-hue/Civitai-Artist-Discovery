@@ -38,8 +38,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
     store = TasteStore(Path(temporary) / "discovery")
     taste.auth_status = lambda: {"id": 4242, "connected": True}
     taste.MIN_PAUSE = taste.MAX_PAUSE = 0.0
-    creators = [("Bone_Of_Moon", 11, 40, True), ("SeeSeeLP", 12, 25, True),
-                ("GWGeek", 13, 12, False), ("AiMetatron", 14, 8, False)]
+    creators = [("TestArtistAlpha", 11, 40, True), ("TestArtistBravo", 12, 25, True),
+                ("TestArtistCharlie", 13, 12, False), ("TestArtistDelta", 14, 8, False)]
     rare = ("katana", 2)
     items, image_id = [], 1
     for username, creator_id, count, _ in creators:
@@ -60,14 +60,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
     # Candidates for the "katana" signal: a followed creator, an already-reacted creator,
     # and two genuinely new ones, only the second of which is emerging.
     candidates = [
-        {"id": 6000, "user": {"id": 11, "username": "Bone_Of_Moon"}, "reactions": [], "tags": []},
-        {"id": 6001, "user": {"id": 13, "username": "GWGeek"}, "reactions": [], "tags": []},
+        {"id": 6000, "user": {"id": 11, "username": "TestArtistAlpha"}, "reactions": [], "tags": []},
+        {"id": 6001, "user": {"id": 13, "username": "TestArtistCharlie"}, "reactions": [], "tags": []},
         {"id": 6002, "user": {"id": 31, "username": "NewBigName"}, "reactions": [], "tags": []},
         {"id": 6003, "user": {"id": 31, "username": "NewBigName"}, "reactions": [], "tags": []},
         {"id": 6004, "user": {"id": 32, "username": "TinyArtist"}, "reactions": [], "tags": []},
     ]
     follower_counts = {"NewBigName": 8200, "TinyArtist": 140,
-                       "GWGeek": 430, "AiMetatron": 5100, "Bone_Of_Moon": 3025}
+                       "TestArtistCharlie": 430, "TestArtistDelta": 5100, "TestArtistAlpha": 3025}
 
     def images_page(self, *, cursor=None, limit=100, reactions=None, with_tags=True,
                     tags=None, period="AllTime"):
@@ -167,7 +167,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
 
             not_followed = page.eval_on_selector_all("#notFollowed .rank-name a",
                                                      "nodes => nodes.map(n => n.textContent.trim())")
-            assert not_followed == ["@GWGeek"], not_followed
+            assert not_followed == ["@TestArtistCharlie"], not_followed
             # Follower counts and the emerging badge appear on every creator panel.
             worth = page.eval_on_selector_all("#notFollowed .rank-item", """nodes => nodes.map(n => ({
                 name: n.querySelector('.rank-name a').textContent,
@@ -250,7 +250,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             with writer.expect_response("**/api/follow", timeout=30000):
                 writer.eval_on_selector("#notFollowed .follow-button", "n => n.click()")
             writer.wait_for_selector("#notFollowed .follow-button.is-following", timeout=5000)
-            assert sent == [{"userId": 13, "username": "GWGeek", "following": True}], sent
+            assert sent == [{"userId": 13, "username": "TestArtistCharlie", "following": True}], sent
             assert writer.text_content("#notFollowed .follow-button") == "✓ Following"
             # The count is re-read from the server rather than guessed in the browser. The
             # store is untouched here because /api/follow is mocked, so it stays at 1.

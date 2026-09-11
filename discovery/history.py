@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
-from .civitai import API_URL, USER_AGENT, normalize, utcnow
+from .civitai import API_LANE, API_URL, USER_AGENT, AdaptivePacer, normalize, utcnow
 from .search import (SEARCH_CLIENT_KEY, SEARCH_PAGE_SIZE, SEARCH_SLICE_RESULT_LIMIT,
                      SEARCH_URL, normalize_hit, search_body)
 from .site import (DEFAULT_CONTENT_RATING, RATING_RANK,
@@ -127,47 +127,6 @@ class SearchBackendUnavailable(RuntimeError):
 
 class SearchCompletenessError(RuntimeError):
     """A bounded search slice did not yield its advertised unique result count."""
-
-
-class AdaptivePacer:
-    """Conservative request pacing that responds to live service conditions.
-
-    Backing off and recovering are both proportional, which they were not. Failure
-    multiplied the interval by 1.5, so about five errors took it from a second to the
-    eight-second ceiling, while recovery subtracted a tenth of a second every ten clean
-    responses -- roughly seven hundred requests to come back. A collection is rarely that
-    long, so any Civitai hiccup left the app slow for the rest of the run and often the
-    run after it: a Time Machine prime of 485 creators crawled at seven seconds each long
-    after the service had recovered, and could not have sped up within its own lifetime.
-    """
-
-    # Recovery is deliberately slower than the climb -- a service that just failed should
-    # be approached carefully -- but it now finishes inside a normal collection.
-    RECOVERY_STREAK = 5
-    RECOVERY_FACTOR = 0.85
-
-    def __init__(self, initial: float = 1.0, minimum: float = 0.75, maximum: float = 8.0):
-        self.interval = initial
-        self.minimum = minimum
-        self.maximum = maximum
-        self.clean_streak = 0
-
-    def success(self, latency: float) -> None:
-        if latency >= 3.0:
-            # A serialized slow response already spaces the next request. Do not
-            # add another latency penalty unless Civitai returns an actual error.
-            self.clean_streak = 0
-            return
-        self.clean_streak += 1
-        if self.clean_streak >= self.RECOVERY_STREAK:
-            self.interval = max(self.minimum, self.interval * self.RECOVERY_FACTOR)
-            self.clean_streak = 0
-
-    def failure(self, reason: str) -> None:
-        floor = 5.0 if reason == "rate_limited" else 2.0
-        multiplier = 2.0 if reason == "rate_limited" else 1.5
-        self.interval = min(self.maximum, max(floor, self.interval * multiplier))
-        self.clean_streak = 0
 
 
 def conservative_eta_range(seconds: float | None) -> tuple[int, int] | None:
@@ -296,9 +255,11 @@ class HistoryArchive:
         self.lock = threading.RLock()
         self.index_lock = threading.RLock()
         self._active_index_levels: dict[str, str] = {}
-        self.api_lock = threading.Lock()
-        self.last_api_request = 0.0
-        self.api_pacer = AdaptivePacer()
+        # Collection shares one outbound lane with the background sweeps rather than
+        # pacing itself in isolation; see RequestLane.
+        self.api_lane = API_LANE
+        self.api_lock = API_LANE.lock
+        self.api_pacer = API_LANE.pacer
         # Feed floors move forward continuously; a short cache keeps the build screen
         # responsive without re-probing Civitai on every status poll.
         self._floor_cache: dict[int, tuple[float, datetime | None]] = {}
@@ -544,7 +505,14 @@ class HistoryArchive:
         required = content_rating(required_content_rating or active_job_rating or self.content_rating)
         needs_upgrade = bool(day and day["complete"] and RATING_RANK[coverage] < RATING_RANK[required])
         archive_complete = bool(day and day["complete"] and feed_complete)
-        complete = archive_complete and not needs_upgrade and job.get("state") not in {"loading", "error"}
+        # Asking for a wider rating than the archive was collected at used to hide the day
+        # outright, which meant widening the filter blanked thousands of images the filter
+        # was perfectly happy to show -- Mature admits everything Soft does. An archive
+        # that still answers the current filter is shown, with needsUpgrade left true so
+        # the gallery can offer to collect the ratings it is missing. Only a filter this
+        # archive can show nothing for falls back to the build screen.
+        complete = (archive_complete and (count > 0 or not needs_upgrade)
+                    and job.get("state") not in {"loading", "error"})
         started = job.get("startedMonotonic")
         # Freeze completed durations at the persisted database value. Keeping the live
         # monotonic clock running after completion made yesterday's 32-minute block look
@@ -860,13 +828,7 @@ class HistoryArchive:
             return own[0] if own and own[0] else None
 
     def _wait_api_lane(self, minimum_interval: float | None = None) -> float:
-        interval = max(self.api_pacer.interval, minimum_interval or 0.0)
-        remaining = interval - (time.monotonic() - self.last_api_request)
-        if remaining > 0:
-            started = time.monotonic()
-            time.sleep(remaining)
-            return time.monotonic() - started
-        return 0.0
+        return self.api_lane.wait(minimum_interval)
 
     def _record_api_failure(self, params: dict, kind: str, *, status: int | None = None,
                             reason: object = None, headers: object = None,
@@ -944,7 +906,7 @@ class HistoryArchive:
                     paced = self._wait_api_lane(minimum_interval)
                     if on_timing and paced:
                         on_timing("pace", paced)
-                    self.last_api_request = time.monotonic()
+                    self.api_lane.last_request = time.monotonic()
                     started = time.monotonic()
                     with urllib.request.urlopen(request, timeout=60) as response:
                         raw = response.read()
@@ -1026,7 +988,7 @@ class HistoryArchive:
                     paced = self._wait_api_lane(.25)
                     if on_timing and paced:
                         on_timing("pace", paced)
-                    self.last_api_request = time.monotonic()
+                    self.api_lane.last_request = time.monotonic()
                     started = time.monotonic()
                     with urllib.request.urlopen(request, timeout=60) as response:
                         raw = response.read()

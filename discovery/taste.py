@@ -18,6 +18,7 @@ import sqlite3
 import threading
 import time
 
+from .civitai import API_LANE
 from .social import CivitaiHTTPError, SocialClient, auth_status
 
 # Civitai's own reaction set. Dislike is collected so reconciliation stays complete,
@@ -362,7 +363,7 @@ class TasteStore:
         raise RuntimeError("Civitai did not return a page")
 
     def _run_sync(self) -> None:
-        client = SocialClient()
+        client = SocialClient(API_LANE)
         started = time.monotonic()
         try:
             # status() also binds reads to the active account. Serialize the worker's
