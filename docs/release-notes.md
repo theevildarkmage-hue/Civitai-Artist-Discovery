@@ -50,6 +50,10 @@ Packaged versions 1.0.0 through 2.0.0 can install 2.1.0 through the normal in-ap
 dialog. The updater verifies the GitHub-provided SHA-256 digest, preserves the portable
 `data/` folder, rolls back a failed replacement, and restarts automatically.
 
+The exact release asset is `CivitaiArtistDiscovery-2.1.0.zip`. Its SHA-256 is
+`041771002cdb8c7496f9ebd11a1f62448320bdc8611189ea057bc65dbed9bb93`; it is also recorded in the
+accompanying checksum file and verified automatically by the app.
+
 Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
 unsigned, so Windows SmartScreen or managed-device policy may warn or block it.
 
