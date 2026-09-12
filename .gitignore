@@ -55,6 +55,9 @@ docs/*
 !docs/2.0-progress.md
 !docs/2.0-checkpoint.md
 !docs/2.0-testing.md
+# Internal ToS working notes. Never whitelist this: it is a candid self-assessment,
+# including open questions, and is not written to be read as a public claim.
+docs/tos-compliance.md
 
 # Shared v2 browser modules and design system
 !static/ui/

@@ -16,8 +16,8 @@ offset ceiling, the ~2-day reachable window, days expiring, the whole reason aut
 exists. A per-creator query is a different feed — short, and `sort=Oldest` starts at the
 far end of it.
 
-Measured: `@Shorgall`'s oldest images are from **2024-09-11**, reachable right now, in one
-request. The daily archive structurally cannot reach that and never will.
+Measured: a sampled creator's oldest images are from **2024-09-11**, reachable right now,
+in one request. The daily archive structurally cannot reach that and never will.
 
 So this gives the app deep history it cannot otherwise have, from the endpoint it is most
 clearly entitled to use.

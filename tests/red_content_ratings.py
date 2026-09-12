@@ -56,7 +56,18 @@ with tempfile.TemporaryDirectory() as temporary:
     assert archive.status(DAY)["archiveContentRating"] == "Soft"
     archive.set_content_rating("Mature")
     status = archive.status(DAY)
-    assert status["needsUpgrade"] and not status["complete"]
+    # Widening the viewing rating must not hide artwork the archive already holds: Mature
+    # admits every image collected through Soft. The day stays readable and advertises the
+    # upgrade, rather than being replaced by the build screen -- which also stranded the
+    # reader, since the control that undoes the choice lives in the gallery it hid.
+    assert status["needsUpgrade"], "a wider rating than the archive covers should offer an upgrade"
+    assert status["complete"], "widening the viewing rating hid a completed local archive"
+
+    # The one case that still belongs on the build screen is a filter this archive can show
+    # nothing for, rather than one it merely cannot answer in full.
+    archive.set_content_filter([4])
+    assert not archive.status(DAY)["complete"], "a filter with nothing to show should offer the build"
+    archive.set_content_rating("Mature")
 
     archive._upsert_normalized([item(3, "Mature")], forced_date=DAY)
     request_count = len(captured)

@@ -66,7 +66,7 @@ class AutoCapture:
         Oldest first matters: the oldest reachable block is the one about to fall out of
         the window, so it is the one that cannot wait for the next interval.
         """
-        rating = self.settings.load()["contentRating"]
+        rating = self.settings.load()["captureCoverage"]
         window = self.archive.history_window(rating)
         floor = window.get("floor")
         oldest = None
@@ -113,7 +113,7 @@ class AutoCapture:
             try:
                 self.archive.start(value, start.isoformat(), end.isoformat(),
                                    str(LOCAL_ZONE), segment,
-                                   self.settings.load()["contentRating"])
+                                   self.settings.load()["captureCoverage"])
             except ValueError as error:
                 # Out of reach or otherwise refused before any work started.
                 skipped.append(key)
@@ -235,6 +235,7 @@ class AutoCapture:
             running = bool(self.thread and self.thread.is_alive())
             return {"enabled": settings["autoCapture"],
                     "intervalHours": settings["autoCaptureHours"],
+                    "coverage": settings["captureCoverage"],
                     "running": running, "lastRun": self.last_run,
                     "lastResult": self.last_result,
                     "atMinute": settings.get("autoCaptureMinute"),

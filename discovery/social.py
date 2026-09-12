@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,11 +28,15 @@ class CivitaiHTTPError(RuntimeError):
 
 
 class SocialClient:
-    def __init__(self):
+    def __init__(self, lane: object | None = None):
         # Civitai's accepted tRPC batch size has changed over time. Learn the current
         # ceiling from a rejected request so long sweeps do not repeat the same failure
         # for every chunk, while retaining the historical 100-item client-side cap.
         self._batch_limits: dict[str, int] = {}
+        # Background jobs pass the shared RequestLane so their traffic is paced against
+        # everything else reaching Civitai. Left unset for anything a reader is waiting
+        # on, which must not queue behind a collection's rate-limit backoff.
+        self.lane = lane
 
     def public_model_version(self, model_version_id: int) -> dict:
         """Resolve a public model-version id without sending the OAuth token."""
@@ -56,6 +61,30 @@ class SocialClient:
         request.add_header("Authorization", f"Bearer {get_access_token()}")
         request.add_header("Accept", "application/json")
         request.add_header("User-Agent", "CivitaiArtistDiscovery/1.0 (local Windows artist discovery app; user-requested reads)")
+        if self.lane is None:
+            return self._send(request)
+        with self.lane.lock:
+            self.lane.wait()
+            self.lane.last_request = time.monotonic()
+            started = time.monotonic()
+            try:
+                value = self._send(request)
+            except CivitaiHTTPError as error:
+                # Feed the shared pacer so a limit hit here also slows the collection
+                # engine, instead of each subsystem having to rediscover it alone.
+                if error.status == 429:
+                    self.lane.pacer.failure("rate_limited")
+                elif error.status >= 500:
+                    self.lane.pacer.failure("service_retry")
+                raise
+            except (TimeoutError, urllib.error.URLError):
+                self.lane.pacer.failure("network_retry")
+                raise
+            self.lane.pacer.success(time.monotonic() - started)
+            return value
+
+    @staticmethod
+    def _send(request: urllib.request.Request) -> object:
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 return json.loads(response.read())

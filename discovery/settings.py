@@ -5,7 +5,7 @@ from pathlib import Path
 import secrets
 import threading
 
-from .site import (DEFAULT_CONTENT_RATING, browsing_levels, content_rating,
+from .site import (CONTENT_RATINGS, DEFAULT_CONTENT_RATING, browsing_levels, content_rating,
                    levels_for_rating, rating_for_levels)
 
 HIGH_VOLUME_THRESHOLDS = (50, 100, 150, 200)
@@ -72,6 +72,24 @@ class AppSettings:
             seed = raw.get("captureSeed")
             if not isinstance(seed, int) or not 0 <= seed < 2**31:
                 seed = secrets.randbelow(2**31)
+            allow_lan_access = raw.get("allowLanAccess", False)
+            if not isinstance(allow_lan_access, bool):
+                allow_lan_access = False
+            # What unattended collection downloads, kept apart from the viewing filter.
+            # A day is stamped with the coverage it was collected at and can only widen by
+            # being rebuilt, so letting the viewing filter decide this meant narrowing what
+            # you look at today permanently narrowed what tomorrow's archive could ever
+            # contain. Collect widely once; filter what is shown as often as you like.
+            #
+            # An install that predates this setting inherits the coverage it has been
+            # collecting at all along -- its viewing rating -- rather than the wider new
+            # default. Quietly starting to download explicit artwork onto someone's disk
+            # because they updated is not a decision an upgrade gets to make for them; a
+            # first run with no settings file at all has nothing to preserve and takes the
+            # wide default, so archives are complete from the start.
+            capture_coverage = raw.get("captureCoverage")
+            if capture_coverage not in CONTENT_RATINGS:
+                capture_coverage = rating if raw else "X"
             return {"contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),
                     "dimSeenCards": dim_seen_cards,
@@ -83,7 +101,9 @@ class AppSettings:
                     "autoCapture": auto_capture,
                     "autoCaptureHours": auto_capture_hours,
                     "autoCaptureMinute": capture_minute,
-                    "captureSeed": seed}
+                    "captureSeed": seed,
+                    "allowLanAccess": allow_lan_access,
+                    "captureCoverage": capture_coverage}
 
     def update(self, *, browsing_levels_value: object = None,
                content_rating_value: object = None,
@@ -95,7 +115,9 @@ class AppSettings:
                emerging_reaction_limit_value: object = None,
                auto_capture_value: object = None,
                auto_capture_hours_value: object = None,
-               auto_capture_minute_value: object = "keep") -> dict:
+               auto_capture_minute_value: object = "keep",
+               allow_lan_access_value: object = None,
+               capture_coverage_value: object = None) -> dict:
         current = self.load()
         if browsing_levels_value is not None:
             levels = browsing_levels(browsing_levels_value)
@@ -145,6 +167,14 @@ class AppSettings:
                                            or not 0 <= capture_minute < 1440):
             raise ValueError("autoCaptureMinute must be null or a minute of the day")
         seed = current["captureSeed"]
+        allow_lan_access = (current["allowLanAccess"] if allow_lan_access_value is None
+                            else allow_lan_access_value)
+        if not isinstance(allow_lan_access, bool):
+            raise ValueError("allowLanAccess must be true or false")
+        capture_coverage = (current["captureCoverage"] if capture_coverage_value is None
+                            else capture_coverage_value)
+        if capture_coverage not in CONTENT_RATINGS:
+            raise ValueError("captureCoverage must be Soft, Mature, or X")
         value = {"contentRating": rating_for_levels(levels),
                  "browsingLevels": list(levels),
                  "dimSeenCards": dim_seen_cards,
@@ -156,7 +186,9 @@ class AppSettings:
                  "autoCapture": auto_capture,
                  "autoCaptureHours": auto_capture_hours,
                  "autoCaptureMinute": capture_minute,
-                 "captureSeed": seed}
+                 "captureSeed": seed,
+                 "allowLanAccess": allow_lan_access,
+                 "captureCoverage": capture_coverage}
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")

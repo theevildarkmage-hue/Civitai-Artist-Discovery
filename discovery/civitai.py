@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import threading
 import time
 import urllib.parse
 import urllib.error
@@ -13,6 +14,83 @@ import urllib.request
 
 from .site import API_URL, image_url
 USER_AGENT = "CivitaiArtistDiscovery/1.0 (local Windows artist discovery app; sequential requests)"
+
+
+class AdaptivePacer:
+    """Conservative request pacing that responds to live service conditions.
+
+    Backing off and recovering are both proportional, which they were not. Failure
+    multiplied the interval by 1.5, so about five errors took it from a second to the
+    eight-second ceiling, while recovery subtracted a tenth of a second every ten clean
+    responses -- roughly seven hundred requests to come back. A collection is rarely that
+    long, so any Civitai hiccup left the app slow for the rest of the run and often the
+    run after it: a Time Machine prime of 485 creators crawled at seven seconds each long
+    after the service had recovered, and could not have sped up within its own lifetime.
+    """
+
+    # Recovery is deliberately slower than the climb -- a service that just failed should
+    # be approached carefully -- but it now finishes inside a normal collection.
+    RECOVERY_STREAK = 5
+    RECOVERY_FACTOR = 0.85
+
+    def __init__(self, initial: float = 1.0, minimum: float = 0.75, maximum: float = 8.0):
+        self.interval = initial
+        self.minimum = minimum
+        self.maximum = maximum
+        self.clean_streak = 0
+
+    def success(self, latency: float) -> None:
+        if latency >= 3.0:
+            # A serialized slow response already spaces the next request. Do not
+            # add another latency penalty unless Civitai returns an actual error.
+            self.clean_streak = 0
+            return
+        self.clean_streak += 1
+        if self.clean_streak >= self.RECOVERY_STREAK:
+            self.interval = max(self.minimum, self.interval * self.RECOVERY_FACTOR)
+            self.clean_streak = 0
+
+    def failure(self, reason: str) -> None:
+        floor = 5.0 if reason == "rate_limited" else 2.0
+        multiplier = 2.0 if reason == "rate_limited" else 1.5
+        self.interval = min(self.maximum, max(floor, self.interval * multiplier))
+        self.clean_streak = 0
+
+
+class RequestLane:
+    """The one outbound lane every background job queues in.
+
+    Day collection reaches Civitai's public image API and the sweeps reach its tRPC
+    endpoints, but both are the same account talking to the same service, so pacing them
+    separately meant two unrelated background jobs could each believe it was the only one
+    running -- a Time Machine prime alongside a day collection issued twice the intended
+    traffic. Sharing the lock, the pacer and the clock makes "one request at a time,
+    spaced by how the service is currently behaving" true across the whole application
+    rather than within each subsystem.
+
+    Interactive actions deliberately stay outside this lane: a reaction or a follow is one
+    request the reader is waiting on, and queueing it behind a collection's rate-limit
+    backoff would stall the click for minutes to save a single request.
+    """
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.pacer = AdaptivePacer()
+        self.last_request = 0.0
+
+    def wait(self, minimum_interval: float | None = None) -> float:
+        """Sleep until the lane is free to send again; returns how long that took."""
+        interval = max(self.pacer.interval, minimum_interval or 0.0)
+        remaining = interval - (time.monotonic() - self.last_request)
+        if remaining > 0:
+            started = time.monotonic()
+            time.sleep(remaining)
+            return time.monotonic() - started
+        return 0.0
+
+
+# Shared by the collection engine and every background sweep in this process.
+API_LANE = RequestLane()
 
 
 def utcnow() -> str:

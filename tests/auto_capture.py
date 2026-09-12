@@ -21,6 +21,7 @@ class FakeArchive:
 
     def __init__(self, floor_day: date, complete: set[str]):
         self.floor_day, self.complete, self.started = floor_day, complete, []
+        self.requested_ratings, self.window_ratings = [], []
         self.root = Path(".")
 
     @staticmethod
@@ -28,6 +29,7 @@ class FakeArchive:
         return HistoryArchive.archive_key(value, segment)
 
     def history_window(self, rating):
+        self.window_ratings.append(rating)
         floor = datetime.combine(self.floor_day, datetime.min.time(), LOCAL_ZONE)
         return {"floor": floor.isoformat(), "oldestBuildableDay": self.floor_day.isoformat()}
 
@@ -38,6 +40,7 @@ class FakeArchive:
     def start(self, value, start_utc, end_utc, timezone_name, segment, rating):
         key = self.archive_key(value, segment)
         self.started.append(key)
+        self.requested_ratings.append(rating)
         self.complete.add(key)   # completes immediately for the test
         return self.status(key)
 
@@ -60,6 +63,20 @@ with tempfile.TemporaryDirectory(prefix="civitai-autocapture-") as temporary:
 
     result = capture.run_once()
     assert len(result["captured"]) == 6 and not result["failed"], result
+    # Unattended collection downloads at its own coverage, not at whatever the reader
+    # happens to be viewing. A day is stamped with the coverage it was collected at and
+    # can only widen by being rebuilt, so narrowing the viewing filter used to narrow
+    # every future archive permanently -- and days collected that way could never show
+    # the wider ratings later.
+    assert set(archive.requested_ratings) == {"X"}, archive.requested_ratings
+    assert set(archive.window_ratings) == {"X"}, archive.window_ratings
+    settings.update(content_rating_value="Soft")
+    assert capture.pending_blocks() == [] or set(archive.window_ratings) == {"X"}
+    settings.update(capture_coverage_value="Mature")
+    archive.complete.clear(); archive.requested_ratings.clear()
+    capture.run_once()
+    assert set(archive.requested_ratings) == {"Mature"}, archive.requested_ratings
+    archive.complete.update(archive.started)
     assert archive.started[0].startswith("2026-08-27"), archive.started
     assert not any(k.startswith("2026-08-26") for k in archive.started), archive.started
     # Today is still in progress and must never be captured.

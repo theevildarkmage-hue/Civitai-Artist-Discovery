@@ -224,6 +224,12 @@ body>header h1{line-height:1.15}
 .update-preference button{border:1px solid var(--line);background:#22242a;color:var(--text);padding:7px 10px;border-radius:8px;cursor:pointer}
 dialog.update-dialog{width:min(720px,92vw);height:auto;max-height:88vh;grid-template-columns:1fr}
 dialog.update-dialog[open]{display:block}
+/* A modal dialog is absolutely positioned against the viewport with both edges pinned,
+   so height:auto stretches it to max-height instead of wrapping its content. Short
+   dialogs need fit-content to size themselves. */
+dialog.compact-dialog{width:min(520px,92vw);height:fit-content}
+.lan-address-hint{color:#8edfd2;overflow-wrap:anywhere}
+.lan-firewall-note{color:#e0c081}
 .update-dialog-copy{padding:28px;display:grid;gap:14px;max-height:88vh;overflow:auto}
 .update-dialog-copy h2{font-size:26px}
 .update-dialog-copy>p{color:var(--muted);line-height:1.5}

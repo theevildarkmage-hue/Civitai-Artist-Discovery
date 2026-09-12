@@ -32,7 +32,12 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
 .segment-toolbar .card-size-source, .segment-toolbar .ui-field:has(#daySegment) { display: none; }
 .segment-toolbar .ui-field:has(#dayView) label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .segment-toolbar #dayView { min-width: 132px; }
-.segment-toolbar.build-mode > :not(.calendar-toggle) { display: none !important; }
+/* The build screen hides gallery controls that have nothing to act on yet. The viewing
+   rating is the exception: choosing one that the stored archive does not cover is what
+   raises this screen, so hiding the control here strands the reader on the one screen
+   where they cannot undo the choice that brought them to it. */
+.segment-toolbar.build-mode > :not(.calendar-toggle):not(.active-filters):not(#contentMenu) { display: none !important; }
+.segment-toolbar.build-mode .active-filters > :not(#contentFilter):not(#contentMenu):not(.preferences-button) { display: none !important; }
 .command-bar .sweep-note.personalization-note { position: absolute; top: calc(100% + 8px); right: 20px; width: min(760px, calc(100vw - 40px)); flex: none; }
 .filter-menu { border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-popover); }
 main { padding: 18px 20px 60px; }

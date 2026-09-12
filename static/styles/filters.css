@@ -67,11 +67,17 @@
 .preferences-menu .update-preference { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 6px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); }
 .preferences-menu .update-preference > div { flex: 1 1 220px; min-width: 0; }
 .preferences-menu .update-preference strong { font-size: 13px; }
-.preferences-menu #capturePreferenceStatus, .preferences-menu #updatePreferenceStatus { display: none; }
+.preferences-menu #capturePreferenceStatus, .preferences-menu #updatePreferenceStatus, .preferences-menu #lanPreferenceStatus { display: none; }
 .preferences-menu .capture-next { display: block; margin-top: 2px; font-size: 11px; }
 .preferences-menu .capture-at, .preferences-menu .capture-every { white-space: nowrap; }
-.preferences-menu .capture-preference { display: grid; grid-template-columns: minmax(150px, 1fr) auto auto auto auto; }
-.preferences-menu .capture-preference.is-off { grid-template-columns: minmax(150px, 1fr) auto auto; }
+/* The schedule reads as one sentence -- on, every so often, collecting this much, at that
+   time. Adding the coverage control put one more item on a row that was already at its
+   limit, which pushed the last control past the panel edge and clipped it. The
+   description takes its own row so the sentence has the full width to sit on. */
+.preferences-menu .capture-preference { display: grid; grid-template-columns: repeat(4, auto); justify-content: start; }
+.preferences-menu .capture-preference > div,
+.preferences-menu .capture-preference #captureRunNow { grid-column: 1 / -1; }
+.preferences-menu .capture-preference #captureRunNow { width: auto; justify-self: start; }
 .preferences-menu .capture-preference.is-off .capture-every, .preferences-menu .capture-preference.is-off .capture-at { display: none; }
 .preferences-menu .capture-at .link-button { font-size: 0; padding: 4px; }
 .preferences-menu .capture-at .link-button:not(.hidden)::after { content: 'Auto'; font-size: 11px; }

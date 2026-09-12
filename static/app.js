@@ -289,6 +289,72 @@ $("updateChecks").onchange = async () => {
   } catch (error) { $("updateChecks").checked = updateChecksEnabled; toast(error.message); }
   finally { $("updateChecks").disabled = false; }
 };
+let allowLanAccess = false;
+function showLanAddress(addresses) {
+  const hint = $("lanAddressHint");
+  const list = Array.isArray(addresses) ? addresses : [];
+  hint.classList.toggle("hidden", !allowLanAccess || !list.length);
+  $("lanFirewallHelp").classList.toggle("hidden", !allowLanAccess);
+  if (!allowLanAccess || !list.length) return;
+  const port = window.location.port ? `:${window.location.port}` : "";
+  hint.textContent = `Open on another device: ${list.map(address => `http://${address}${port}`).join("  ·  ")}`;
+}
+function closeLanRestartDialog(revert) {
+  $("lanRestartDialog").close();
+  $("lanRestartStatus").classList.add("hidden");
+  $("lanRestartConfirm").disabled = false;
+  $("lanRestartCancel").disabled = false;
+  if (revert) { $("allowLanAccess").checked = allowLanAccess; $("allowLanAccess").disabled = false; }
+}
+$("allowLanAccess").onchange = () => {
+  const desired = $("allowLanAccess").checked;
+  $("lanRestartTitle").textContent = desired ? "Allow LAN access?" : "Turn off LAN access?";
+  $("lanRestartSummary").textContent = desired
+    ? "Restarting will make this app reachable from other devices on your network. Anyone who can reach this computer's address will be able to use the app, including follow/react actions on your account."
+    : "Restarting will stop other devices on your network from reaching this app.";
+  $("lanFirewallWarning").classList.toggle("hidden", !desired);
+  $("lanRestartDialog").showModal();
+};
+$("closeLanRestart").onclick = () => closeLanRestartDialog(true);
+$("lanRestartCancel").onclick = () => closeLanRestartDialog(true);
+$("lanRestartDialog").onclick = event => { if (event.target === $("lanRestartDialog")) closeLanRestartDialog(true); };
+$("lanRestartConfirm").onclick = async () => {
+  const desired = $("allowLanAccess").checked;
+  $("lanRestartConfirm").disabled = true;
+  $("lanRestartCancel").disabled = true;
+  const status = $("lanRestartStatus");
+  status.classList.remove("hidden");
+  status.textContent = "Restarting the app…";
+  try {
+    await api("/api/settings", { method: "POST", body: JSON.stringify({ allowLanAccess: desired }) });
+    allowLanAccess = desired;
+    await api("/api/app/restart", { method: "POST", body: "{}" });
+    // The old process is shutting down; the new one comes back on the same port, so
+    // this tab waits for it rather than navigating blindly. Once it answers, the tab
+    // moves to the address the new setting is about: turning LAN access on shows the
+    // network address that a phone can be pointed at, and turning it off returns to
+    // loopback, which is the only address still being served.
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        const current = await api("/api/settings");
+        const port = window.location.port ? `:${window.location.port}` : "";
+        const onLoopback = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(window.location.hostname);
+        const lanAddress = (current.lanAddresses || [])[0];
+        if (desired && lanAddress && onLoopback) window.location.href = `http://${lanAddress}${port}`;
+        else if (!desired && !onLoopback) window.location.href = `http://127.0.0.1${port}`;
+        else window.location.reload();
+        return;
+      } catch (_) { /* still restarting */ }
+    }
+    status.textContent = "The app is taking longer than expected to restart. Reload the page in a moment.";
+  } catch (error) {
+    status.textContent = error.message;
+    $("lanRestartConfirm").disabled = false;
+    $("lanRestartCancel").disabled = false;
+    $("allowLanAccess").checked = allowLanAccess;
+  }
+};
 // Automatic collection reaches Civitai on a schedule with nobody watching, so the panel
 // has to answer three things at a glance: that it happens, when it happens next, and how
 // to stop it. Off until switched on.
@@ -309,6 +375,7 @@ function renderCaptureState(state) {
   block.classList.toggle("is-off", !state.enabled);
   $("captureEnabled").checked = !!state.enabled;
   $("captureInterval").value = String(state.intervalHours ?? 12);
+  $("captureCoverage").value = state.coverage || "X";
   const minute = state.atMinute;
   $("captureAt").value = minute === null || minute === undefined ? ""
     : `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
@@ -320,7 +387,7 @@ async function refreshCaptureState() {
   catch (_) { /* the panel simply stays as it was */ }
 }
 async function postCapture(body) {
-  const controls = ["captureEnabled", "captureInterval", "captureAt", "captureRunNow"];
+  const controls = ["captureEnabled", "captureInterval", "captureCoverage", "captureAt", "captureRunNow"];
   controls.forEach(id => { $(id).disabled = true; });
   try { renderCaptureState(await api("/api/history/capture", { method: "POST", body: JSON.stringify(body) })); }
   catch (error) { toast(error.message); if (captureState) renderCaptureState(captureState); }
@@ -328,6 +395,7 @@ async function postCapture(body) {
 }
 $("captureEnabled").onchange = () => postCapture({ enabled: $("captureEnabled").checked });
 $("captureInterval").onchange = () => postCapture({ intervalHours: Number($("captureInterval").value) });
+$("captureCoverage").onchange = () => postCapture({ coverage: $("captureCoverage").value });
 $("captureAt").onchange = () => {
   const value = $("captureAt").value;
   if (!value) return postCapture({ atMinute: null });
@@ -656,6 +724,7 @@ async function loadArtistPage() {
     if (token !== galleryToken || activePageRequest !== request) return;
     if (Number.isFinite(data.total)) artistTotal = data.total;
     preferenceHidden = safeCount(data.preferenceHidden);
+    daySeenCount = safeCount(data.seenCount);
     const fragment = document.createDocumentFragment(), cards = [];
     data.artists.forEach(artist => {
       const element = card(artist);
@@ -672,7 +741,7 @@ async function loadArtistPage() {
         ? (loadedArtists ? "You're caught up for this view." : "No creators match these filters.")
         : "Loading more artists…";
     }
-    $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}${preferenceHidden ? ` · ${displayCount(preferenceHidden)} hidden by Gallery preferences` : ""}`;
+    $("summary").textContent = `${displayCount(artistTotal)} artists${selectedView === "new" ? " new to you" : ""} · ${displayCount(imageTotal)} images · showing ${loadedArtists}${hiddenCreators ? ` · ${displayCount(hiddenCreators)} hidden by your Civitai settings` : ""}${preferenceHidden ? ` · ${displayCount(preferenceHidden)} hidden by Gallery preferences` : ""}${dayCoverageNote}`;
     $("summary").title = [hiddenCreators ? "Creators you hide on Civitai, or who have blocked you, are left out of this gallery." : "", preferenceHidden ? "Gallery preferences are hiding high-volume or high-reaction creators." : ""].filter(Boolean).join(" ");
     enrichCards(data.artists, cards);
     hydrateReactionStates(data.artists.map(artist => artist.representative)).catch(error => console.warn("Reaction history could not be loaded", error));
@@ -771,6 +840,7 @@ function showBuildSetup(visible) {
   segmentToolbar.classList.toggle("build-mode", visible);
 }
 const coverageRank = { Soft: 0, Mature: 1, X: 2 };
+let dayCoverageNote = "";
 function blockReadyForBuild(segment) {
   const block = currentBlocks?.[segment];
   return !!block?.complete && coverageRank[block.contentRating || "Soft"] >= coverageRank[buildCoverageRating];
@@ -977,6 +1047,12 @@ async function loadDay(value, preferAvailable = true, preserveCurrent = false) {
     }
   }
   clearGallery(); $("summary").textContent = "";
+  // The day can be shown while still missing the wider ratings now being asked for. Say
+  // so rather than presenting a gallery collected through PG-13 as though it answered a
+  // request that included R.
+  dayCoverageNote = status.needsUpgrade
+    ? ` · collected through ${contentLabels[status.archiveContentRating] || status.archiveContentRating || "PG + PG-13"} · rebuild this day to add the rest`
+    : "";
   if (status.complete) { await showCompletedDay(value, token); window.updateGalleryCalendar?.(); return; }
   $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden");
   $("startLoading").classList.add("hidden"); $("stopLoading").classList.add("hidden"); showBuildReady(status);
@@ -1142,8 +1218,11 @@ $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
   };
 });
 document.addEventListener("click", event => {
-  // Shared filters own outside dismissal and expanded state.
-  if (!event.target.closest("#preferencesMenu") && !event.target.closest("#galleryPreferences")) {
+  // Shared filters own outside dismissal and expanded state. A modal opened from a
+  // preference sits outside the panel in the DOM, so its own clicks must not dismiss
+  // the panel the reader is still working in.
+  if (!event.target.closest("#preferencesMenu") && !event.target.closest("#galleryPreferences")
+      && !event.target.closest("dialog")) {
     $("preferencesMenu").classList.add("hidden");
     $("galleryPreferences").setAttribute("aria-expanded", "false");
   }
@@ -1294,9 +1373,15 @@ async function openDay() {
   return loadDay(newestDate);
 }
 let pendingRestore = null;
+let daySeenCount = 0;
 async function applyPendingRestore() {
   const saved = pendingRestore; pendingRestore = null;
   if (!saved || saved.date !== selectedDate || (saved.segment || "evening") !== selectedSegment) return;
+  // A fresh load re-derives the order with everything already seen moved to the end, so
+  // the offset saved against the previous order now points at unrelated creators. The
+  // reorder has already done what the restore was for: the first thing not yet seen is
+  // back at the top, which is where the reader left off.
+  if (daySeenCount) return;
   const target = Math.min(saved.loaded || 0, artistTotal || 0);
   const token = galleryToken;
   while (loadedArtists < target && token === galleryToken) {
@@ -1304,7 +1389,16 @@ async function applyPendingRestore() {
     await loadMore();
     if (loadedArtists <= before) break;
   }
-  if (saved.scrollY && token === galleryToken) window.scrollTo({ top: saved.scrollY, behavior: "auto" });
+  if (saved.scrollY && token === galleryToken) {
+    // Jumping to the saved offset makes every card above the landing point leave the
+    // viewport upwards at once, which is the exact signal the observer reads as "the
+    // reader scrolled past this". Dropping the dwell timers for the length of the jump
+    // keeps restoring a position from burying creators nobody has actually looked at.
+    pauseSeenTracking();
+    window.scrollTo({ top: saved.scrollY, behavior: "auto" });
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    resumeSeenTracking();
+  }
 }
 async function runFirstAnalysis() {
   $("welcomeStatus").textContent = "Reading the artwork you have reacted to…";
@@ -1354,7 +1448,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
   }, delay);
 }
 async function startup() {
-  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
+  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
