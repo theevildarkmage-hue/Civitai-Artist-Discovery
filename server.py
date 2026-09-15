@@ -246,6 +246,21 @@ def hidden_preferences() -> tuple[set, set]:
 
 GALLERY_VIEWS = ("discovery", "followed", "new", "emerging", "foryou")
 RECENT_MODEL_MIN_SHARE = .10
+# TESTING ONLY -- REMOVE BEFORE SHIPPING (tracked in docs/video-cards.md).
+# Moves every creator who posted a video to the top of each view, in that view's own
+# order, and opens their card on their best video so video playback is easy to review.
+VIDEO_CREATORS_FIRST_FOR_TESTING = True
+
+
+def videos_first_for_testing(key: str, order: list[str] | None, total: int | None,
+                             hidden_images: set | None) -> tuple[list[str] | None, int | None, dict]:
+    """TESTING ONLY: see VIDEO_CREATORS_FIRST_FOR_TESTING."""
+    covers = HISTORY.creator_video_covers(key, hidden_images)
+    if not covers:
+        return order, total, {}
+    base = order if order is not None else [row["key"] for row in HISTORY.day_artist_keys(key)]
+    ordered = sorted(base, key=lambda item: item not in covers)
+    return ordered, len(ordered), covers
 # Two personalised views need data the daily archive never collected: follower counts for
 # every creator, and tags for the image on each card. Both are fetched once per day in the
 # background and cached permanently.
@@ -1242,6 +1257,9 @@ class Handler(BaseHTTPRequestHandler):
                                                      hidden_creators, showable)
                 models = [value for value in query.get("model", []) if value][:20]
                 representatives = None
+                if VIDEO_CREATORS_FIRST_FOR_TESTING:
+                    order, total, representatives = videos_first_for_testing(
+                        key, order, total, hidden_images)
                 if models:
                     picks = HISTORY.creators_using_models(key, models)
                     representatives = picks
