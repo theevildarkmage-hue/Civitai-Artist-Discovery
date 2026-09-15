@@ -1435,7 +1435,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' https://image.civitai.com https://*.civitai.com https://*.civitai.red data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' https://image.civitai.com https://*.civitai.com https://*.civitai.red data:; media-src https://image.civitai.com https://*.civitai.com; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         # Without this, a plain refresh can silently keep serving a stale cached copy of
         # app.js/index.html — no ETag or Last-Modified was sent either, so the browser had
         # nothing to revalidate against and no reason not to just reuse its cache.
