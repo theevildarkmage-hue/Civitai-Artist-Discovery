@@ -66,7 +66,7 @@ export function createCreatorCard(a, context) {
   function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showCardArtwork(main, current.thumbnailUrl, current.type === 'video' ? '' : current.url); age.textContent = cardDate(); renderReactions(); showVideo(current); position.textContent = `${activePosition + 1} of ${a.imageCount} images${current.type === 'video' ? ' · video' : ''}`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
   async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${context.models}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
   function removeCard() {
-    el.stopVideo(); cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
+    el.releaseVideo(); cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
     el.remove();
     loadMore().catch(error => toast(error.message));
   }
@@ -124,6 +124,7 @@ export function createCreatorCard(a, context) {
     navStatus.classList.toggle('hidden', !value);
     el.querySelectorAll(".previous, .next, .image-progress button").forEach(button => { button.disabled = value; });
     renderReactions();
+    if (!value) el.resumeVideo();
   }
   async function navigateTo(candidate, delta) {
     if (navigating) return;

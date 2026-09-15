@@ -13,7 +13,7 @@ import { renderProfile } from './profile.js';
 import { startPerformanceTrace } from './performance.js';
 import { mountCalendar } from './calendar.js';
 import { mountPreferences } from './preferences.js';
-import { showDetailVideo, clearDetailVideo } from './video.js';
+import { showDetailVideo, clearDetailVideo, suspendCardVideos } from './video.js';
 
 if (new URLSearchParams(location.search).get('uiPerf') === '1') {
   window.CivitaiPerformance = startPerformanceTrace();
@@ -21,7 +21,7 @@ if (new URLSearchParams(location.search).get('uiPerf') === '1') {
 
 mountShell();
 // Temporary bridge for the classic page controller; new modules import directly.
-window.CivitaiUI = Object.freeze({ api, showArtwork, wireArtworkFallback, showGallerySkeleton, showPageError, createCreatorCard, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo });
+window.CivitaiUI = Object.freeze({ api, showArtwork, wireArtworkFallback, showGallerySkeleton, showPageError, createCreatorCard, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos });
 
 // Transitional classic controller preserves existing integration tests and global
 // callbacks while page behavior moves into modules one tested slice at a time.

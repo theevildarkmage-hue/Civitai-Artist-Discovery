@@ -1,12 +1,26 @@
-// Video artwork. A video card shows its still frame exactly like an image card; the
-// playback file is fetched only while someone is actually watching that one card, and
-// it is released again as soon as they stop. Only one card plays at a time.
-const HOVER_DELAY_MS = 250;
-let playingCard = null;
-// A card that scrolls away while playing (touch has no pointerleave) stops by itself.
-const offscreen = new IntersectionObserver(entries => {
-  entries.forEach(entry => { if (!entry.isIntersecting) entry.target.stopVideo?.(); });
-});
+// Video artwork. A video card shows its still frame like an image card and plays by
+// itself, muted, while it is mostly on screen. The playback file is fetched only for
+// cards in view and the download is aborted as soon as a card leaves.
+const VISIBLE_SHARE = 0.5;
+// A card flicked past during a fast scroll never starts a download.
+const SETTLE_MS = 300;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const cards = new Set();
+// Card videos pause while something covers the gallery (the details dialog) or the tab
+// is in the background, and resume where they are visible once it is uncovered.
+let suspended = false;
+const visibility = new IntersectionObserver(entries => {
+  entries.forEach(entry => entry.target.setVideoVisible?.(entry.intersectionRatio >= VISIBLE_SHARE));
+}, { threshold: [0, VISIBLE_SHARE] });
+
+function refreshAll() { [...cards].forEach(el => el.resumeVideo?.()); }
+document.addEventListener('visibilitychange', refreshAll);
+reducedMotion.addEventListener?.('change', refreshAll);
+
+export function suspendCardVideos(value) {
+  suspended = !!value;
+  refreshAll();
+}
 
 export function attachCardVideo(el, main) {
   const video = document.createElement('video');
@@ -21,9 +35,9 @@ export function attachCardVideo(el, main) {
   // frameOnly: the CDN had no still for this video (it redirects some videos straight to
   // the original file), so the card shows the video's own first frame instead. That reads
   // the file's header and first frame, not the whole file.
-  let source = '', hoverTimer = 0, frameOnly = false;
+  let source = '', frameOnly = false, visible = false, pausedByUser = false, playing = false, attached = false, settleTimer = 0;
 
-  function label(playing) {
+  function label() {
     toggle.textContent = playing ? '❚❚' : '▶';
     toggle.setAttribute('aria-label', playing ? 'Pause video' : 'Play video');
     toggle.title = playing ? 'Pause video' : 'Play video';
@@ -34,11 +48,9 @@ export function attachCardVideo(el, main) {
     video.hidden = false;
   }
   function stop() {
-    clearTimeout(hoverTimer);
-    if (playingCard === el) playingCard = null;
-    offscreen.unobserve(el);
+    playing = false;
     el.classList.remove('video-playing', 'video-loading');
-    label(false);
+    label();
     if (frameOnly && source) {
       // Reassigning the source aborts the playing download and keeps only a frame.
       video.pause(); showFirstFrame(); return;
@@ -52,21 +64,33 @@ export function attachCardVideo(el, main) {
     video.preload = 'none';
     video.hidden = true;
   }
-  function play() {
+  function ready() {
     // Artwork is attached only after the tag check clears it, and never mid-navigation.
-    if (!source || !el.dataset.imagesActive || el.getAttribute('aria-busy') === 'true') return;
-    if (playingCard && playingCard !== el) playingCard.stopVideo?.();
-    playingCard = el;
+    return !!source && !!el.dataset.imagesActive && el.getAttribute('aria-busy') !== 'true' &&
+      document.body.contains(el);
+  }
+  function play() {
+    if (playing || !ready()) return;
+    playing = true;
     el.classList.add('video-loading');
     if (!frameOnly) video.poster = main.currentSrc || main.src || '';
     video.preload = 'auto';
     video.src = source;
-    video.play().catch(() => { if (playingCard === el) stop(); });
-    offscreen.observe(el);
-    label(true);
+    video.play().catch(() => { if (playing) stop(); });
+    label();
+  }
+  // Decide from scratch whether this card should be playing right now.
+  function update() {
+    // A card dropped with the rest of the gallery (a day or view change) is never
+    // removed through removeCard, so it has to notice being detached by itself. Cards
+    // are first painted before insertion, which is not a removal.
+    if (!el.isConnected) { if (attached) el.releaseVideo(); return; }
+    attached = true;
+    const wanted = visible && !pausedByUser && !suspended && !document.hidden && !reducedMotion.matches;
+    if (wanted) play(); else if (playing) stop();
   }
   video.addEventListener('playing', () => {
-    if (playingCard !== el) return;
+    if (!playing) return;
     video.hidden = false;
     el.classList.remove('video-loading');
     el.classList.add('video-playing');
@@ -81,31 +105,36 @@ export function attachCardVideo(el, main) {
   main.addEventListener('error', () => {
     if (!source || frameOnly || !el.dataset.imagesActive) return;
     frameOnly = true;
-    if (playingCard !== el) showFirstFrame();
+    if (!playing) showFirstFrame();
   });
   toggle.addEventListener('click', event => {
     event.stopPropagation();
-    if (playingCard === el) stop(); else play();
+    if (playing) { pausedByUser = true; stop(); }
+    // Pressing play is an explicit request, so it overrides reduced motion.
+    else { pausedByUser = false; play(); }
   });
-  const stage = el.querySelector('.image-stage');
-  // A short dwell keeps a pointer sweeping across the grid from starting downloads.
-  stage.addEventListener('pointerenter', event => {
-    if (event.pointerType !== 'mouse' || !source) return;
-    clearTimeout(hoverTimer);
-    hoverTimer = setTimeout(play, HOVER_DELAY_MS);
-  });
-  stage.addEventListener('pointerleave', event => {
-    if (event.pointerType === 'mouse') stop();
-  });
+  el.setVideoVisible = value => {
+    clearTimeout(settleTimer);
+    if (value) { settleTimer = setTimeout(() => { visible = true; update(); }, SETTLE_MS); return; }
+    visible = false;
+    // Pausing lasts while the card stays on screen; scrolling back resumes it.
+    pausedByUser = false;
+    update();
+  };
+  el.resumeVideo = update;
   el.stopVideo = stop;
-  label(false);
+  el.releaseVideo = () => { clearTimeout(settleTimer); stop(); visibility.unobserve(el); cards.delete(el); };
+  cards.add(el);
+  visibility.observe(el);
+  label();
 
   // Called on every paint with the item the card now shows.
   return function showItem(item) {
     const next = item?.type === 'video' && item.videoUrl ? item.videoUrl : '';
-    if (next !== source) { frameOnly = false; stop(); source = next; }
+    if (next !== source) { frameOnly = false; pausedByUser = false; stop(); source = next; }
     toggle.hidden = !source;
     el.classList.toggle('is-video', !!source);
+    update();
   };
 }
 
