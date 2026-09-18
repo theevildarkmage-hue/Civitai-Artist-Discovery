@@ -35,6 +35,10 @@ Windows-only.
   time.
 - Offers Large, Medium, and Small preview cards whose image, header, controls, and
   typography scale together.
+- Shows videos in the same cards and carousels as images. A video card displays a still
+  frame and plays itself, muted, while it is on screen; scrolling away stops playback and
+  aborts the download, and a play/pause control overrides either choice. The details
+  dialog plays the larger file with controls.
 - Provides **For you**, **Popular**, **New to you**, **Followed first**, and
   **Emerging first** views.
 - Ranks **Popular** by the sum of reactions across every visible image each artist posted

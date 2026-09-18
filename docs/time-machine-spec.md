@@ -59,7 +59,7 @@ unfollow and re-follow.
 
 ```
 creator_history(username, image_id, created_at, url, browsing_level,
-                post_id, width, height, base_model, stats, position)
+                post_id, width, height, base_model, stats, type, position)
 creator_progress(username, next_position, cursor, exhausted, primed_at, updated_at)
 ```
 
@@ -77,6 +77,11 @@ nothing about it should be able to corrupt a collected day.
 3. When `next_position` reaches the end of the cached page, refill from `cursor`.
 4. When a refill returns nothing, set `exhausted` and show the creator as caught up.
 5. Content rating filters through the existing `visible_levels`, as every other view does.
+6. A creator's listing interleaves videos with images, and both are stored. `type`
+   separates them, because a video card needs the still and playback URLs described in
+   `video-cards.md` rather than its raw file — an `<img>` shows nothing for an MP4. Stores
+   written before `type` existed classify their rows by file extension on first open, so
+   no creator is refetched and every pointer keeps its position.
 
 ## Decisions (settled 2026-08-30)
 

@@ -1,5 +1,6 @@
 import { showCardArtwork, wireArtworkFallback } from './artwork.js';
 import { toggleCreatorFollow } from './creator-actions.js';
+import { attachCardVideo } from './video.js';
 
 let activeActionMenu = null;
 document.addEventListener('click', event => {
@@ -50,7 +51,7 @@ export function createCreatorCard(a, context) {
   actionMenu.setAttribute('role', 'menu');
   actionMenu.innerHTML = `<button type="button" data-action="collections" role="menuitem">♡ Add image to collection</button><button type="button" data-action="hide" class="danger-item" role="menuitem">⊘ Hide this artist</button>`;
   el.append(actionMenu);
-  const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"), navStatus = el.querySelector(".card-nav-status"), navMessage = navStatus.lastElementChild; wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
+  const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"), navStatus = el.querySelector(".card-nav-status"), navMessage = navStatus.lastElementChild, showVideo = attachCardVideo(el, main); wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
   function renderReactions() {
     reaction.innerHTML = reactionBar(current);
     wireReactions();
@@ -62,10 +63,10 @@ export function createCreatorCard(a, context) {
     const date = new Date(`${value}T12:00:00`);
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   }
-  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showCardArtwork(main, current.thumbnailUrl, current.url); age.textContent = cardDate(); renderReactions(); position.textContent = `${activePosition + 1} of ${a.imageCount} images`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
+  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showCardArtwork(main, current.thumbnailUrl, current.type === 'video' ? '' : current.url); age.textContent = cardDate(); renderReactions(); showVideo(current); position.textContent = `${activePosition + 1} of ${a.imageCount} images${current.type === 'video' ? ' · video' : ''}`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
   async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${context.models}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
   function removeCard() {
-    cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
+    el.releaseVideo(); cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
     el.remove();
     loadMore().catch(error => toast(error.message));
   }
@@ -117,11 +118,13 @@ export function createCreatorCard(a, context) {
   }
   function setCardNavigationBusy(value, message = 'Loading image…') {
     navigating = value;
+    if (value) el.stopVideo();
     el.setAttribute("aria-busy", value ? "true" : "false");
     navMessage.textContent = message;
     navStatus.classList.toggle('hidden', !value);
     el.querySelectorAll(".previous, .next, .image-progress button").forEach(button => { button.disabled = value; });
     renderReactions();
+    if (!value) el.resumeVideo();
   }
   async function navigateTo(candidate, delta) {
     if (navigating) return;

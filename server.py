@@ -44,7 +44,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
@@ -94,14 +94,30 @@ RUNNING_PORT = None
 RESTART_HANDOVER_SECONDS = 30.0
 
 
+# Parsed once per version of the file rather than on every request: every gallery page
+# read and re-parsed several megabytes of JSON that changes only when a sweep resolves new
+# creators, which measured ~0.15s of each page's second. The file is replaced atomically,
+# so its (modified time, size) identifies the version and a rewrite is picked up at once.
+PROFILE_CACHE: dict = {"key": None, "value": {}}
+
+
 def creator_profiles() -> dict:
-    if not CREATOR_PROFILES.exists():
+    try:
+        info = CREATOR_PROFILES.stat()
+    except OSError:
         return {}
+    key = (info.st_mtime_ns, info.st_size)
+    with WRITE_LOCK:
+        if PROFILE_CACHE["key"] == key:
+            return PROFILE_CACHE["value"]
     try:
         value = json.loads(CREATOR_PROFILES.read_text(encoding="utf-8"))
-        return value.get("byUsername", {}) if isinstance(value, dict) else {}
+        profiles = value.get("byUsername", {}) if isinstance(value, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+    with WRITE_LOCK:
+        PROFILE_CACHE["key"], PROFILE_CACHE["value"] = key, profiles
+    return profiles
 
 
 def profile_avatar(profile: dict | None) -> str | None:
@@ -119,6 +135,37 @@ def profile_avatar(profile: dict | None) -> str | None:
         return str(value) if allowed else None
     filename = urllib.parse.quote(str(picture.get("name") or "avatar.jpeg"))
     return f"https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/{value}/width=160/{filename}"
+
+
+def image_stores(image_id: int) -> list:
+    """Every collector holding this image, in preference order.
+
+    The same image can sit in both the daily archive and the Time Machine, each with the
+    counts that were true when that collector fetched it. A reaction has to write through
+    all of them, or the copy it missed keeps serving its older numbers.
+    """
+    return [store for store in (HISTORY, TIME_MACHINE) if store.has_image(image_id)]
+
+
+def live_reaction_stats(payload: object) -> dict:
+    """Civitai's own counts for an image, named as the app stores them.
+
+    image.get reports "likeCountAllTime" and friends, and it is the freshest number
+    anyone has: both stored copies are snapshots from whenever they were collected.
+    """
+    stats = payload.get("stats") if isinstance(payload, dict) else None
+    if not isinstance(stats, dict):
+        return {}
+    result = {}
+    for key in ("likeCount", "heartCount", "laughCount", "cryCount", "dislikeCount",
+                "commentCount"):
+        value = stats.get(f"{key}AllTime")
+        if isinstance(value, (int, float)):
+            result[key] = max(0, int(value))
+    if not result:
+        return {}
+    result["reactionCount"] = sum(result.get(key, 0) for key in REACTIONS.values())
+    return result
 
 
 def image_store(image_id: int):
@@ -651,6 +698,13 @@ def _seen_last(key: str, order: list[str] | None, total: int | None,
     return ordered, len(ordered)
 
 
+def _finish_order(key: str, view: str, order: list[str] | None, total: int | None,
+                  hidden_images: set | None, seen: set) -> tuple[list[str] | None, int | None]:
+    if view == "foryou" and order is not None:
+        return order, total
+    return _seen_last(key, order, total, seen)
+
+
 def cached_day_view_order(key: str, view: str, pinned_username: str | None, signals: dict,
                           hidden_images: set | None, session_token: str | None, seen: set,
                           hidden_creators: set | None = None,
@@ -659,8 +713,7 @@ def cached_day_view_order(key: str, view: str, pinned_username: str | None, sign
     if not session_token:
         order, total = day_view_order(key, view, pinned_username, signals, hidden_images,
                                       hidden_creators, eligible_creators, seen)
-        return ((order, total) if view == "foryou" and order is not None
-                else _seen_last(key, order, total, seen))
+        return _finish_order(key, view, order, total, hidden_images, seen)
     cache_key = (key, view, pinned_username)
     with WRITE_LOCK:
         cached = ORDER_CACHE.get(cache_key)
@@ -668,8 +721,7 @@ def cached_day_view_order(key: str, view: str, pinned_username: str | None, sign
             return cached[1], cached[2]
     order, total = day_view_order(key, view, pinned_username, signals, hidden_images,
                                   hidden_creators, eligible_creators, seen)
-    if view != "foryou" or order is None:
-        order, total = _seen_last(key, order, total, seen)
+    order, total = _finish_order(key, view, order, total, hidden_images, seen)
     with WRITE_LOCK:
         ORDER_CACHE[cache_key] = (session_token, order, total)
     return order, total
@@ -686,7 +738,9 @@ def _follower_fields(profile: object) -> dict:
 def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
     """Resolve visible creators and cache their avatars and follow state."""
     clean = list(dict.fromkeys(name.strip() for name in usernames if name.strip()))[:100]
-    profiles = creator_profiles()
+    # Copied because this adds newly resolved creators before writing the file back, and
+    # creator_profiles() hands out the shared cached parse.
+    profiles = dict(creator_profiles())
     missing = [name for name in clean if name.casefold() not in profiles]
     client = SocialClient()
     identity = auth_status()
@@ -1162,6 +1216,32 @@ class Handler(BaseHTTPRequestHandler):
                     "status": TIME_MACHINE.status()})
             except Exception as error: self.internal_error("Time machine", error)
             return
+        if parsed.path == "/api/timemachine/creators":
+            try:
+                self.json_response({"creators": TIME_MACHINE.search_creators(
+                    query.get("q", [""])[0])})
+            except Exception as error: self.internal_error("Time machine creator search", error)
+            return
+        if parsed.path == "/api/timemachine/creator":
+            try:
+                after = query.get("after", [None])[0]
+                history = TIME_MACHINE.creator_history(
+                    query.get("username", [""])[0],
+                    after=int(after) if after not in (None, "") else None,
+                    limit=int(query.get("limit", ["40"])[0]))
+                signals = gallery_signals()
+                profiles, follows = creator_profiles(), signals["followed"]
+                # Each image rides in a one-image card entry so the gallery's own
+                # decoration (avatar, follow state, reactions) applies unchanged.
+                cards = [decorate_history_artist({"username": history["username"], "imageCount": 1,
+                                                  "representativeIndex": 0, "representative": image},
+                                                 profiles, follows, signals)
+                         for image in history["images"]]
+                self.json_response({**history, "cards": attach_preview_tags(cards)})
+            except KeyError as error: self.json_response({"error": str(error.args[0])}, 404)
+            except ValueError as error: self.json_response({"error": str(error)}, 400)
+            except Exception as error: self.internal_error("Time machine creator history", error)
+            return
         if parsed.path == "/api/timemachine/status":
             try:
                 self.json_response(TIME_MACHINE.status())
@@ -1435,7 +1515,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' https://image.civitai.com https://*.civitai.com https://*.civitai.red data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' https://image.civitai.com https://*.civitai.com https://*.civitai.red data:; media-src https://image.civitai.com https://*.civitai.com; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         # Without this, a plain refresh can silently keep serving a stale cached copy of
         # app.js/index.html — no ETag or Last-Modified was sent either, so the browser had
         # nothing to revalidate against and no reason not to just reuse its cache.
@@ -1620,6 +1700,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("usernames must be a list of at most 500 names")
                 self.json_response({"advanced": TIME_MACHINE.advance(names)})
                 return
+            if parsed.path == "/api/timemachine/advance":
+                name = str(body.get("username") or "").strip()
+                position = body.get("position")
+                if not name or not isinstance(position, int) or position < 0:
+                    raise ValueError("username and a non-negative position are required")
+                self.json_response({"advanced": TIME_MACHINE.advance_to(name, position)})
+                return
             if parsed.path == "/api/timemachine/refill":
                 name = str(body.get("username") or "").strip()
                 if not name:
@@ -1783,12 +1870,17 @@ class Handler(BaseHTTPRequestHandler):
         if reaction not in REACTIONS or not isinstance(desired, bool):
             raise ValueError("Invalid reaction request")
         state = CACHE.load(); item = next((row for row in state.get("items", []) if int(row.get("id", -1)) == image_id), None)
-        store = image_store(image_id)
-        in_history = store is not None
+        stores = image_stores(image_id)
+        in_history = bool(stores)
         if item is None and not in_history:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
-        current = reaction_names(client.query("image.get", {"id": image_id}))
+        payload = client.query("image.get", {"id": image_id})
+        current = reaction_names(payload)
+        # Civitai's own counts, read a moment ago, rather than whichever stored copy was
+        # collected first: those differ, and reacting used to make the card jump to the
+        # older number.
+        live = live_reaction_stats(payload)
         changed = (reaction in current) != desired
         if changed:
             client.mutate("reaction.toggle", {"entityId": image_id, "entityType": "image", "reaction": reaction})
@@ -1805,12 +1897,14 @@ class Handler(BaseHTTPRequestHandler):
                     CACHE.save(fresh)
                     item = cached
         if in_history:
-            stats = store.stats(image_id)
+            stats = {**stores[0].stats(image_id), **live}
             if changed:
                 delta = 1 if desired else -1; key = REACTIONS[reaction]
                 stats[key] = max(0, int(stats.get(key, 0)) + delta); stats["reactionCount"] = max(0, int(stats.get("reactionCount", 0)) + delta)
-                store.update_stats(image_id, stats)
-        else: stats = item.get("stats", {})
+            if changed or live:
+                for store in stores:
+                    store.update_stats(image_id, {**store.stats(image_id), **stats})
+        else: stats = {**item.get("stats", {}), **live}
         self.json_response({"imageId": image_id, "reactions": sorted(current), "stats": stats, "changed": changed})
 
     def handle_follow(self, body: dict) -> None:

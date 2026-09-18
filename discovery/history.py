@@ -38,6 +38,9 @@ EMPTY_PROBE_ATTEMPTS = 3
 MAX_CURSOR_OFFSET = 50_000
 API_FAILURE_BODY_BYTES = 4096
 API_FAILURE_LOG_BYTES = 1024 * 1024
+# The Newest feed interleaves videos with images (about 1% of PG rows, 11% of XXX), so
+# keeping them costs no extra requests; they were previously fetched and discarded.
+ARCHIVED_TYPES = ("image", "video")
 
 # Civitai's browsing-level parameter is a bitmask.  Collect the cumulative build
 # choices as non-overlapping feeds so a busy all-ratings day cannot exhaust the
@@ -229,12 +232,28 @@ def _rating_clause(levels: tuple[int, ...]) -> tuple[str, tuple[int, ...]]:
     return (f" AND {BROWSING_LEVEL_SQL} IN ({','.join('?' for _ in levels)})", levels)
 
 
-def preview_url(url: str, width: int = 768) -> str:
+def _cdn_transform(url: str, transform: str) -> str:
     parts = url.rsplit("/", 2)
-    if len(parts) == 3 and (parts[-2] == "original=true" or parts[-2].startswith("width=")):
-        parts[-2] = f"width={width}"
+    if len(parts) == 3 and (parts[-2] == "original=true" or "width=" in parts[-2]):
+        parts[-2] = transform
         return "/".join(parts)
     return url
+
+
+def preview_url(url: str, width: int = 768) -> str:
+    return _cdn_transform(url, f"width={width}")
+
+
+# Measured against image.civitai.com in Sep 2026. A plain ``width=`` transform on a video
+# returns another MP4 (8.5 MB at 768px) that an <img> cannot show; ``anim=false`` returns
+# a ~0.2 MB JPEG still at any width. ``transcode…optimized`` is the playback file: ~3 MB
+# at 450px for a card, ~8 MB at 768px for the details view, against ~30 MB originals.
+def video_still_url(url: str, width: int = 768) -> str:
+    return _cdn_transform(url, f"anim=false,width={width}")
+
+
+def video_playback_url(url: str, width: int = 450) -> str:
+    return _cdn_transform(url, f"transcode=true,width={width},optimized=true")
 
 
 class HistoryArchive:
@@ -473,14 +492,21 @@ class HistoryArchive:
         return [row[0] for row in rows]
 
     def _row_item(self, row: sqlite3.Row, details: bool = False) -> dict:
+        video = row["type"] == "video"
         item = {"id": row["id"], "postId": row["post_id"], "username": row["username"], "createdAt": row["created_at"],
-            "url": row["url"], "thumbnailUrl": preview_url(row["url"]), "civitaiUrl": image_url(row["id"]),
+            "url": row["url"], "thumbnailUrl": video_still_url(row["url"]) if video else preview_url(row["url"]),
+            "civitaiUrl": image_url(row["id"]),
             "width": row["width"], "height": row["height"], "type": row["type"], "nsfwLevel": row["nsfw_level"],
             "browsingLevel": row["browsing_level"], "baseModel": row["base_model"] or "Unknown",
             "modelVersionIds": json.loads(row["model_version_ids"]), "stats": json.loads(row["stats"]),
             "visualHash": row["visual_hash"]}
+        if video:
+            item["videoUrl"] = video_playback_url(row["url"])
         if details:
-            item.update({"prompt": row["prompt"], "negativePrompt": row["negative_prompt"], "resources": json.loads(row["resources"]), "detailsLoaded": bool(row["details_loaded"]), "detailImageUrl": preview_url(row["url"], 1280)})
+            item.update({"prompt": row["prompt"], "negativePrompt": row["negative_prompt"], "resources": json.loads(row["resources"]), "detailsLoaded": bool(row["details_loaded"]),
+                "detailImageUrl": video_still_url(row["url"], 1280) if video else preview_url(row["url"], 1280)})
+            if video:
+                item["detailVideoUrl"] = video_playback_url(row["url"], 768)
         return item
 
     def status(self, value: str, required_content_rating: str | None = None) -> dict:
@@ -1611,7 +1637,7 @@ class HistoryArchive:
                     oldest = min(timestamps) if timestamps else None
                     newest = max(timestamps) if timestamps else None
                     normalized = [normalize(row) for row in rows
-                        if row.get("type") == "image" and row.get("url") and row.get("createdAt")
+                        if row.get("type") in ARCHIVED_TYPES and row.get("url") and row.get("createdAt")
                         and start <= parse_timestamp(row["createdAt"]) < end]
                     image_ids = self._upsert_normalized(normalized, forced_date=value)
                     with self.connect() as db:
