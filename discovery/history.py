@@ -2026,21 +2026,6 @@ class HistoryArchive:
                         result[row["key"]] = row["id"]
             return result
 
-    def creator_video_covers(self, value: str, excluded_images=None) -> dict[str, int]:
-        """Each creator's most-reacted visible video in the block, keyed by creator."""
-        hidden = set(excluded_images or ())
-        rating_clause, rating_params = _rating_clause(self.visible_levels)
-        result: dict[str, int] = {}
-        with self.connect() as db:
-            for row in db.execute(
-                    "SELECT i.username_key AS key, i.id AS id FROM block_images b "
-                    f"JOIN images i ON i.id=b.image_id WHERE b.block_key=? AND i.type='video'"
-                    f"{rating_clause} ORDER BY CAST(COALESCE(json_extract(i.stats,'$.reactionCount'),0) "
-                    "AS INTEGER) DESC,i.created_at DESC,i.id DESC", (value, *rating_params)):
-                if row["key"] not in result and row["id"] not in hidden:
-                    result[row["key"]] = row["id"]
-        return result
-
     def image_model_versions(self, image_ids) -> dict[int, set[int]]:
         """Generation model-version ids for a bounded set of archived images."""
         wanted = sorted({int(value) for value in image_ids if value})

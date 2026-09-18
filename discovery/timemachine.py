@@ -23,6 +23,7 @@ import sqlite3
 import threading
 
 from .civitai import normalize, thumbnail_url, utcnow
+from .history import video_playback_url, video_still_url
 from .site import image_url, levels_for_rating
 
 
@@ -33,6 +34,32 @@ CREATOR_BATCH = 100
 # How far past the pointer to look for an image the reader does not hide. Tags are only
 # known for images already swept, so this bounds the scan rather than promising a find.
 HIDDEN_SCAN_LIMIT = 40
+
+
+def _row_type(row) -> str:
+    """The stored media type, tolerating rows written before the column existed."""
+    try:
+        return row["type"] or "image"
+    except (IndexError, KeyError):
+        return "image"
+
+
+def _representative(image) -> dict:
+    # A video needs the same treatment the daily archive gives it: a still for the card,
+    # because a plain width= transform returns another MP4 that an <img> cannot show, and
+    # a separate transcoded file to play.
+    video = _row_type(image) == "video"
+    item = {"id": image["image_id"], "createdAt": image["created_at"],
+            "url": image["url"],
+            "thumbnailUrl": video_still_url(image["url"]) if video else thumbnail_url(image["url"]),
+            "civitaiUrl": image_url(image["image_id"]),
+            "browsingLevel": image["browsing_level"], "postId": image["post_id"],
+            "width": image["width"], "height": image["height"],
+            "type": _row_type(image),
+            "baseModel": image["base_model"], "stats": json.loads(image["stats"])}
+    if video:
+        item["videoUrl"] = video_playback_url(image["url"])
+    return item
 
 
 class TimeMachine:
@@ -70,7 +97,20 @@ class TimeMachine:
                 username TEXT NOT NULL, created_at TEXT NOT NULL, url TEXT NOT NULL,
                 browsing_level INTEGER NOT NULL DEFAULT 1, post_id INTEGER,
                 width INTEGER, height INTEGER, base_model TEXT, stats TEXT NOT NULL DEFAULT '{}',
+                type TEXT NOT NULL DEFAULT 'image',
                 PRIMARY KEY(username_key, position))""")
+            # Videos were always collected here, but stored with no type, so every one was
+            # served as an image and its MP4 handed to an <img> that cannot show it. Rows
+            # written before this column exists are classed by their file extension, which
+            # is what the CDN URL carries -- no refetch, and the walk keeps its positions.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(creator_images)")}
+            if "type" not in columns:
+                db.execute("ALTER TABLE creator_images ADD COLUMN "
+                           "type TEXT NOT NULL DEFAULT 'image'")
+                # Not .gif: an <img> shows one perfectly well, and Civitai types it as an
+                # image, so treating it as video would break what currently works.
+                db.execute("UPDATE creator_images SET type='video' WHERE "
+                           "url LIKE '%.mp4' OR url LIKE '%.webm'")
             db.execute("""CREATE TABLE IF NOT EXISTS creator_progress(
                 username_key TEXT PRIMARY KEY, username TEXT NOT NULL,
                 next_position INTEGER NOT NULL DEFAULT 0, fetched INTEGER NOT NULL DEFAULT 0,
@@ -140,11 +180,11 @@ class TimeMachine:
                              item["createdAt"], item["url"],
                              int(item.get("browsingLevel") or 1), item.get("postId"),
                              item.get("width"), item.get("height"), item.get("baseModel"),
-                             json.dumps(item.get("stats") or {})))
+                             json.dumps(item.get("stats") or {}), item.get("type") or "image"))
             db.executemany("""INSERT OR IGNORE INTO creator_images(
                 username_key, position, image_id, username, created_at, url,
-                browsing_level, post_id, width, height, base_model, stats)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+                browsing_level, post_id, width, height, base_model, stats, type)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
             # No next cursor, or a page that produced nothing, means the end of this
             # creator's history: the walk is complete rather than merely paused.
             done = 1 if (not next_cursor or not rows) else 0
@@ -226,19 +266,106 @@ class TimeMachine:
                 out.append({
                     "username": row["username"],
                     "imageCount": 1, "representativeIndex": 0,
-                    "representative": {
-                        "id": image["image_id"], "createdAt": image["created_at"],
-                        "url": image["url"], "thumbnailUrl": thumbnail_url(image["url"]),
-                        "civitaiUrl": image_url(image["image_id"]),
-                        "browsingLevel": image["browsing_level"], "postId": image["post_id"],
-                        "width": image["width"], "height": image["height"],
-                        "baseModel": image["base_model"],
-                        "stats": json.loads(image["stats"])},
+                    "representative": _representative(image),
                     "seenCount": seen, "knownCount": total,
                     # False while more of this creator remains unfetched, so the counts can
                     # be shown as "of N so far" rather than implying a complete history.
                     "complete": bool(row["exhausted"])})
         return out
+
+    def search_creators(self, text: str, limit: int = 12) -> list[dict]:
+        """Followed creators whose name contains ``text``, name-prefix matches first.
+
+        Only creators the Time Machine already tracks, so a suggestion never costs a
+        Civitai request and never adds anyone to the one-card-per-creator walk.
+        """
+        needle = str(text or "").strip().casefold()
+        if not needle:
+            return []
+        # Usernames can contain "_", which LIKE would otherwise treat as a wildcard.
+        escaped = needle.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT p.username, p.next_position, p.exhausted,
+                          (SELECT COUNT(*) FROM creator_images i
+                           WHERE i.username_key=p.username_key) AS known
+                   FROM creator_progress p WHERE p.username_key LIKE ? ESCAPE '!'
+                   ORDER BY p.username_key NOT LIKE ? ESCAPE '!', p.username_key LIMIT ?""",
+                (f"%{escaped}%", f"{escaped}%", max(1, min(int(limit), 50)))).fetchall()
+        return [{"username": row["username"], "knownCount": int(row["known"]),
+                 "seenCount": min(int(row["next_position"]), int(row["known"])),
+                 "complete": bool(row["exhausted"])} for row in rows]
+
+    def creator_history(self, username: str, after: int | None = None, limit: int = 40,
+                        refill: bool = True, levels=None) -> dict:
+        """One followed creator's images, oldest first, from where the reader left off.
+
+        ``after`` is the last position the page already holds, so paging continues from
+        the list the reader is scrolling rather than from the saved spot, which moves
+        underneath it as cards are passed. When the saved images run out, the next page
+        is fetched from Civitai here, so scrolling never stalls at a cached boundary.
+        """
+        key = str(username or "").casefold()
+        with self.connect() as db:
+            progress = db.execute("SELECT * FROM creator_progress WHERE username_key=?",
+                                  (key,)).fetchone()
+        if progress is None:
+            raise KeyError("That creator is not one the Time Machine follows")
+        start = int(progress["next_position"]) if after is None else int(after) + 1
+        limit = max(1, min(int(limit), 100))
+        visible = sorted(levels or self.archive.visible_levels)
+        holes = ",".join("?" for _ in visible)
+        hidden_tags = self.hidden_tag_names()
+        images: list[dict] = []
+        position = start
+        # Bounded: each pass either reads saved rows or fetches one more page.
+        for _ in range(6):
+            with self.connect() as db:
+                rows = db.execute(
+                    f"""SELECT * FROM creator_images
+                        WHERE username_key=? AND position>=? AND browsing_level IN ({holes})
+                        ORDER BY position LIMIT ?""",
+                    (key, position, *visible, limit - len(images))).fetchall()
+                exhausted, cursor = db.execute(
+                    "SELECT exhausted, cursor FROM creator_progress WHERE username_key=?",
+                    (key,)).fetchone()
+            blocked = self._hidden_image_ids([int(row["image_id"]) for row in rows], hidden_tags)
+            for row in rows:
+                if int(row["image_id"]) not in blocked:
+                    images.append({"position": int(row["position"]), **_representative(row)})
+            if rows:
+                position = int(rows[-1]["position"]) + 1
+            if len(images) >= limit or exhausted or not cursor or not refill:
+                break
+            if not rows and self.fetch_page(progress["username"], cursor=cursor) == 0:
+                break
+        with self.connect() as db:
+            known = db.execute(
+                f"""SELECT COUNT(*) FROM creator_images
+                    WHERE username_key=? AND browsing_level IN ({holes})""",
+                (key, *visible)).fetchone()[0]
+            seen = db.execute(
+                f"""SELECT COUNT(*) FROM creator_images WHERE username_key=? AND position<?
+                    AND browsing_level IN ({holes})""",
+                (key, progress["next_position"], *visible)).fetchone()[0]
+            final = db.execute("SELECT exhausted FROM creator_progress WHERE username_key=?",
+                               (key,)).fetchone()[0]
+        return {"username": progress["username"], "images": images,
+                "knownCount": known, "seenCount": seen, "complete": bool(final),
+                "hasMore": len(images) >= limit or not final}
+
+    def advance_to(self, username: str, position: int) -> bool:
+        """Move a creator's saved spot past ``position``; never backwards.
+
+        Monotonic so batched or out-of-order flushes from a scrolled list are harmless.
+        """
+        key = str(username or "").casefold()
+        with self.connect() as db:
+            changed = db.execute(
+                "UPDATE creator_progress SET next_position=?, updated_at=? "
+                "WHERE username_key=? AND next_position<=?",
+                (int(position) + 1, utcnow(), key, int(position))).rowcount
+        return bool(changed)
 
     def has_image(self, image_id: int) -> bool:
         """Whether this image was collected here.
@@ -277,17 +404,21 @@ class TimeMachine:
                              (int(image_id),)).fetchone()
         if row is None:
             raise ValueError("Image is not in the history archive")
+        video = _row_type(row) == "video"
         item = {"id": row["image_id"], "postId": row["post_id"], "username": row["username"],
                 "createdAt": row["created_at"], "url": row["url"],
-                "thumbnailUrl": thumbnail_url(row["url"]),
-                "detailImageUrl": thumbnail_url(row["url"], 1280),
+                "thumbnailUrl": video_still_url(row["url"]) if video else thumbnail_url(row["url"]),
+                "detailImageUrl": (video_still_url(row["url"], 1280) if video
+                                   else thumbnail_url(row["url"], 1280)),
                 "civitaiUrl": image_url(row["image_id"]),
-                "width": row["width"], "height": row["height"], "type": "image",
+                "width": row["width"], "height": row["height"], "type": _row_type(row),
                 "browsingLevel": row["browsing_level"],
                 "baseModel": row["base_model"] or "Unknown",
                 "stats": json.loads(row["stats"]), "visualHash": None,
                 "modelVersionIds": [], "prompt": "", "negativePrompt": "",
                 "resources": [], "detailsLoaded": False}
+        if video:
+            item["detailVideoUrl"] = video_playback_url(row["url"], 768)
         try:
             payload, _ = self.archive._request(
                 {"imageId": int(image_id), "withMeta": "true",

@@ -50,3 +50,19 @@
   #discovery .summary-row .reaction-card { grid-column: 1 / -1; }
   #discovery .summary-row .metric-card:last-child { border-bottom: 0; }
 }
+
+/* Time Machine creator search */
+.tm-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 12px; }
+.tm-head .discovery-head > div:first-child { flex: 1 1 340px; min-width: 0; }
+.tm-status { margin-top: 0; flex: 0 1 460px; }
+.tm-search { position: relative; flex: 0 1 340px; }
+.tm-search input { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; }
+.tm-search-list { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 4px; list-style: none; max-height: 320px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 10px 28px #0008; }
+.tm-search-list li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+.tm-search-list li small { color: var(--muted); white-space: nowrap; }
+.tm-search-list li[aria-selected="true"], .tm-search-list li:hover { background: #ffffff14; }
+.tm-search-list li.tm-search-empty { cursor: default; color: var(--muted); }
+.tm-creator-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-left: auto; }
+.tm-creator-bar > div { display: flex; flex-direction: column; min-width: 0; }
+.tm-creator-bar small { color: var(--muted); }
+.tm-creator-bar button { border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 8px 12px; border-radius: 8px; cursor: pointer; }

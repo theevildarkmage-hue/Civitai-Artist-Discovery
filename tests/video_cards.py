@@ -69,10 +69,5 @@ with tempfile.TemporaryDirectory(prefix="video-covers-") as temporary:
     assert video["detailVideoUrl"] == f"{CDN}/transcode=true,width=768,optimized=true/12.mp4", video
     assert still["thumbnailUrl"] == f"{CDN}/width=768/10.jpeg" and "videoUrl" not in still, still
 
-    # Each creator's most-reacted video, skipping hidden ones and levels not being viewed.
-    covers = archive.creator_video_covers(DAY, excluded_images={30})
-    assert covers == {"mixed": 12}, covers
 
-
-print({"videosCollected": True, "stillFrameThumbnail": True, "playbackUrl": True,
-       "videoCoversRespectFilters": True})
+print({"videosCollected": True, "stillFrameThumbnail": True, "playbackUrl": True})

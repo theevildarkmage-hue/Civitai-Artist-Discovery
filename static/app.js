@@ -501,14 +501,29 @@ function checkImageTags(imageId) {
   });
 }
 function tagsHideImage(result) { return !!result?.tags?.some(tag => tag.hidden); }
+// A tag check that fails takes the card out of use for the rest of the session, so a
+// single unlucky request is worth one retry: the batch behind it covers up to fifty
+// cards, and a transient server error otherwise leaves that whole group unreadable.
+// The rejection happens before the card changes any of its own state, so re-running
+// prepareArtwork is a clean second attempt rather than a resumption.
+const TAG_CHECK_RETRY_MS = 1500;
+function prepareCardArtwork(element, attempt = 0) {
+  if (!element.prepareArtwork) return;
+  element.prepareArtwork().catch(error => {
+    if (!attempt && element.isConnected) {
+      console.warn("Image tags could not be verified, retrying", error);
+      setTimeout(() => { if (element.isConnected) prepareCardArtwork(element, 1); }, TAG_CHECK_RETRY_MS);
+      return;
+    }
+    element.classList.add("tag-check-failed");
+    console.warn("Image tags could not be verified", error);
+  });
+}
 const cardImageObserver = new IntersectionObserver(entries => {
   entries.forEach(entry => {
     if (!entry.isIntersecting) return;
     cardImageObserver.unobserve(entry.target);
-    entry.target.prepareArtwork?.().catch(error => {
-      entry.target.classList.add("tag-check-failed");
-      console.warn("Image tags could not be verified", error);
-    });
+    prepareCardArtwork(entry.target);
   });
 }, { rootMargin: "700px" });
 // Cards the user has scrolled past dim in place immediately, and the fact of having
@@ -518,6 +533,17 @@ const cardImageObserver = new IntersectionObserver(entries => {
 // to actually reach the screen and sit there a moment, so a fast fling-scroll past ten
 // cards does not mark all ten as "seen" when nothing was really looked at.
 const SEEN_DWELL_MS = 600;
+// A card can leave through the top without the reader scrolling at all: artwork above it
+// loading at its real height pulls everything below upwards, which used to dim cards
+// nobody had reached. Passing one means the page moved down under it.
+const SEEN_SCROLL_MIN_PX = 24;
+function scrolledPast(element, entry) {
+  const exitedAbove = entry.rootBounds
+    ? entry.boundingClientRect.bottom <= entry.rootBounds.top
+    : entry.boundingClientRect.bottom <= 0;
+  return exitedAbove && !!entry.boundingClientRect.height
+    && window.scrollY - (element.seenEnteredScrollY ?? window.scrollY) >= SEEN_SCROLL_MIN_PX;
+}
 // Keyed by the day each card actually belongs to, not the currently-selected one: a
 // card's dwell timer can still be pending when the user switches days, and reading
 // selectedDate only at flush time would attribute it to whatever day they had moved on
@@ -552,17 +578,15 @@ window.addEventListener("pagehide", flushSeenOnUnload);
 const seenObserver = new IntersectionObserver(entries => {
   entries.forEach(entry => {
     const el = entry.target;
-    if (entry.isIntersecting) { el.seenEnteredAt = Date.now(); return; }
+    if (entry.isIntersecting) { el.seenEnteredAt = Date.now(); el.seenEnteredScrollY = window.scrollY; return; }
     const enteredAt = el.seenEnteredAt;
     el.seenEnteredAt = null;
     // A view reload, tab switch, or day change can detach/hide a card and produces the
     // same non-intersecting notification as scrolling. It is not evidence the person saw
     // the card. Likewise, leaving through the bottom means the reader scrolled back up;
-    // only a connected card that travelled completely above the viewport was passed.
-    const exitedAbove = entry.rootBounds
-      ? entry.boundingClientRect.bottom <= entry.rootBounds.top
-      : entry.boundingClientRect.bottom <= 0;
-    if (!el.isConnected || !exitedAbove || !enteredAt || Date.now() - enteredAt < SEEN_DWELL_MS) return;
+    // only a connected card the reader scrolled completely above the viewport was passed.
+    if (!el.isConnected || !scrolledPast(el, entry) || !enteredAt
+        || Date.now() - enteredAt < SEEN_DWELL_MS) return;
     seenObserver.unobserve(el);
     el.classList.add("is-seen");
     const date = el.dataset.seenDate;
@@ -588,6 +612,9 @@ function clearGallery() {
     el.seenEnteredAt = null;
   });
   preferenceHidden = 0;
+  // A different day's cards are a different page: the offset saved for this tab belongs
+  // to the day being replaced, so returning to it must not jump into the new one.
+  viewScroll.gallery = 0;
   $("gallery").replaceChildren();
 }
 function avatar(a) { return a.avatarUrl ? `<img class="creator-avatar" src="${escapeHtml(a.avatarUrl)}" alt="">` : `<span class="creator-avatar fallback">${escapeHtml(initials(a.username))}</span>`; }
@@ -1696,7 +1723,14 @@ async function pollDiscovery() {
   catch (error) { toast(error.message); }
   finally { discoveryPolling = false; }
 }
+// Tabs share one scrolling page, so without this the gallery inherited wherever the Time
+// Machine was left. Landing halfway down a day nobody scrolled through is wrong on its
+// own, and it also feeds the seen tracking: cards there are on screen, so reading on from
+// that point dims work the reader never actually passed.
+const viewScroll = { gallery: 0, discovery: 0, timemachine: 0 };
 function showView(name) {
+  const previous = currentView;
+  if (previous !== name) viewScroll[previous] = window.scrollY;
   currentView = name;
   const discovery = name === "discovery";
   const timeMachine = name === "timemachine";
@@ -1711,6 +1745,9 @@ function showView(name) {
   $("timeMachine").classList.toggle("hidden", !timeMachine);
   $("loading").classList.toggle("hidden", !gallery || dayBuilt);
   $("gallery").classList.toggle("hidden", !gallery || !dayBuilt);
+  // Before seen tracking resumes below, so the observer's first report describes where
+  // the reader actually is rather than the position the previous tab was left at.
+  if (previous !== name) window.scrollTo({ top: viewScroll[name] ?? 0, behavior: "auto" });
   if (timeMachine) {
     refreshTimeMachine().catch(error => window.CivitaiUI.showPageError(
       $("timeMachineMessage"), error.message, refreshTimeMachine));
@@ -1842,15 +1879,12 @@ let timeMachineFlushTimer = 0;
 const timeMachineSeenObserver = new IntersectionObserver(entries => {
   entries.forEach(entry => {
     const element = entry.target;
-    if (entry.isIntersecting) { element.tmEnteredAt = Date.now(); return; }
+    if (entry.isIntersecting) { element.tmEnteredAt = Date.now(); element.seenEnteredScrollY = window.scrollY; return; }
     const enteredAt = element.tmEnteredAt;
     element.tmEnteredAt = 0;
-    // Leaving through the bottom means the reader scrolled back up, and a detached card
-    // produces this same notification without anyone having seen anything.
-    const exitedAbove = entry.rootBounds
-      ? entry.boundingClientRect.bottom <= entry.rootBounds.top
-      : entry.boundingClientRect.bottom <= 0;
-    if (!element.isConnected || !exitedAbove || !enteredAt) return;
+    // Leaving through the bottom means the reader scrolled back up, and a detached or
+    // hidden card produces this same notification without anyone having seen anything.
+    if (!element.isConnected || !scrolledPast(element, entry) || !enteredAt) return;
     if (Date.now() - enteredAt < SEEN_DWELL_MS) return;
     timeMachinePending.add(element.dataset.username);
     // Dim it here rather than leaving it to the gallery's observer, which no longer
@@ -1897,8 +1931,234 @@ async function refreshTimeMachine() {
     clearSkeleton();
     renderTimeMachineStatus(data.status);
     renderTimeMachineCards(data.cards);
+    // Reactions already made on Civitai, or in the daily gallery, so a card opens
+    // showing what is already there rather than only after it is clicked.
+    hydrateReactionStates(data.cards.map(entry => entry.representative))
+      .catch(error => console.warn("Reaction history could not be loaded", error));
   } finally { clearSkeleton(); grid.removeAttribute("aria-busy"); }
 }
+// Searching one followed creator. Suggestions come from creators the Time Machine already
+// tracks, so typing never calls Civitai. Picking one shows only their work, starting at
+// the same saved spot the one-card-per-creator walk uses: passing images here moves that
+// spot too, so neither view makes you scroll through what you have already seen.
+let tmCreator = null, tmCreatorAfter = null, tmCreatorHasMore = false, tmCreatorLoading = null;
+let tmCreatorToken = 0, tmSearchTimer = 0, tmSearchToken = 0, tmSearchIndex = -1;
+const tmCreatorPending = new Map();
+let tmCreatorFlushTimer = 0;
+function closeTimeMachineSearch() {
+  $("tmSearchList").classList.add("hidden");
+  $("tmSearch").setAttribute("aria-expanded", "false");
+  $("tmSearch").removeAttribute("aria-activedescendant");
+  tmSearchIndex = -1;
+}
+function highlightTimeMachineOption(index) {
+  const options = [...$("tmSearchList").querySelectorAll("li[data-username]")];
+  if (!options.length) return;
+  tmSearchIndex = (index + options.length) % options.length;
+  options.forEach((option, position) => option.setAttribute("aria-selected", String(position === tmSearchIndex)));
+  $("tmSearch").setAttribute("aria-activedescendant", options[tmSearchIndex].id);
+  options[tmSearchIndex].scrollIntoView({ block: "nearest" });
+}
+async function searchTimeMachineCreators() {
+  const text = $("tmSearch").value.trim(), token = ++tmSearchToken;
+  if (!text) return closeTimeMachineSearch();
+  const { creators } = await api(`/api/timemachine/creators?q=${encodeURIComponent(text)}`);
+  if (token !== tmSearchToken || document.activeElement !== $("tmSearch")) return;
+  const list = $("tmSearchList");
+  const options = creators.map((creator, index) => {
+    const option = document.createElement("li");
+    option.id = `tmSearchOption${index}`;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", "false");
+    option.dataset.username = creator.username;
+    const name = document.createElement("span");
+    name.textContent = creator.username;
+    const count = document.createElement("small");
+    count.textContent = timeMachineProgress(creator);
+    option.append(name, count);
+    // mousedown, not click: the input's blur would otherwise close the list first.
+    option.addEventListener("mousedown", event => {
+      event.preventDefault();
+      openTimeMachineCreator(creator.username).catch(error => toast(error.message));
+    });
+    return option;
+  });
+  if (!options.length) {
+    const empty = document.createElement("li");
+    empty.className = "tm-search-empty";
+    empty.textContent = "No followed creator matches";
+    options.push(empty);
+  }
+  list.replaceChildren(...options);
+  list.classList.remove("hidden");
+  $("tmSearch").setAttribute("aria-expanded", "true");
+  tmSearchIndex = -1;
+}
+$("tmSearch").addEventListener("input", () => {
+  clearTimeout(tmSearchTimer);
+  tmSearchTimer = setTimeout(() => searchTimeMachineCreators().catch(error => toast(error.message)), 120);
+});
+$("tmSearch").addEventListener("keydown", event => {
+  const open = !$("tmSearchList").classList.contains("hidden");
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (!open) return;
+    event.preventDefault();
+    highlightTimeMachineOption(tmSearchIndex + (event.key === "ArrowDown" ? 1 : -1));
+  } else if (event.key === "Enter" && open) {
+    const options = [...$("tmSearchList").querySelectorAll("li[data-username]")];
+    const choice = options[Math.max(0, tmSearchIndex)];
+    if (choice) {
+      event.preventDefault();
+      openTimeMachineCreator(choice.dataset.username).catch(error => toast(error.message));
+    }
+  } else if (event.key === "Escape") {
+    closeTimeMachineSearch();
+  }
+});
+$("tmSearch").addEventListener("blur", closeTimeMachineSearch);
+$("tmSearch").addEventListener("focus", () => {
+  if ($("tmSearch").value.trim()) searchTimeMachineCreators().catch(() => {});
+});
+
+function flushTimeMachineCreator() {
+  clearTimeout(tmCreatorFlushTimer);
+  const entries = [...tmCreatorPending.entries()]; tmCreatorPending.clear();
+  return Promise.all(entries.map(([username, position]) =>
+    api("/api/timemachine/advance", { method: "POST", body: JSON.stringify({ username, position }) })));
+}
+window.addEventListener("pagehide", () => {
+  const entries = [...tmCreatorPending.entries()]; tmCreatorPending.clear();
+  entries.forEach(([username, position]) => navigator.sendBeacon("/api/timemachine/advance",
+    new Blob([JSON.stringify({ username, position })], { type: "application/json" })));
+});
+// Same rule as every other seen card: on screen long enough, then left through the top.
+const tmCreatorSeenObserver = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    const element = entry.target;
+    if (entry.isIntersecting) { element.tmEnteredAt = Date.now(); element.seenEnteredScrollY = window.scrollY; return; }
+    const enteredAt = element.tmEnteredAt;
+    element.tmEnteredAt = 0;
+    if (!element.isConnected || !scrolledPast(element, entry) || !enteredAt) return;
+    if (Date.now() - enteredAt < SEEN_DWELL_MS) return;
+    tmCreatorSeenObserver.unobserve(element);
+    element.classList.add("is-seen");
+    const username = element.dataset.username, position = Number(element.dataset.position);
+    tmCreatorPending.set(username, Math.max(position, tmCreatorPending.get(username) ?? -1));
+    clearTimeout(tmCreatorFlushTimer);
+    tmCreatorFlushTimer = setTimeout(() => flushTimeMachineCreator()
+      .catch(error => console.warn("Time machine progress", error)), 1200);
+  });
+}, { rootMargin: "0px" });
+const tmCreatorSentinelObserver = new IntersectionObserver(entries => {
+  if (entries.some(entry => entry.isIntersecting)) loadTimeMachineCreatorPage().catch(error => toast(error.message));
+}, { rootMargin: "1200px 0px" });
+function renderTimeMachineCreatorBar(data) {
+  $("tmCreatorName").textContent = data.username;
+  $("tmCreatorProgress").textContent = data.knownCount
+    ? `${timeMachineProgress(data)} seen`
+    : "Nothing saved at this content level yet.";
+}
+function timeMachineCreatorCard(entry, image) {
+  const element = card(entry);
+  // Detached from the daily gallery's seen tracking, as the walk's cards are.
+  seenObserver.unobserve(element);
+  delete element.dataset.seenDate;
+  element.classList.add("tm-card");
+  element.dataset.username = entry.username.toLowerCase();
+  element.dataset.position = String(image.position);
+  const basePrepareArtwork = element.prepareArtwork;
+  element.prepareArtwork = async () => {
+    if (tagsHideImage(await checkImageTags(entry.representative.id))) {
+      tmCreatorSeenObserver.unobserve(element);
+      element.remove();
+      return;
+    }
+    return basePrepareArtwork();
+  };
+  const line = document.createElement("div");
+  line.className = "tm-progress";
+  line.textContent = `${String(entry.representative.createdAt).slice(0, 10)} · #${displayCount(image.position + 1)}`;
+  element.appendChild(line);
+  return element;
+}
+function loadTimeMachineCreatorPage() {
+  if (!tmCreator) return Promise.resolve();
+  if (tmCreatorLoading) return tmCreatorLoading;
+  if (tmCreatorAfter !== null && !tmCreatorHasMore) return Promise.resolve();
+  const token = tmCreatorToken, sentinel = $("tmCreatorSentinel");
+  sentinel.textContent = "Loading…";
+  const after = tmCreatorAfter === null ? "" : `&after=${tmCreatorAfter}`;
+  tmCreatorLoading = (async () => {
+    try {
+      const data = await api(`/api/timemachine/creator?username=${encodeURIComponent(tmCreator)}&limit=40${after}`);
+      if (token !== tmCreatorToken) return;
+      renderTimeMachineCreatorBar(data);
+      const grid = $("timeMachineCreatorGrid");
+      data.cards.forEach((entry, index) => {
+        const element = timeMachineCreatorCard(entry, data.images[index]);
+        grid.appendChild(element);
+        tmCreatorSeenObserver.observe(element);
+      });
+      hydrateReactionStates(data.cards.map(entry => entry.representative))
+        .catch(error => console.warn("Reaction history could not be loaded", error));
+      tmCreatorAfter = data.images.length ? data.images[data.images.length - 1].position : (tmCreatorAfter ?? -1);
+      tmCreatorHasMore = data.hasMore && data.images.length > 0;
+      sentinel.textContent = tmCreatorHasMore ? "Loading…"
+        : grid.children.length ? "You're caught up on this creator." : "Nothing left to show for this creator.";
+    } finally {
+      if (token === tmCreatorToken) tmCreatorLoading = null;
+    }
+    // A short page can leave the sentinel on screen, which raises no new notification.
+    const box = sentinel.getBoundingClientRect();
+    if (token === tmCreatorToken && tmCreatorHasMore && box.top < window.innerHeight + 1200) {
+      return loadTimeMachineCreatorPage();
+    }
+  })();
+  return tmCreatorLoading;
+}
+function clearTimeMachineCreatorGrid() {
+  const grid = $("timeMachineCreatorGrid");
+  [...grid.children].forEach(node => tmCreatorSeenObserver.unobserve(node));
+  grid.replaceChildren();
+}
+async function openTimeMachineCreator(username) {
+  closeTimeMachineSearch();
+  $("tmSearch").value = "";
+  $("tmSearch").blur();
+  // Stop watching the walk before hiding it, then hand its progress over so the creator
+  // view starts from the current saved spot.
+  [...$("timeMachineGrid").children].forEach(node => { timeMachineSeenObserver.unobserve(node); node.tmEnteredAt = 0; });
+  await flushTimeMachineSeen().catch(() => {});
+  await flushTimeMachineCreator().catch(() => {});
+  tmCreatorToken++;
+  tmCreator = username; tmCreatorAfter = null; tmCreatorHasMore = false; tmCreatorLoading = null;
+  clearTimeMachineCreatorGrid();
+  $("tmCreatorName").textContent = username;
+  $("tmCreatorProgress").textContent = "";
+  $("timeMachineGrid").classList.add("hidden");
+  $("timeMachineCreatorGrid").classList.remove("hidden");
+  $("tmCreatorBar").classList.remove("hidden");
+  $("tmCreatorSentinel").classList.remove("hidden");
+  window.scrollTo({ top: 0 });
+  tmCreatorSentinelObserver.observe($("tmCreatorSentinel"));
+  await loadTimeMachineCreatorPage();
+}
+async function closeTimeMachineCreator() {
+  tmCreatorToken++;
+  tmCreator = null;
+  tmCreatorLoading = null;
+  tmCreatorSentinelObserver.unobserve($("tmCreatorSentinel"));
+  clearTimeMachineCreatorGrid();
+  await flushTimeMachineCreator().catch(error => console.warn("Time machine progress", error));
+  $("tmCreatorBar").classList.add("hidden");
+  $("tmCreatorSentinel").classList.add("hidden");
+  $("timeMachineCreatorGrid").classList.add("hidden");
+  $("timeMachineGrid").classList.remove("hidden");
+  [...$("timeMachineGrid").children].forEach(node => timeMachineSeenObserver.observe(node));
+  window.scrollTo({ top: 0 });
+  await refreshTimeMachine();
+}
+$("tmBack").onclick = () => closeTimeMachineCreator().catch(error => toast(error.message));
 $("timeMachinePrime").onclick = async () => {
   $("timeMachinePrime").disabled = true;
   try {
