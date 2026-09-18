@@ -288,14 +288,34 @@ def login(timeout: int = 300) -> dict:
     _save(tokens); return tokens["identity"]
 
 
+# Civitai rotates the refresh token: redeeming one invalidates it. The gallery makes
+# several requests at once (tags, reaction status, metadata), so without this lock every
+# thread that found the same expired token posted the same refresh token, one won, and the
+# rest got HTTP 400 — which surfaced as cards stuck on "Could not verify this image".
+_REFRESH_LOCK = threading.Lock()
+
+
+def _refreshed_tokens(active: str) -> dict:
+    with _REFRESH_LOCK:
+        # Re-read inside the lock: whoever held it before this thread may already have
+        # saved a fresh token, and redeeming the old one again would fail.
+        tokens = _load()
+        if tokens.get("client_id") != active:
+            raise RuntimeError("Stored authorization belongs to a different Civitai application")
+        if int(tokens.get("expires_at", 0)) > int(time.time()) + 120:
+            return tokens
+        tokens = {**_post("token", {"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": active}), "identity": tokens.get("identity", {}), "client_id": active}
+        tokens["expires_at"] = int(time.time()) + int(tokens.get("expires_in", 3600)); _save(tokens)
+        return tokens
+
+
 def get_access_token() -> str:
     tokens = _load()
     active = client_id()
     if not active or tokens.get("client_id") != active:
         raise RuntimeError("Stored authorization belongs to a different Civitai application")
     if int(tokens.get("expires_at", 0)) <= int(time.time()) + 120:
-        tokens = {**_post("token", {"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": active}), "identity": tokens.get("identity", {}), "client_id": active}
-        tokens["expires_at"] = int(time.time()) + int(tokens.get("expires_in", 3600)); _save(tokens)
+        tokens = _refreshed_tokens(active)
     return tokens["access_token"]
 
 
