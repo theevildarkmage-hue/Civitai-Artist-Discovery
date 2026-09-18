@@ -1,177 +1,57 @@
-# Civitai Artist Discovery 2.1.0
+# Civitai Artist Discovery 2.2.0
 
-A maintenance release built around one theme: settings that quietly narrowed what the app
-saved, or hid what it had already saved, now say what they do and stay reversible.
+Civitai's feeds have always mixed videos in with images. This release stops throwing them
+away: a video now appears in the same cards and carousels as everything else, in the
+daily gallery and in the Time Machine.
 
-## Automatic collection has its own coverage
+## Videos appear alongside images
 
-- **Save recent days** now chooses its own artwork coverage instead of following the
-  browsing levels being viewed. Previously, narrowing what you looked at also narrowed
-  what was downloaded, and because a day is stamped with the coverage it was collected at,
-  those days could never show the wider ratings later without being rebuilt.
-- A new install collects all ratings so its archives are complete from the start. An
-  existing install keeps collecting exactly what it already was; the coverage only widens
-  when it is asked to.
+- Collecting a day keeps the videos Civitai's feed already returned. They cost no extra
+  requests — the app was fetching those rows and discarding them. Days collected before
+  this release contain no videos until they are rebuilt.
+- A video card shows a still frame and plays itself, muted, once at least half of it has
+  been on screen for a moment. Scrolling it away stops playback and aborts the download,
+  so a fast scroll past thirty cards only ever plays the ones you stop on.
+- A ▶/❚❚ control on the card overrides either choice. Cards also pause while the details
+  dialog is open, while the tab is in the background, and when the system asks for reduced
+  motion — where ▶ still plays on request.
+- The details dialog plays the larger file with controls, starting muted.
+- Hidden-tag filtering, reactions, follows, and collections work on a video exactly as
+  they do on an image.
+- The Time Machine shows videos too, including in creators' back catalogues it had
+  already collected. Nothing is refetched to make that work.
 
-## Viewing ratings no longer hide finished galleries
+## Find one creator in the Time Machine
 
-- Choosing a rating wider than a day was collected at used to replace the gallery with the
-  build screen, hiding thousands of images that rating was perfectly happy to show. The
-  day is now shown, and says what it is missing.
-- Only a filter the archive can show nothing for still offers the build screen.
-- The content filter stays reachable from the build screen. It was previously hidden
-  there, which stranded the reader on the one screen where the choice could not be undone.
-
-## Reach the app from another device
-
-- **Allow LAN access** lets other devices on the same network open the app by IP address,
-  off by default. Turning it on explains what it exposes, asks before restarting, and then
-  opens on the network address so it can be read off the address bar and typed into a
-  phone or tablet.
-- Anyone who can reach that address can use the app, including follow and reaction actions
-  on the signed-in account. Windows asks for firewall permission the first time.
+- A search box lists the creators it already tracks, so typing never asks Civitai
+  anything. Choosing one shows only their work.
+- It opens at the same place the one-card-per-creator walk had reached, and reading here
+  moves that place too, so neither view makes you scroll through what you have seen.
 
 ## Fixes
 
-- Restoring your place in a gallery no longer marks creators as seen that were never
-  looked at. The jump to a saved position moved cards past the viewport exactly as
-  scrolling does, so each reload quietly buried a few more artists.
-- After a refresh the gallery opens at the top, where the first artist you have not seen
-  now is, instead of a saved offset measured against the previous order.
-- Background work shares one paced request lane with day collection, so a Time Machine
-  prime running alongside a collection no longer doubles the request rate. Reactions,
-  follows and other actions you are waiting on stay outside the lane and are unaffected.
-- A restart now waits for the outgoing copy to release its port and single-instance lock
-  rather than exiting, which could leave no application running.
+- Cards no longer show "Could not verify this image against your Civitai Content
+  Controls" in place of artwork when several parts of the gallery load at once. The
+  authorization was being renewed by each of them separately, and all but one of those
+  renewals failed.
+- A card whose content check fails once now tries again before giving up, instead of
+  staying blank for the rest of the session.
+- Artwork loading above a card no longer counts as you having scrolled past it. Cards
+  below what you were reading could be marked as seen — and so buried in later views —
+  purely because the page grew above them.
+- Each tab keeps its own scroll position. Switching from a Time Machine scrolled far down
+  used to open the gallery at the same depth, in the middle of a day you had never seen,
+  and reading on from there marked all of it as seen.
 
 ## Updating
 
-Packaged versions 1.0.0 through 2.0.0 can install 2.1.0 through the normal in-app update
+Packaged versions 1.0.0 through 2.1.0 can install 2.2.0 through the normal in-app update
 dialog. The updater verifies the GitHub-provided SHA-256 digest, preserves the portable
 `data/` folder, rolls back a failed replacement, and restarts automatically.
 
-The exact release asset is `CivitaiArtistDiscovery-2.1.0.zip`. Its SHA-256 is
-`041771002cdb8c7496f9ebd11a1f62448320bdc8611189ea057bc65dbed9bb93`; it is also recorded in the
-accompanying checksum file and verified automatically by the app.
-
-Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
-unsigned, so Windows SmartScreen or managed-device policy may warn or block it.
-
-
-# Civitai Artist Discovery 2.0.0
-
-Version 2.0 is a full interface and interaction refresh focused on making a very large
-daily Civitai feed feel fast, understandable, and centered on creators rather than rows
-of disconnected images.
-
-## A new gallery experience
-
-- Image-first creator cards now share one visual and interaction system across Daily
-  Gallery and Time Machine.
-- Each artist stays in one card with an image carousel, visible navigation feedback,
-  reaction totals, follower information, Follow, details, and direct Civitai links.
-- Card menus can save the current image to a Civitai collection or add the artist to the
-  account's Civitai Hidden Users list. Civitai Content Controls remain the source of truth.
-- Recommendation, familiarity, and Emerging badges live together at the top of the image.
-
-## Simpler navigation and filtering
-
-- A shared command bar keeps Daily Gallery, Time Machine, and My Profile in one consistent
-  shell.
-- Calendar navigation replaces the older day-by-day controls and marks saved and partially
-  collected days, with Morning, Evening, and All day choices in the same panel.
-- Content and generation-model filters are combined into one compact panel with search,
-  active filter chips, and a safe-default reset.
-- Settings contains card size, viewed-card dimming, frequent-poster filtering, automatic
-  day collection, update checks, and local profile-data management without duplicated UI.
-
-## Personal discovery
-
-- For You combines reaction taste with a cached fingerprint of the account's public work
-  and explains why a creator is being recommended.
-- Emerging uses the same personal ranking while limiting the pool to creators with fewer
-  than 1,000 followers.
-- My Profile has a redesigned hierarchy for reaction mix, distinctive tags, model signals,
-  favorite creators, and creators worth following.
-- Time Machine uses the shared cards while walking through the oldest work of creators the
-  account follows.
-
-## Faster and clearer loading
-
-- The first page is smaller, previews are sized responsively, and artwork begins loading
-  only as cards approach the viewport.
-- Cached tag decisions and an indexed hidden-tag lookup reduce repeat work on large
-  archives without weakening content filtering.
-- Skeletons, retry actions, carousel progress, cancellation, and empty states replace
-  unexplained blank cards or controls that appear unresponsive.
-- Opening an image at full size clears the previous artwork immediately and shows a
-  loading state, instead of leaving the last image on screen until the new one arrives.
-- Gallery depth, scroll position, date/window/view, models, and card size survive an
-  ordinary refresh within the browser session.
-
-## Updating
-
-Packaged versions 1.0.0 through 1.0.4 can install 2.0.0 through the normal in-app update
-dialog. The updater verifies the GitHub-provided SHA-256 digest, preserves the portable
-`data/` folder, rolls back a failed replacement, and restarts automatically.
-
-The exact release asset is `CivitaiArtistDiscovery-2.0.0.zip`. Its SHA-256 is
-`0783c3f1f78f0262cb60a0cb32bba17f21d6ccef03eb1ad3a761c188436c9ee8`; it is also recorded in the
-accompanying checksum file and verified automatically by the app.
-
-The Hide Artist action needs Civitai's profile-settings permission. Existing users should
-sign out and back in once after updating if they want to use it; saved galleries and local
-profile analysis are not removed.
-
-Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
-unsigned, so Windows SmartScreen or managed-device policy may warn or block it.
-
-# Civitai Artist Discovery 1.0.4
-
-Version 1.0.4 fixes the Time machine tab, which did not work as described in 1.0.3, and
-lets the request pacer recover from a slow patch inside a single collection.
-
-**1.0.3 should not be used.** It is published as a prerelease and is not offered to
-existing installations. Everything below was broken in it.
-
-## Time machine
-
-- Scrolling past a card now advances that creator. Progress was only saved when the tab
-  was reopened, so reloading the page discarded it and every creator came back showing
-  the same artwork -- which defeats the point of walking a history. It is now saved as
-  you scroll, and again when the page closes.
-- Scrolling registers reliably. The tab used its own rule for deciding a card had been
-  seen, and a card taller than half the window often never satisfied it: eight screens of
-  scrolling marked three cards. It now uses the same rule as the dimmed cards in the
-  daily gallery -- scrolled completely past, after a pause.
-- Cards no longer render empty. Artwork carrying a tag hidden on Civitai left a blank
-  card that could never advance, because a card holds one image and there was nothing to
-  fall back to. Hidden artwork is now skipped before the card is built.
-- The grid no longer reshuffles on every refresh, and creators just read sink to the
-  bottom rather than leading every visit.
-- Scrolling this tab no longer marks those creators as seen in the daily gallery, where
-  they were never shown. Existing incorrect entries are not removed automatically; they
-  clear themselves as each day ages out.
-
-## Collection pacing
-
-Backing off and recovering are now both proportional. A failure multiplied the interval
-by 1.5, so a handful of errors reached the eight-second ceiling, while recovery subtracted
-a tenth of a second per ten clean responses -- around 725 requests to come back down. Few
-collections run that long, so any Civitai hiccup left the app slow for the rest of the run
-and often the next one. Recovery now takes about 75 requests. Backing off is still faster
-than recovering, deliberately.
-
-## Updating
-
-Versions 1.0.0 through 1.0.2 can install this release from the in-app update dialog once
-it is promoted from prerelease. The update remains user-approved, verifies GitHub's
-SHA-256 asset digest, preserves the portable `data/` folder, rolls back a failed
-replacement, and restarts automatically.
-
-The exact release asset is `CivitaiArtistDiscovery-1.0.4.zip`. Its SHA-256 is
-`cbe711130a2c9e518d4b66427ec627ca48ae4d0c47b012df7afb8f9c7728106b`; it is also recorded in the
-accompanying checksum file and verified automatically by the app.
+The release asset is `CivitaiArtistDiscovery-2.2.0.zip`. Its SHA-256 is recorded here and
+in the accompanying checksum file once the asset is built, and is verified automatically
+by the app.
 
 Windows 10 and 11 remain the packaged and routinely tested platforms. The package is
 unsigned, so Windows SmartScreen or managed-device policy may warn or block it.
