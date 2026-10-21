@@ -24,9 +24,10 @@ class SourceHygiene(unittest.TestCase):
             subprocess.run(['git','init','-q',str(root)],check=True)
             (root/'data-test-private').mkdir();(root/'data-test-private/profile.sqlite3').write_bytes(b'synthetic')
             (root/'example.py').write_text('credential = '+repr('ghp_'+'x'*30))
+            (root/'private-path.md').write_text('C:'+'\\Users\\ExampleUser\\app')
             subprocess.run(['git','-C',str(root),'add','-f','.'],check=True,capture_output=True)
             with patch.object(gate,'ROOT',root):names,findings=gate.audit(staged=True)
-            self.assertEqual(len(findings),2)
+            self.assertEqual(len(findings),3)
             self.assertNotIn('ghp_'+'x'*30,' '.join(findings))
 
 

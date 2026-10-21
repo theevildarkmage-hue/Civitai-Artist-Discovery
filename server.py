@@ -142,6 +142,37 @@ def community_client():
             from discovery.oauth import get_access_token
             COMMUNITY = build_community(DATA_ROOT, community_content_profile, get_access_token)
     return COMMUNITY
+
+
+def community_detail_metadata(client, artwork):
+    """Reuse local collector metadata, otherwise cache one on-demand detail locally."""
+    image_id = int(artwork['id'])
+    store = image_store(image_id)
+    fields = ('prompt', 'negativePrompt', 'resources', 'baseModel', 'width', 'height', 'createdAt', 'stats')
+    if store:
+        detail = store.detail(image_id)
+    else:
+        from discovery.community_dev import test_identity
+        if test_identity(DATA_ROOT):
+            return {}  # No outbound request or fabricated generation metadata in fixtures.
+        key = f'{client.mode}:detail:{image_id}'
+        def load():
+            from discovery.civitai import normalize
+            payload, _ = HISTORY._request({'imageId':image_id, 'withMeta':'true',
+                                           'browsingLevel':artwork['browsingLevel']},
+                                          minimum_interval=1.5, request_attempts=3, request_timeout=20)
+            raw = next((row for row in payload.get('items', []) if row.get('id') == image_id), None)
+            if not raw or str(raw.get('username', '')).casefold() != artwork['username'].casefold():
+                raise CommunityError('INVALID_ARTWORK', 404)
+            value = normalize(raw)
+            return {name:value[name] for name in fields if name in value}
+        entry = client.store.get(key)
+        if entry:
+            if entry['stale']: client.store.refresh(key, load, background=True)
+            detail = entry['value']
+        else:
+            detail = load(); client.store.put(key, detail)
+    return {name:detail[name] for name in fields if name in detail}
 # How long a restarting copy waits for the outgoing one to release the single-instance
 # mutex and its port. Both are held until that process finishes its shutdown, and a
 # replacement that gave up immediately would leave the reader with no app running.
@@ -1606,10 +1637,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not raw_ids or len(raw_ids) > 100:
                     raise ValueError("Request between 1 and 100 image IDs")
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not collected_image(image_id) for image_id in image_ids):
+                if any(not self.collected_image(image_id) for image_id in image_ids):
                     raise ValueError("Image is not in this history archive")
                 values = SocialClient().batch_query_optional("image.get", [{"id": image_id} for image_id in image_ids])
-                self.json_response({"images": {str(image_id): {"reactions": sorted(reaction_names(value))}
+                self.json_response({"images": {str(image_id): {"reactions": sorted(reaction_names(value)), "stats": live_reaction_stats(value)}
                     for image_id, value in zip(image_ids, values) if value is not None}})
             except ValueError as error:
                 self.json_response({"error": str(error)}, 400)
@@ -1728,6 +1759,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise CommunityError('AUTH_EXPIRED', 401)
                 token = f'fixture:{selected}'
             result = client.request(operation, payload, self.client_address[0], fixture_token=token)
+            if operation == 'gallery':
+                client.remember_presented(result['items'], self.community_viewer(token))
+            if operation == 'detail':
+                result = {**result, **community_detail_metadata(client, result)}
             if operation == 'recommend' and getattr(client, 'dev_lost_response', False):
                 client.dev_lost_response = False
                 raise CommunityError('UNAVAILABLE', 503)
@@ -1737,6 +1772,35 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             # Never log upstream requests/exceptions that might contain Authorization.
             self.json_response(CommunityError("UNAVAILABLE", 503).response(), 503)
+
+    def community_viewer(self, token):
+        from discovery.community_dev import test_identity
+        # Callers have already required the nonce or real OAuth session.
+        if test_identity(DATA_ROOT):
+            return ('isolated', token)
+        return (auth_status().get('id'), token)
+
+    def community_artwork(self, image_id=None, username=None):
+        if COMMUNITY is None:
+            return None
+        try:
+            self.require_community_session()
+            token = None
+            if COMMUNITY.mode == 'fixture':
+                cookie = SimpleCookie(); cookie.load(self.headers.get('Cookie', ''))
+                member = cookie.get('cad_fixture_member')
+                token = f'fixture:{member.value if member else "1"}'
+                if token not in COMMUNITY.verifier.members:
+                    return None
+            viewer = self.community_viewer(token)
+            if username is not None:
+                return COMMUNITY.presented_creator(username, viewer, token)
+            return COMMUNITY.presented_artwork(image_id, viewer, token)
+        except CommunityError:
+            return None
+
+    def collected_image(self, image_id):
+        return collected_image(image_id) or self.community_artwork(image_id) is not None
 
     def request_json(self) -> dict:
         from discovery.community_dev import authorize_test
@@ -1913,7 +1977,7 @@ class Handler(BaseHTTPRequestHandler):
                 # instead of being stranded on a port that no longer answers.
                 restart_args = ["--port", str(RUNNING_PORT), "--no-browser", "--replacing"]
                 command = ([str(UPDATES.executable), *restart_args] if UPDATES.supported
-                           else [str(UPDATES.executable), str(Path(__file__).resolve()), *restart_args])
+                           else [str(UPDATES.executable), '-B', str(Path(__file__).resolve()), *restart_args])
                 flags = 0
                 if os.name == "nt":
                     flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -2018,7 +2082,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(profile, dict) or not profile.get("id"):
                     raise ValueError("Civitai could not find that artist")
                 user_id = int(profile["id"])
-                if not (HISTORY.has_creator(username) or TASTE.has_creator(user_id)):
+                if not (HISTORY.has_creator(username) or TASTE.has_creator(user_id)
+                        or self.community_artwork(username=username)):
                     raise ValueError("Artist is not in this app's saved gallery")
                 supplied_id = body.get("userId")
                 if supplied_id is not None and int(supplied_id) != user_id:
@@ -2055,7 +2120,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.json_response({"error": "Provide 1 to 100 image IDs"}, 400)
                     return
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not collected_image(image_id) for image_id in image_ids):
+                if any(not self.collected_image(image_id) for image_id in image_ids):
                     self.json_response({"error": "An image is not in this history archive"}, 400)
                     return
                 tags = TASTE.image_tags_many(image_ids)
@@ -2096,7 +2161,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 image_id = int(body.get("imageId"))
                 collection_id = int(body.get("collectionId"))
-                if not collected_image(image_id):
+                if not self.collected_image(image_id):
                     raise ValueError("Image is not in this app's saved gallery")
                 client = SocialClient()
                 collection = next((row for row in client.writable_image_collections(connected_user_id())
@@ -2139,7 +2204,7 @@ class Handler(BaseHTTPRequestHandler):
         state = CACHE.load(); item = next((row for row in state.get("items", []) if int(row.get("id", -1)) == image_id), None)
         stores = image_stores(image_id)
         in_history = bool(stores)
-        if item is None and not in_history:
+        if item is None and not in_history and self.community_artwork(image_id) is None:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
         payload = client.query("image.get", {"id": image_id})
@@ -2171,7 +2236,12 @@ class Handler(BaseHTTPRequestHandler):
             if changed or live:
                 for store in stores:
                     store.update_stats(image_id, {**store.stats(image_id), **stats})
-        else: stats = {**item.get("stats", {}), **live}
+        else:
+            stats = {**(item or {}).get("stats", {}), **live}
+            if item is None and changed:
+                delta = 1 if desired else -1; key = REACTIONS[reaction]
+                stats[key] = max(0, int(stats.get(key, 0)) + delta)
+                stats["reactionCount"] = max(0, int(stats.get("reactionCount", 0)) + delta)
         self.json_response({"imageId": image_id, "reactions": sorted(current), "stats": stats, "changed": changed})
 
     def handle_follow(self, body: dict) -> None:
@@ -2183,7 +2253,8 @@ class Handler(BaseHTTPRequestHandler):
         profile = next((value for value in creator_profiles().values() if int(value.get("id", -1)) == user_id), None)
         client = SocialClient()
         if profile is None and username_hint and (HISTORY.has_creator(username_hint)
-                                                  or TASTE.has_creator(user_id)):
+                                                  or TASTE.has_creator(user_id)
+                                                  or self.community_artwork(username=username_hint)):
             resolved = client.query("user.getCreator", {"username": username_hint})
             if isinstance(resolved, dict) and resolved.get("id"):
                 profile = resolved; user_id = int(resolved["id"])

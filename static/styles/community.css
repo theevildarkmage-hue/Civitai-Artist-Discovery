@@ -7,8 +7,6 @@
 .community-diagnostics { margin-top:16px; padding:12px; border:1px solid var(--line); border-radius:8px; font-size:.85rem; color:var(--muted); }
 .community-diagnostics summary { cursor:pointer; }
 .community-diagnostics p { margin:8px 0; }
-.community-thumbnail-note { position:absolute; inset:0; display:grid; place-items:center; padding:24px; text-align:center; color:var(--muted); background:var(--panel); pointer-events:none; }
-.community-thumbnail-note[hidden] { display:none; }
 #communityMessage:empty { display:none; }
 .community-input { display:flex; gap:12px; margin-top:12px; flex-wrap:wrap; }
 .community-input input { flex:1; min-width:200px; padding:12px; }
@@ -20,8 +18,6 @@
 .community-dialog { max-width:580px; width:calc(100% - 40px); border:1px solid #48505c; border-radius:16px; padding:24px; background:var(--panel, #171c25); color:inherit; }
 .community-dialog::backdrop { background:#000b; }
 .community-dialog[open] { display:block; height:fit-content; max-height:90vh; overflow:auto; }
-#communityPreview { display:grid; gap:12px; }
-#communityPreview img { width:100%; max-height:55vh; object-fit:contain; border-radius:10px; }
 #communityQuota { font-weight:600; }
 .community-tools { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
 #communityRecommend { padding:10px 14px; }

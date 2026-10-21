@@ -1,8 +1,7 @@
 import { api } from './api.js';
-import { createCreatorCard } from './cards.js';
 import { bindDialog } from './dialog.js';
+import { showGallerySkeleton, showPageError } from './feedback.js';
 
-const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const post = (artwork, idempotencyKey) => api('/api/community/recommend', {method:'POST', body:JSON.stringify({artwork, idempotencyKey})});
 
 export function mountCommunity() {
@@ -18,51 +17,51 @@ export function mountCommunity() {
   document.body.append(dialog);
   bindDialog(dialog, {labelledBy:'communityDialogTitle', closeButtons:[dialog.querySelector('#communityCancel')]});
   const el = id => document.getElementById(id);
-  const message = value => { el('communityMessage').textContent = value; };
+  const message = value => { el('communityMessage').setAttribute('role','status'); el('communityMessage').textContent = value; };
   let cursor = null, generation = 0, busy = false, draftVersion = 0, requestKey = null, requestValue = null;
   const quota = value => { if (value) {
     el('communityQuota').textContent = `${value.remaining} left this week`;
     el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week · ${value.remaining} remaining`;
   } };
-  const observer = new IntersectionObserver(entries => {
-    for (const entry of entries) if (entry.isIntersecting) {
-      observer.unobserve(entry.target);
-      entry.target.prepareArtwork().catch(() => entry.target.remove());
-    }
-  }, {rootMargin:'300px'});
+  const artists = new Map(), recommendations = new Map();
   function clearCards() {
-    for (const card of el('communityGrid').children) { observer.unobserve(card); card.releaseVideo?.(); }
-    el('communityGrid').replaceChildren();
+    for (const card of el('communityGrid').children) window.DiscoveryGallery.releaseCard(card);
+    artists.clear(); recommendations.clear(); el('communityGrid').replaceChildren();
   }
-  function showDetail(art, artist) {
-    window.showDetails({...art,community:true},artist);
-  }
-  function makeCard(row) {
-    const art = {...row.artwork, civitaiUrl:row.artwork.imageUrl, createdAt:row.submittedAt};
-    const artist = {username:art.username, userId:art.creatorId, profileUrl:art.profileUrl,
-      representative:art, imageCount:1, following:false};
-    const card = createCreatorCard(artist, {
-      api, escapeHtml, avatar:a => `<span class="avatar-fallback">${escapeHtml(a.username.slice(0,2))}</span>`,
-      wireAvatarFallback:()=>{}, applyCreatorFollowers:()=>{}, checkImageTags:async()=>({known:true,hidden:false}),
-      tagsHideImage:()=>false, hydrateReactionStates:async()=>{}, reactionBar:()=>'', showDetails:showDetail,
-      toast:message, ago:value=>value, imageTagState:new Map(), imageReactionState:new Map(),
-      cardImageObserver:observer, seenObserver:{observe:()=>{},unobserve:()=>{}}, pendingSeen:new Set(),
-      loadMore:()=>{}, canWrite:()=>false, canManageCollections:()=>false, canManageContentControls:()=>false,
-      date:new Date(row.submittedAt).toLocaleDateString('en-CA'), segment:'all', models:''
-    });
-    card.querySelector('.follow-button').hidden = true;
-    const unavailable = document.createElement('span'); unavailable.className = 'community-thumbnail-note';
-    unavailable.textContent = art.thumbnailUrl ? 'Thumbnail unavailable. Artwork metadata is still available.' : 'No thumbnail URL in the local archive';
-    unavailable.hidden = !!art.thumbnailUrl;
-    card.querySelector('.image-stage').append(unavailable);
-    card.querySelector('.image-button img').addEventListener('error', () => { unavailable.hidden = false; });
-    const credit = document.createElement('p'); credit.className = 'community-credit';
-    credit.textContent = `Recommended by ${row.recommender} · ${new Date(row.submittedAt).toLocaleDateString()}`;
-    card.append(credit); return card;
+  function appendRecommendations(rows) {
+    const addedArtists = [], addedCards = [], artworks = [];
+    for (const row of rows) {
+      const id = String(row.artwork.id);
+      if (recommendations.has(id)) continue;
+      recommendations.set(id, row);
+      const art = {...row.artwork, community:true, civitaiUrl:row.artwork.imageUrl};
+      const key = art.creatorId ? `id:${art.creatorId}` : `name:${art.username.toLowerCase()}`;
+      artworks.push(art);
+      const existing = artists.get(key);
+      if (existing?.isConnected) { existing.appendImages([art]); continue; }
+      const artist = {username:art.username, userId:art.creatorId, profileUrl:art.profileUrl,
+        representative:art, imageCount:1, following:false};
+      const credit = document.createElement('p'); credit.className = 'community-credit';
+      const card = window.DiscoveryGallery.createCard(artist, {
+        images:[art], date:'', segment:'all', models:'',
+        // Community has no Daily archive date or "seen on this day" persistence.
+        seenObserver:{observe:()=>{},unobserve:()=>{}}, loadMore:async()=>{},
+        onArtworkChange(image) {
+          const recommendation = recommendations.get(String(image.id));
+          credit.textContent = recommendation ? `Recommended by ${recommendation.recommender} ? ${new Date(recommendation.submittedAt).toLocaleDateString()}` : '';
+        },
+      });
+      card.classList.add('community-card');
+      card.append(credit); artists.set(key, card); el('communityGrid').append(card);
+      addedArtists.push(artist); addedCards.push(card);
+    }
+    window.DiscoveryGallery.enrichCards(addedArtists, addedCards);
+    window.DiscoveryGallery.hydrateReactionStates(artworks).catch(error => console.warn('Reaction history could not be loaded', error));
   }
   async function load(more = false, refresh = false) {
     const id = ++generation;
     if (!more) { cursor = null; clearCards(); el('communityMore').classList.add('hidden'); }
+    const clearSkeleton = more ? ()=>{} : showGallerySkeleton(el('communityGrid'));
     message('Loading community recommendations…'); el('communityMore').disabled = true;
     try {
       const status = await api(`/api/community/status${refresh ? '?refresh=1' : ''}`);
@@ -75,7 +74,8 @@ export function mountCommunity() {
       const result = await api(`/api/community/gallery?refresh=${refresh ? '1' : '0'}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
       if (id !== generation) return;
       if (result.controls) window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:result.controls}));
-      for (const row of result.items) el('communityGrid').append(makeCard(row));
+      clearSkeleton();
+      appendRecommendations(result.items);
       cursor = result.nextCursor;
       el('communityMore').classList.toggle('hidden', !cursor);
       const cached = result.cache;
@@ -86,8 +86,8 @@ export function mountCommunity() {
         if (!el('communityGrid').children.length) message('Checking artwork metadata against your content controls…');
         setTimeout(() => { if (id === generation && !section.classList.contains('hidden')) load(); }, 2500);
       }
-    } catch (error) { if (id === generation) message(error.message); }
-    finally { if (id === generation) el('communityMore').disabled = false; }
+    } catch (error) { if (id === generation) showPageError(el('communityMessage'), error.message, ()=>load(more,refresh)); }
+    finally { clearSkeleton(); if (id === generation) el('communityMore').disabled = false; }
   }
   function recommend(value = '') {
     if (busy || !authorized) return;

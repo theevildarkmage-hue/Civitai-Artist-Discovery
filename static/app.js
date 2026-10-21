@@ -426,7 +426,7 @@ function displayCount(value) { return safeCount(value).toLocaleString(); }
 function initials(name) { return (name || "?").split(/[_\s-]+/).slice(0, 2).map(x => x[0] || "").join("").toUpperCase(); }
 function ago(value) { if (!value) return "Recently"; const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000); if (seconds < 3600) return `${Math.max(1, Math.floor(seconds / 60))} minutes ago`; if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`; return new Date(value).toLocaleDateString(); }
 const reactionInfo = { Like: ["👍", "likeCount"], Heart: ["❤️", "heartCount"], Laugh: ["😂", "laughCount"], Cry: ["😢", "cryCount"] };
-async function hydrateReactionStates(images) { if (!oauthConnected) return; const unknown = [...new Map((images || []).filter(image => image?.id && !imageReactionState.has(String(image.id))).map(image => [String(image.id), image])).values()]; for (let offset = 0; offset < unknown.length; offset += 100) { const batch = unknown.slice(offset, offset + 100), query = new URLSearchParams(); batch.forEach(image => query.append("imageId", image.id)); const data = await api(`/api/reaction-status?${query}`); Object.entries(data.images || {}).forEach(([id, state]) => { const image = batch.find(item => String(item.id) === id); imageReactionState.set(id, { reactions: [...(state.reactions || [])], stats: image?.stats || {} }); document.querySelectorAll(`.creator-card[data-id="${CSS.escape(id)}"]`).forEach(card => card.dispatchEvent(new Event("reactionstate"))); }); } }
+async function hydrateReactionStates(images) { if (!oauthConnected) return; const unknown = [...new Map((images || []).filter(image => image?.id && !imageReactionState.has(String(image.id))).map(image => [String(image.id), image])).values()]; for (let offset = 0; offset < unknown.length; offset += 100) { const batch = unknown.slice(offset, offset + 100), query = new URLSearchParams(); batch.forEach(image => query.append("imageId", image.id)); const data = await api(`/api/reaction-status?${query}`); Object.entries(data.images || {}).forEach(([id, state]) => { const image = batch.find(item => String(item.id) === id); imageReactionState.set(id, { reactions: [...(state.reactions || [])], stats: state.stats || image?.stats || {} }); document.querySelectorAll(`.creator-card[data-id="${CSS.escape(id)}"]`).forEach(card => card.dispatchEvent(new Event("reactionstate"))); }); } }
 function reactionBar(image) { const state = imageReactionState.get(String(image.id)), s = state?.stats || image.stats || {}, selected = new Set(state?.reactions || []); return `<div class="reaction-bar">${Object.entries(reactionInfo).map(([name, [icon, key]]) => `<button class="${selected.has(name) ? "selected" : ""}" data-reaction="${name}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${icon} <b>${safeCount(s[key])}</b></button>`).join("")}<span class="total-reactions" title="Total reactions">Total ${safeCount(s.reactionCount)}</span></div>`; }
 // Follower count is public information like the avatar, so it survives a disconnect.
 // An unreadable count shows nothing rather than claiming the creator has none.
@@ -641,15 +641,24 @@ function wireAvatarFallback(image, username) { if (!image) return; image.addEven
 function showArtwork(image, previewUrl, originalUrl, item) {
   window.CivitaiUI.showArtwork(image, previewUrl, originalUrl, item);
 }
-function card(a) {
+// Shared account services; page adapters supply only source/navigation state.
+function card(a, source = {}) {
   return window.CivitaiUI.createCreatorCard(a, {
     api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore,
     date: selectedDate, segment: selectedSegment, models: modelQuery(),
     canWrite: () => socialWrite,
     canManageContentControls: () => userWrite,
     canManageCollections: () => collectionsWrite,
+    ...source,
   });
 }
+window.DiscoveryGallery = Object.freeze({
+  createCard: card, enrichCards, hydrateReactionStates,
+  releaseCard(element) {
+    cardImageObserver.unobserve(element); seenObserver.unobserve(element);
+    element.releaseVideo?.(); element.querySelector('.image-button img')?.cancelArtwork?.();
+  },
+});
 function displayDate(value) { return new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" }); }
 function shiftDate(value, delta) { const date = new Date(`${value}T12:00:00`); date.setDate(date.getDate() + delta); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
 function localDateString(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
@@ -1072,6 +1081,9 @@ async function beginFullDay(rebuild = false) {
 async function loadDay(value, preferAvailable = true, preserveCurrent = false) {
   const token = ++activeLoadToken; selectedDate = value; dayBuilt = false; activeRebuild = false; loadCancelled = false;
   $("selectedDate").textContent = displayDate(value); window.updateGalleryCalendar?.(); setNavigationBusy(false); await refreshBlockLabels(value);
+  // A build or newer selection can start while the block summary is in flight.
+  // Do not let that superseded selection hide the active build's Stop control.
+  if (token !== activeLoadToken || selectedDate !== value) return;
   if (!preserveCurrent) {
     $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery();
     $("summary").textContent = ""; $("startLoading").classList.add("hidden"); $("stopLoading").classList.add("hidden");
