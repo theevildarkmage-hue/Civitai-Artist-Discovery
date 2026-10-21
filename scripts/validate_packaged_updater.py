@@ -22,6 +22,11 @@ package = args.package.resolve()
 executable_name = "CivitaiArtistDiscovery.exe"
 if not (package / executable_name).is_file():
     raise SystemExit(f"built executable not found in {package}")
+for notice in ['LICENSE.txt', 'THIRD_PARTY_NOTICES.md', 'licenses/Python-LICENSE.txt',
+               'licenses/PyInstaller-COPYING.txt', 'licenses/Pillow-LICENSE.txt',
+               'licenses/pystray-COPYING.txt', 'licenses/pystray-COPYING.LGPL.txt']:
+    if not (package / notice).is_file():
+        raise SystemExit(f"packaged license missing: {notice}")
 
 with tempfile.TemporaryDirectory(prefix="civitai-packaged-update-") as temporary:
     base = Path(temporary)

@@ -13,24 +13,33 @@ export async function api(url, options = {}) {
     window.dispatchEvent(new Event('content-controls-changing'));
     controlsChannel?.postMessage({phase:'changing'});
   }
-  const headers = new Headers(options.headers);
+  const { signal, timeoutMs = String(url).startsWith('/api/history/image?') ? 90000 : 60000, ...request } = options;
+  const controller = new AbortController();
+  let timedOut = false, settings = null;
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, {once: true});
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const headers = new Headers(request.headers);
   if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  let response;
-  try { response = await fetch(url, { ...options, headers }); }
-  catch (error) {
+  try {
+    // Retries belong to bounded server reads; never replay a browser mutation.
+    const response = await fetch(url, { ...request, headers, signal: controller.signal });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw Object.assign(new Error(body?.error || `The app returned HTTP ${response.status}. Try again shortly.`), {code:body?.code,status:response.status});
+    if (body === null) throw new Error('The app returned an unreadable response. Please try again.');
+    if (controlChange && url === '/api/settings') settings = {browsingLevels:body.browsingLevels,contentRating:body.contentRating};
+    return body;
+  } catch (error) {
+    if (timedOut) throw Object.assign(new Error('The request timed out. Your saved gallery is safe; please try again.'), {code:'UNAVAILABLE',status:503});
+    if (url.startsWith('/api/community/') && error.name !== 'AbortError' && !error.status) throw Object.assign(new Error('The community service is temporarily unavailable. Your personal galleries still work.'), {code:'UNAVAILABLE',status:503});
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
     if (controlChange) {
-      controlsChannel?.postMessage({phase:'changed',settings:null});
+      controlsChannel?.postMessage({phase:'changed',settings});
       window.dispatchEvent(new Event('community-controls-changed'));
     }
-    if (url.startsWith('/api/community/')) throw Object.assign(new Error('The community service is temporarily unavailable. Your personal galleries still work.'), {code:'UNAVAILABLE',status:503});
-    throw error;
   }
-  const body = await response.json();
-  if (controlChange) {
-    const settings = url === '/api/settings' && response.ok ? {browsingLevels:body.browsingLevels, contentRating:body.contentRating} : null;
-    controlsChannel?.postMessage({phase:'changed',settings});
-    window.dispatchEvent(new Event('community-controls-changed'));
-  }
-  if (!response.ok) throw Object.assign(new Error(body.error || `HTTP ${response.status}`), {code:body.code, status:response.status});
-  return body;
 }

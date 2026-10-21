@@ -5,6 +5,11 @@
 .segment-toolbar #galleryPreferences { margin-left: 0; }
 .filter-panel { position: fixed; z-index: 60; top: var(--filter-top, 160px); right: 20px; width: min(540px, calc(100vw - 24px)); max-height: calc(100dvh - var(--filter-top, 160px) - 12px); overflow: auto; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-popover); }
 .filter-panel h2 { margin: 0; font-size: 18px; }
+.content-panel { position: fixed; z-index: 60; width: min(360px, calc(100vw - 24px)); padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-popover); }
+.content-panel .filter-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.content-panel .quiet-button { min-width: 32px; min-height: 32px; padding: 4px; border: 0; background: transparent; color: var(--text); cursor: pointer; }
+.content-panel .rating-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.content-panel .rating-pills button { flex: 1 1 auto; min-width: 48px; padding: 8px; }
 .filter-panel .quiet-button { min-width: 32px; min-height: 32px; border: 0; background: transparent; color: var(--text); cursor: pointer; font-size: 18px; }
 .filter-sections { display: grid; gap: 20px; padding: 12px 0 18px; }
 #filterPanel .filter-menu { display: block !important; position: static; width: auto; max-width: none; max-height: none; overflow: visible; padding: 0; border: 0; box-shadow: none; background: transparent; }

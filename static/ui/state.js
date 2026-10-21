@@ -10,6 +10,7 @@ export function browsingState(value = {}) {
     segment: ['morning', 'evening', 'all'].includes(value.segment) ? value.segment : 'evening',
     view: ['foryou', 'discovery', 'followed', 'new', 'emerging'].includes(value.view) ? value.view : 'foryou',
     models: [...new Set(models.filter(model => typeof model === 'string' && model.trim()))],
+    media: ['all', 'image', 'video'].includes(value.media) ? value.media : 'all',
     levels: safeLevels.length ? safeLevels : [1, 2],
     loaded: Number.isFinite(Number(value.loaded)) ? Math.max(0, Math.floor(Number(value.loaded))) : 0,
     scrollY: Number.isFinite(Number(value.scrollY)) ? Math.max(0, Math.round(Number(value.scrollY))) : 0,
@@ -17,7 +18,9 @@ export function browsingState(value = {}) {
 }
 
 export function modelParameters(value) {
-  return browsingState(value).models.map(name => `&model=${encodeURIComponent(name)}`).join('');
+  const state = browsingState(value);
+  return state.models.map(name => `&model=${encodeURIComponent(name)}`).join('') +
+    (state.media === 'all' ? '' : `&media=${state.media}`);
 }
 
 export function readBrowsingState(storage, key) {

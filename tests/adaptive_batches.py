@@ -38,7 +38,7 @@ class LimitedClient(SocialClient):
         for item in inputs.values():
             value = item["json"]["value"]
             if value == 4:
-                response.append({"error": {"json": {"message": "Unavailable"}}})
+                response.append({"error": {"json": {"message": "Unavailable", "data": {"httpStatus": 404, "code": "NOT_FOUND"}}}})
             else:
                 response.append({"result": {"data": {"json": value}}})
         return response

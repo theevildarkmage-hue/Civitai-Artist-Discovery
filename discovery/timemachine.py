@@ -44,7 +44,7 @@ def _row_type(row) -> str:
         return "image"
 
 
-def _representative(image) -> dict:
+def _representative(image, archive=None) -> dict:
     # A video needs the same treatment the daily archive gives it: a still for the card,
     # because a plain width= transform returns another MP4 that an <img> cannot show, and
     # a separate transcoded file to play.
@@ -59,7 +59,8 @@ def _representative(image) -> dict:
             "baseModel": image["base_model"], "stats": json.loads(image["stats"])}
     if video:
         item["videoUrl"] = video_playback_url(image["url"])
-    return item
+    decorate = getattr(archive, "decorate_video_thumbnail", None)
+    return decorate(item) if decorate else item
 
 
 class TimeMachine:
@@ -266,7 +267,7 @@ class TimeMachine:
                 out.append({
                     "username": row["username"],
                     "imageCount": 1, "representativeIndex": 0,
-                    "representative": _representative(image),
+                    "representative": _representative(image, self.archive),
                     "seenCount": seen, "knownCount": total,
                     # False while more of this creator remains unfetched, so the counts can
                     # be shown as "of N so far" rather than implying a complete history.
@@ -332,7 +333,7 @@ class TimeMachine:
             blocked = self._hidden_image_ids([int(row["image_id"]) for row in rows], hidden_tags)
             for row in rows:
                 if int(row["image_id"]) not in blocked:
-                    images.append({"position": int(row["position"]), **_representative(row)})
+                    images.append({"position": int(row["position"]), **_representative(row, self.archive)})
             if rows:
                 position = int(rows[-1]["position"]) + 1
             if len(images) >= limit or exhausted or not cursor or not refill:
@@ -436,7 +437,8 @@ class TimeMachine:
                              "detailsLoaded": True})
         except Exception:  # noqa: BLE001
             pass   # The dialog still opens; it simply has no generation details.
-        return item
+        decorate = getattr(self.archive, "decorate_video_thumbnail", None)
+        return decorate(item) if decorate else item
 
     def advance(self, usernames) -> int:
         """Move each named creator past the image currently shown."""

@@ -87,3 +87,9 @@ logs/
 !supabase/**/*.ts
 !supabase/config.toml
 !supabase/.env.example
+
+# Reviewed offline video/browser fixtures and availability contract.
+!tests/fixtures/
+!tests/fixtures/recovery.mp4
+!tests/fixtures/video_lifecycle.mjs
+!docs/artwork-availability.txt

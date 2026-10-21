@@ -22,7 +22,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
     # shape and drop it: these assertions are about the preference contract.
     def view(value):
         assert isinstance(value.get("captureSeed"), int), value
-        return {key: item for key, item in value.items() if key != "captureSeed"}
+        assert value.get('mediaType') in ('all', 'image', 'video'), value
+        return {key: item for key, item in value.items() if key not in ('captureSeed', 'mediaType')}
 
     gallery_defaults = {"hideHighVolumeCreators": False, "highVolumeThreshold": 100,
                         "emergingReactionMode": "balanced", "emergingReactionLimit": 0,

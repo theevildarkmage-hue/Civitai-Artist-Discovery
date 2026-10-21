@@ -7,6 +7,8 @@ if ($OneFile) { throw 'Portable releases use the folder build; -OneFile is no lo
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
+  python -c "import ssl, sys; crypto = tuple(int(n) for n in ssl.OPENSSL_VERSION.split()[1].split('.')); assert sys.version_info[:2] == (3, 14) and sys.version_info[:3] >= (3, 14, 8) and crypto >= (3, 5, 9), 'Windows releases require Python 3.14.8+ (3.14 series) with OpenSSL 3.5.9+'; print(sys.version.split()[0], ssl.OPENSSL_VERSION)"
+  if ($LASTEXITCODE -ne 0) { throw 'Use the reviewed, patched Windows release interpreter.' }
   $buildPaths = @()
   $package = Join-Path $root 'dist\CivitaiArtistDiscovery'
   if ($OutputRoot) {
@@ -41,6 +43,11 @@ try {
   $pillowSite = python -c "import pathlib, PIL; print(pathlib.Path(PIL.__file__).parent.parent)"
   $pillowInfo = Get-ChildItem $pillowSite -Directory -Filter 'pillow-*.dist-info' | Select-Object -First 1
   Copy-Item (Join-Path $pillowInfo.FullName 'licenses\LICENSE') (Join-Path $licenses 'Pillow-LICENSE.txt')
+  $pythonLicense = python -c "import pathlib, sys; print(pathlib.Path(sys.base_prefix) / 'LICENSE.txt')"
+  Copy-Item -LiteralPath $pythonLicense -Destination (Join-Path $licenses 'Python-LICENSE.txt')
+  $installerInfo = Get-ChildItem $pillowSite -Directory -Filter 'pyinstaller-*.dist-info' | Select-Object -First 1
+  Copy-Item -LiteralPath (Join-Path $installerInfo.FullName 'licenses\COPYING.txt') -Destination (Join-Path $licenses 'PyInstaller-COPYING.txt')
+  Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $package 'LICENSE.txt')
   Copy-Item (Join-Path $root 'THIRD_PARTY_NOTICES.md') $package
   Write-Host "Built: $package\CivitaiArtistDiscovery.exe"
 } finally {

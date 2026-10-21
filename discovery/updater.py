@@ -264,6 +264,17 @@ def apply_staged_update(config_path: Path, *, launch: bool = True,
     # prevents a modified apply.json from turning the updater into an arbitrary copier.
     if staged_root == data_root or data_root not in staged_root.parents:
         raise RuntimeError("The staged update is outside the portable data folder")
+    # Validate every destructive/output path before waiting, removing or copying.
+    # A malformed receipt/config must not make backup cleanup erase user data.
+    backup_area = data_root / "update" / "backup"
+    if backup_root != backup_area and backup_area not in backup_root.parents:
+        raise RuntimeError("The update backup is outside the portable backup folder")
+    if backup_root == staged_root or backup_root in staged_root.parents or staged_root in backup_root.parents:
+        raise RuntimeError("The update backup overlaps the staged package")
+    if result_path.parent != data_root / "update" or result_path.name != "result.json":
+        raise RuntimeError("The update receipt is outside the portable update folder")
+    if Path(executable_name).name != executable_name or not executable_name.lower().endswith('.exe'):
+        raise RuntimeError("The update executable name is invalid")
     staged_executable = staged_root / executable_name
     if not staged_executable.is_file():
         raise RuntimeError("The staged executable is missing")

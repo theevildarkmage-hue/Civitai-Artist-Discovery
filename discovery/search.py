@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .models import normalize_base_model
+
 from datetime import datetime
 import os
 
@@ -88,7 +90,7 @@ def normalize_hit(hit: dict) -> dict:
         "type": hit.get("type") or "image",
         "nsfwLevel": {1: "None", 2: "Soft", 4: "Mature", 8: "X", 16: "X"}.get(level, "X"),
         "browsingLevel": level,
-        "baseModel": hit.get("baseModel") or "Unknown",
+        "baseModel": normalize_base_model(hit.get("baseModel")),
         "modelVersionIds": [int(model_version)] if model_version else [],
         "prompt": "",
         "negativePrompt": "",

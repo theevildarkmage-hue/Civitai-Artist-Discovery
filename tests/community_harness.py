@@ -11,7 +11,6 @@ import subprocess
 import sys
 import time
 import tempfile
-import shutil
 from test_safety import IsolatedEndpoint, ROOT
 
 
@@ -20,7 +19,20 @@ class Harness:
         if root is None:
             self.temporary=tempfile.TemporaryDirectory(prefix='data-test-community-run-',dir=ROOT,ignore_cleanup_errors=True)
             root=self.temporary.name
-            if sample:shutil.copyfile(ROOT/'data-test-community'/'sample.json',Path(root)/'sample.json')
+            if sample:
+                # Fully synthetic manifest: clean worktrees never read personal caches.
+                sys.path.insert(0,str(ROOT))
+                from discovery.community import FixtureVerifier
+                verifier=FixtureVerifier(development=True)
+                artworks=[{'id':art.id,'creatorId':art.creator_id,'username':art.username,
+                    'browsingLevel':art.rating,'tags':[{'id':i,'name':name}
+                        for i,name in zip(art.tag_ids,art.tags)],'tagsComplete':True}
+                    for art in verifier.artworks.values() if art.id!=1099]
+                manifest={'developmentOnly':True,'schemaVersion':1,'artworks':artworks,
+                    'sourceStats':{'synthetic':True,'artworks':len(artworks)},
+                    'negativeCases':[{'id':2001+i,'state':state} for i,state in enumerate(
+                        ('missing_creator','unverified_owner','deleted','inaccessible','incomplete'))]}
+                Path(root,'sample.json').write_text(json.dumps(manifest),encoding='utf-8')
         self.root=Path(root).resolve()
         self.root.mkdir(parents=True,exist_ok=True)
         self.port=port; self.instance=secrets.token_hex(24); self.process=None
