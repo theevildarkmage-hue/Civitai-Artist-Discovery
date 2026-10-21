@@ -72,4 +72,11 @@ fault='';
 result=await request({operation:'recommend',artwork:123,memberId:99,creatorId:88});
 assert.equal(result.body.code,'INVALID_REQUEST');
 result=await request({operation:'status'},'');assert.equal(result.status,401);
+for (const [body,type] of [['null','application/json'],
+    [JSON.stringify({apiVersion:1,operation:'status'}),'application/jsonjunk'],
+    [JSON.stringify({apiVersion:1,operation:'status',padding:'x'.repeat(9000)}),'application/json']]) {
+  const response=await handler(new Request('https://test.supabase.co/functions/v1/community-v1',{
+    method:'POST',headers:{Authorization:'Bearer synthetic-test-token','Content-Type':type},body}));
+  assert.equal(response.status,400);assert.equal((await response.json()).code,'INVALID_REQUEST');
+}
 console.log('PASS: Edge identity/owner authority, request routing, preview/commit, failures, URL rejection, fixed-host authenticated verification');
