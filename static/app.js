@@ -426,7 +426,10 @@ function displayCount(value) { return safeCount(value).toLocaleString(); }
 function initials(name) { return (name || "?").split(/[_\s-]+/).slice(0, 2).map(x => x[0] || "").join("").toUpperCase(); }
 function ago(value) { if (!value) return "Recently"; const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000); if (seconds < 3600) return `${Math.max(1, Math.floor(seconds / 60))} minutes ago`; if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`; return new Date(value).toLocaleDateString(); }
 const reactionInfo = { Like: ["👍", "likeCount"], Heart: ["❤️", "heartCount"], Laugh: ["😂", "laughCount"], Cry: ["😢", "cryCount"] };
-async function hydrateReactionStates(images) { if (!oauthConnected) return; const unknown = [...new Map((images || []).filter(image => image?.id && !imageReactionState.has(String(image.id))).map(image => [String(image.id), image])).values()]; for (let offset = 0; offset < unknown.length; offset += 100) { const batch = unknown.slice(offset, offset + 100), query = new URLSearchParams(); batch.forEach(image => query.append("imageId", image.id)); const data = await api(`/api/reaction-status?${query}`); Object.entries(data.images || {}).forEach(([id, state]) => { const image = batch.find(item => String(item.id) === id); imageReactionState.set(id, { reactions: [...(state.reactions || [])], stats: { ...(image?.stats || {}), ...(state.stats || {}) } }); document.querySelectorAll(`.creator-card[data-id="${CSS.escape(id)}"]`).forEach(card => card.dispatchEvent(new Event("reactionstate"))); }); } }
+function notifyReactionState(id) {
+  document.querySelectorAll(`.creator-card[data-id="${CSS.escape(String(id))}"]`).forEach(card => card.dispatchEvent(new Event('reactionstate')));
+}
+async function hydrateReactionStates(images) { if (!oauthConnected) return; const unknown = [...new Map((images || []).filter(image => image?.id && !imageReactionState.has(String(image.id))).map(image => [String(image.id), image])).values()]; for (let offset = 0; offset < unknown.length; offset += 100) { const batch = unknown.slice(offset, offset + 100), query = new URLSearchParams(); batch.forEach(image => query.append("imageId", image.id)); const data = await api(`/api/reaction-status?${query}`); Object.entries(data.images || {}).forEach(([id, state]) => { const image = batch.find(item => String(item.id) === id); imageReactionState.set(id, { reactions: [...(state.reactions || [])], stats: { ...(image?.stats || {}), ...(state.stats || {}) } }); notifyReactionState(id); }); } }
 function reactionBar(image) { const state = imageReactionState.get(String(image.id)), s = state?.stats || image.stats || {}, selected = new Set(state?.reactions || []); return `<div class="reaction-bar">${Object.entries(reactionInfo).map(([name, [icon, key]]) => `<button class="${selected.has(name) ? "selected" : ""}" data-reaction="${name}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${icon} <b>${safeCount(s[key])}</b></button>`).join("")}<span class="total-reactions" title="Total reactions">Total ${safeCount(s.reactionCount)}</span></div>`; }
 // Follower count is public information like the avatar, so it survives a disconnect.
 // An unreadable count shows nothing rather than claiming the creator has none.
@@ -644,7 +647,7 @@ function showArtwork(image, previewUrl, originalUrl, item) {
 // Shared account services; page adapters supply only source/navigation state.
 function card(a, source = {}) {
   return window.CivitaiUI.createCreatorCard(a, {
-    api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore,
+    api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, notifyReactionState, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore,
     date: selectedDate, segment: selectedSegment, models: modelQuery(),
     canWrite: () => socialWrite,
     canManageContentControls: () => userWrite,
@@ -744,26 +747,21 @@ let galleryToken = 0;
 // per-page-load part that makes the combination unique across reloads, not just within one.
 const PAGE_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let activePageRequest = null;
-let activePageTask = null;
-let pageLoadFailed = false;
+const dailyPager = window.CivitaiUI.createInfinitePager({
+  container: $("gallery"), sentinel: () => $("loadSentinel"),
+  load: ({controller}) => loadArtistPage(controller),
+  hasMore: () => dayBuilt && !!$("loadSentinel") && loadedArtists < artistTotal,
+  visible: () => currentView === 'gallery',
+  exhausted: () => loadedArtists ? "You're caught up for this view." : 'No creators match these filters.',
+});
 function cancelPageLoad() {
-  activePageRequest?.abort();
+  dailyPager.reset();
   activePageRequest = null;
-  activePageTask = null;
-  pageLoadFailed = false;
   loadingMore = false;
 }
-function loadMore() {
-  // Scroll restoration and the sentinel can request the same page concurrently.
-  // Both callers must await its actual completion instead of burning restore retries.
-  if (loadingMore) return activePageTask;
-  if (pageLoadFailed) return Promise.resolve();
-  if (loadedArtists >= artistTotal) return Promise.resolve();
-  activePageTask = loadArtistPage();
-  return activePageTask;
-}
-async function loadArtistPage() {
-  const request = new AbortController(), token = galleryToken;
+function loadMore() { return dailyPager.request(true); }
+async function loadArtistPage(request) {
+  const token = galleryToken;
   activePageRequest = request;
   loadingMore = true;
   const clearSkeleton = !loadedArtists ? window.CivitaiUI.showGallerySkeleton($("gallery")) : () => {};
@@ -796,26 +794,12 @@ async function loadArtistPage() {
     enrichCards(data.artists, cards);
     hydrateReactionStates(data.artists.map(artist => artist.representative)).catch(error => console.warn("Reaction history could not be loaded", error));
   } catch (error) {
-    if (error.name !== "AbortError") {
-      if (activePageRequest === request && $("loadSentinel")) {
-        // A pending intersection notification may arrive after this failure. Keep it
-        // from silently retrying in a loop; the button or a new view clears the flag.
-        pageLoadFailed = true;
-        const retry = document.createElement("button");
-        retry.type = "button";
-        retry.className = "filter-button";
-        retry.textContent = "Retry loading artists";
-        retry.onclick = () => { pageLoadFailed = false; loadMore().catch(error => toast(error.message)); };
-        $("loadSentinel").replaceChildren("Could not load this page. ", retry);
-      }
-      throw error;
-    }
+    if (error.name !== 'AbortError') throw error;
   } finally {
     clearSkeleton();
     // An older aborted request must not unlock a newer request's paging guard.
     if (activePageRequest === request) {
       activePageRequest = null;
-      activePageTask = null;
       loadingMore = false;
     }
   }
@@ -1158,8 +1142,6 @@ async function showDetails(image, artist, artistCard) { detailRequestAbort?.abor
     }
   } catch (error) { if (token === detailRequestToken && dialog.open && error.name !== "AbortError") { dialog.classList.remove("detail-loading"); $("detailPrompt").textContent = error.message; } } }
 $('detailImage').addEventListener('artwork-unavailable', () => $('detailImage').onUnavailable?.());
-const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) loadMore().catch(error => toast(error.message)); }, { rootMargin: "800px" });
-new MutationObserver(() => { const sentinel = $("loadSentinel"); if (sentinel) observer.observe(sentinel); }).observe($("gallery"), { childList: true });
 $("details").addEventListener("close", () => { detailRequestToken++; detailRequestAbort?.abort(); $("detailImage").cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(false); }); $("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
   const outage = error.kind === "service_unavailable";
   const historyWindow = error.kind === "history_window";
@@ -1791,12 +1773,26 @@ async function pollDiscovery() {
 // Machine was left. Landing halfway down a day nobody scrolled through is wrong on its
 // own, and it also feeds the seen tracking: cards there are on screen, so reading on from
 // that point dims work the reader never actually passed.
+let dailyControlsStale = false;
+window.addEventListener('community-controls-changed', () => {
+  if (dayBuilt && currentView !== 'gallery') { dailyControlsStale = true; clearGallery(); }
+});
+window.addEventListener('shared-artist-hidden', () => {
+  if (!dayBuilt) return;
+  dailyControlsStale = true; clearGallery();
+  if (currentView === 'gallery') {
+    dailyControlsStale = false;
+    loadDay(selectedDate, false).catch(showLoadError);
+  }
+});
 const viewScroll = { gallery: 0, discovery: 0, timemachine: 0 };
 function showView(name) {
   if (name==='community' && !oauthConnected) return;
   navigationVersion++;
   const previous = currentView;
   if (previous !== name) viewScroll[previous] = window.scrollY;
+  if (previous === 'community' && name !== previous) window.CivitaiCommunity?.deactivate();
+  if (previous === 'gallery' && name !== previous) dailyPager.pause();
   currentView = name;
   const discovery = name === "discovery";
   const timeMachine = name === "timemachine";
@@ -1820,7 +1816,15 @@ function showView(name) {
   // Before seen tracking resumes below, so the observer's first report describes where
   // the reader actually is rather than the position the previous tab was left at.
   if (previous !== name) window.scrollTo({ top: viewScroll[name] ?? 0, behavior: "auto" });
-  if (community) { window.CivitaiCommunity?.load(); return; }
+  if (community) { window.CivitaiCommunity?.activate(); return; }
+  if (gallery) {
+    dailyPager.resume();
+    if (dailyControlsStale) {
+      dailyControlsStale = false;
+      loadDay(selectedDate, false).catch(showLoadError);
+      return;
+    }
+  }
   if (timeMachine) {
     refreshTimeMachine().catch(error => window.CivitaiUI.showPageError(
       $("timeMachineMessage"), error.message, refreshTimeMachine));

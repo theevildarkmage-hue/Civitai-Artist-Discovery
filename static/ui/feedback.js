@@ -13,18 +13,18 @@ export function showGallerySkeleton(gallery) {
   return () => placeholders.forEach(element => element.remove());
 }
 
-export function showPageError(container, message, retry) {
+export function showPageError(container, message, retry, retryLabel = 'Try again') {
   container.replaceChildren();
   container.setAttribute('role', 'alert');
   const text = document.createElement('span');
   text.textContent = `${message} `;
   const button = document.createElement('button');
   button.type = 'button';
-  button.textContent = 'Try again';
+  button.textContent = retryLabel;
   button.onclick = async () => {
     button.disabled = true;
     try { await retry(); }
-    catch (error) { showPageError(container, error.message, retry); }
+    catch (error) { showPageError(container, error.message, retry, retryLabel); }
     finally { button.disabled = false; }
   };
   container.append(text, button);
