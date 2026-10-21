@@ -145,6 +145,8 @@ def main():
             page.set_viewport_size({'width':390,'height':844});page.wait_for_timeout(250)
             assert not page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
             page.screenshot(path=str(output/'community-mobile.png'))
+            page.locator('#communityGrid .creator-card').first.scroll_into_view_if_needed()
+            page.screenshot(path=str(output/'community-mobile-card.png'))
             page.locator('#tabDiscovery').click();page.locator('#discoveryBody').wait_for(state='visible')
             result['liveChecks']['profile']={'cachedProfileVisible':True,'fullSynchronizationStarted':False}
             panel=page.locator('#developmentDiagnostics');panel.locator('summary').click()
