@@ -115,7 +115,7 @@ async function artwork(image: number, token: string): Promise<number> {
 
 Deno.serve(async (request: Request) => {
   try {
-    if(request.method!=='POST' || !(request.headers.get('content-type')||'').startsWith('application/json')) fail('INVALID_REQUEST');
+    if(request.method!=='POST' || (request.headers.get('content-type')||'').split(';',1)[0].trim().toLowerCase()!=='application/json') fail('INVALID_REQUEST');
     const auth=request.headers.get('Authorization')||'';
     if(!/^Bearer [^\s]{1,8192}$/.test(auth)) fail('AUTH_REQUIRED');
     const token=auth.slice(7);
@@ -131,7 +131,7 @@ Deno.serve(async (request: Request) => {
     if(typeof username!=='string' || username.length<1 || username.length>200) fail('AUTH_EXPIRED');
     await rpc('community_take_rate',{p_key:`member:${memberId}`});
     const body=await readJSON(new Response(request.body),8192);
-    if(body.apiVersion!==1 || typeof body.operation!=='string') fail('INVALID_REQUEST');
+    if(!body || typeof body!=='object' || Array.isArray(body) || body.apiVersion!==1 || typeof body.operation!=='string') fail('INVALID_REQUEST');
     const keys=Object.keys(body);
     const fields=body.operation==='recommend'?['artwork','idempotencyKey']:
       ['verify','withdraw'].includes(body.operation)?['artwork']:body.operation==='gallery'?['cursor','limit']:[];
