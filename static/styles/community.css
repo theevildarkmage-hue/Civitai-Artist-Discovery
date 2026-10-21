@@ -11,7 +11,7 @@
 .community-input { display:flex; gap:12px; margin-top:12px; flex-wrap:wrap; }
 .community-input input { flex:1; min-width:200px; padding:12px; }
 .community-input input { border:1px solid var(--line); border-radius:var(--radius-sm, 8px); background:var(--bg); color:var(--text); font:inherit; }
-#communityRefresh, #communityMore, .community-input button, .community-dialog button { padding:10px 14px; border:1px solid var(--line); border-radius:var(--radius-sm, 8px); background:var(--surface-raised, #282b31); color:var(--text); cursor:pointer; }
+#communityRefresh, .community-input button, .community-dialog button { padding:10px 14px; border:1px solid var(--line); border-radius:var(--radius-sm, 8px); background:var(--surface-raised, #282b31); color:var(--text); cursor:pointer; }
 .community-input button, #communityConfirm { border-color:var(--accent); }
 #community button:disabled, .community-dialog button:disabled { opacity:.55; cursor:wait; }
 .community-credit { padding:0 14px 12px; margin:0; color:var(--muted, #a7b1c3); font-size:.85rem; }
@@ -22,8 +22,6 @@
 .community-tools { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
 #communityRecommend { padding:10px 14px; }
 .community-credit a { color:var(--accent); }
-#communityMore { display:block; margin:24px auto; }
-#communityMore.hidden { display:none; }
 .community-view .segment-toolbar > :not(#filterToggle):not(.active-filters) { display:none !important; }
 .community-view .active-filters > :not(#contentFilter) { display:none !important; }
 .community-view #filterPanel .model-search, .community-view #filterPanel #modelMenu, .community-view #filterPanel .model-more { display:none !important; }

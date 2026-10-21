@@ -14,6 +14,11 @@ export async function toggleCreatorFollow(button, creator, { api, canWrite, toas
     button.classList.toggle('is-following', creator.following);
     button.textContent = creator.following ? '✓ Following' : '+ Follow';
     toast(creator.following ? `Now following @${creator.username}` : `Unfollowed @${creator.username}`);
+    for (const card of document.querySelectorAll('.creator-card')) {
+      if (card.dataset.username === creator.username.toLowerCase()) {
+        card.dispatchEvent(new CustomEvent('creatorfollow', {detail:{following:creator.following,userId:creator.userId}}));
+      }
+    }
     await onChange?.(creator);
   } catch (error) { toast(error.message); }
   finally { delete button.dataset.followPending; button.disabled = !canWrite(); }

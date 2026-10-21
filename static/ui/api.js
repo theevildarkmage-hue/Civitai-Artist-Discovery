@@ -5,6 +5,7 @@ if (controlsChannel) controlsChannel.onmessage = ({data}) => {
   if (data?.phase === 'changed') {
     if (Array.isArray(data.settings?.browsingLevels)) window.dispatchEvent(new CustomEvent('shared-settings-changed', {detail:data.settings}));
     window.dispatchEvent(new Event('community-controls-changed'));
+    if (data.artistHidden) window.dispatchEvent(new Event('shared-artist-hidden'));
   }
 };
 export async function api(url, options = {}) {
@@ -15,7 +16,7 @@ export async function api(url, options = {}) {
   }
   const { signal, timeoutMs = String(url).startsWith('/api/history/image?') ? 90000 : 60000, ...request } = options;
   const controller = new AbortController();
-  let timedOut = false, settings = null;
+  let timedOut = false, settings = null, succeeded = false;
   const abort = () => controller.abort(signal?.reason);
   if (signal?.aborted) abort();
   else signal?.addEventListener('abort', abort, {once: true});
@@ -28,6 +29,7 @@ export async function api(url, options = {}) {
     const body = await response.json().catch(() => null);
     if (!response.ok) throw Object.assign(new Error(body?.error || `The app returned HTTP ${response.status}. Try again shortly.`), {code:body?.code,status:response.status});
     if (body === null) throw new Error('The app returned an unreadable response. Please try again.');
+    succeeded = true;
     if (controlChange && url === '/api/settings') settings = {browsingLevels:body.browsingLevels,contentRating:body.contentRating};
     return body;
   } catch (error) {
@@ -38,8 +40,10 @@ export async function api(url, options = {}) {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
     if (controlChange) {
-      controlsChannel?.postMessage({phase:'changed',settings});
+      const artistHidden = succeeded && url === '/api/content-controls/hide-artist';
+      controlsChannel?.postMessage({phase:'changed',settings,artistHidden});
       window.dispatchEvent(new Event('community-controls-changed'));
+      if (artistHidden) window.dispatchEvent(new Event('shared-artist-hidden'));
     }
   }
 }

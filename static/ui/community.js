@@ -1,6 +1,7 @@
 import { api } from './api.js';
 import { bindDialog } from './dialog.js';
-import { showGallerySkeleton, showPageError } from './feedback.js';
+import { showGallerySkeleton } from './feedback.js';
+import { createInfinitePager } from './pagination.js';
 
 const post = (artwork, idempotencyKey) => api('/api/community/recommend', {method:'POST', body:JSON.stringify({artwork, idempotencyKey})});
 
@@ -9,7 +10,7 @@ export function mountCommunity() {
   tab.id = 'tabCommunity'; tab.textContent = 'Community Gallery'; tab.setAttribute('aria-pressed', 'false');
   document.getElementById('tabDiscovery').after(tab);
   const section = document.createElement('section'); section.id = 'community'; section.className = 'discovery hidden';
-  section.innerHTML = `<div class="community-heading"><h2>Community Gallery</h2><div class="community-tools"><button id="communityRecommend" type="button" class="primary-button" aria-haspopup="dialog">Recommend Art</button><button id="communityRefresh" type="button">Refresh</button><span id="communityQuota" role="status"></span></div></div><p id="communityMessage" class="discovery-message" role="status" aria-live="polite"></p><div id="communityGrid" class="gallery"></div><button id="communityMore" type="button" class="hidden">Load more</button><details id="communityDiagnostics" class="community-diagnostics hidden"><summary>Development diagnostics</summary><p id="communityMode"></p><div id="communityMemberHost"></div><p id="communityCounts"></p></details>`;
+  section.innerHTML = `<div class="community-heading"><h2>Community Gallery</h2><div class="community-tools"><button id="communityRecommend" type="button" class="primary-button" aria-haspopup="dialog">Recommend Art</button><button id="communityRefresh" type="button">Refresh</button><span id="communityQuota" role="status"></span></div></div><p id="communityMessage" class="discovery-message" role="status" aria-live="polite"></p><div id="communityGrid" class="gallery"></div><div id="communitySentinel" class="load-sentinel"></div><details id="communityDiagnostics" class="community-diagnostics hidden"><summary>Development diagnostics</summary><p id="communityMode"></p><div id="communityMemberHost"></div><p id="communityCounts"></p></details>`;
   document.querySelector('main').append(section);
   document.getElementById('discovery').append(document.getElementById('communityDiagnostics'));
   const dialog = document.createElement('dialog'); dialog.className = 'community-dialog';
@@ -23,6 +24,15 @@ export function mountCommunity() {
     el('communityQuota').textContent = `${value.remaining} left this week`;
     el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week · ${value.remaining} remaining`;
   } };
+  let initialized = false, firstPage = true, refreshPage = false, metadataTimer = null, metadataRetries = 0, viewSession = null;
+  const requestedCursors = new Set();
+  const pages = createInfinitePager({
+    container:el('communityGrid'), sentinel:el('communitySentinel'),
+    visible:()=>authorized && !section.classList.contains('hidden'),
+    hasMore:()=>!initialized || firstPage || !!cursor,
+    load:fetchPage,
+    onError:()=>message(''),
+  });
   const artists = new Map(), recommendations = new Map();
   function clearCards() {
     for (const card of el('communityGrid').children) window.DiscoveryGallery.releaseCard(card);
@@ -59,35 +69,65 @@ export function mountCommunity() {
     window.DiscoveryGallery.hydrateReactionStates(artworks).catch(error => console.warn('Reaction history could not be loaded', error));
   }
   async function load(more = false, refresh = false) {
-    const id = ++generation;
-    if (!more) { cursor = null; clearCards(); el('communityMore').classList.add('hidden'); }
-    const clearSkeleton = more ? ()=>{} : showGallerySkeleton(el('communityGrid'));
-    message('Loading community recommendations…'); el('communityMore').disabled = true;
+    if (more) return pages.request(true);
+    ++generation; clearTimeout(metadataTimer); pages.reset();
+    cursor = null; firstPage = true; refreshPage = refresh; initialized = true;
+    requestedCursors.clear(); clearCards();
+    return pages.request(true);
+  }
+  async function fetchPage({signal}) {
+    const id = generation, first = firstPage, pageCursor = cursor;
+    const clearSkeleton = first ? showGallerySkeleton(el('communityGrid')) : ()=>{};
+    if (first) message('Loading community recommendations\u2026');
     try {
-      const status = await api(`/api/community/status${refresh ? '?refresh=1' : ''}`);
-      if (id !== generation) return;
-      quota(status.quota);
-      if (el('communityMember')) el('communityMember').value = String(status.member.id);
-      el('communityMode').textContent = status.development
-        ? 'DEVELOPMENT SIMULATOR ? Real OAuth session gates access; this Community ledger uses ten simulated members. Artwork submission checks use read-only Civitai calls. No public recommendations.'
-        : 'Civitai identity verified for each request. Your personal galleries stay on this computer.';
-      const result = await api(`/api/community/gallery?refresh=${refresh ? '1' : '0'}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
-      if (id !== generation) return;
-      if (result.controls) window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:result.controls}));
-      clearSkeleton();
-      appendRecommendations(result.items);
-      cursor = result.nextCursor;
-      el('communityMore').classList.toggle('hidden', !cursor);
-      const cached = result.cache;
-      if (result.counts) el('communityCounts').textContent = `This page: ${result.counts.acceptedPage} records; ${result.counts.contentControls} filtered; ${result.counts.unavailableMetadata} unavailable; ${result.counts.returned} returned. More pages: ${result.nextCursor ? 'yes' : 'no'}.`;
-      el('communityMode').textContent += cached ? ` · ${cached.state === 'stale' ? 'Cached results · refresh pending' : 'Metadata cached'} · ${new Date(cached.verifiedAt * 1000).toLocaleString()}` : '';
-      message(el('communityGrid').children.length ? '' : 'No recommendations match your content controls yet. Spotlight an artist to get things started.');
-      if (result.metadataRefreshing || cached?.refreshing) {
-        if (!el('communityGrid').children.length) message('Checking artwork metadata against your content controls…');
-        setTimeout(() => { if (id === generation && !section.classList.contains('hidden')) load(); }, 2500);
+      if (first) {
+        const status = await api(`/api/community/status${refreshPage ? '?refresh=1' : ''}`, {signal});
+        if (id !== generation || signal.aborted) return;
+        quota(status.quota);
+        viewSession = status.viewSession || null;
+        if (el('communityMember')) el('communityMember').value = String(status.member.id);
+        el('communityMode').textContent = status.development
+          ? 'DEVELOPMENT SIMULATOR: Real OAuth session gates access; this Community ledger uses ten simulated members. No public recommendations.'
+          : 'Civitai identity verified for each request. Your personal galleries stay on this computer.';
       }
-    } catch (error) { if (id === generation) showPageError(el('communityMessage'), error.message, ()=>load(more,refresh)); }
-    finally { clearSkeleton(); if (id === generation) el('communityMore').disabled = false; }
+      const result = await api(`/api/community/gallery?refresh=${refreshPage ? '1' : '0'}${pageCursor ? `&cursor=${encodeURIComponent(pageCursor)}` : ''}`, {signal});
+      if (id !== generation || signal.aborted) return;
+      const next = result.nextCursor;
+      if (next && (next === pageCursor || requestedCursors.has(next))) throw new Error('The service repeated a page. Refresh the gallery to try again.');
+      if (pageCursor) requestedCursors.add(pageCursor);
+      if (result.controls) window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:result.controls}));
+      clearSkeleton(); appendRecommendations(result.items);
+      cursor = next; firstPage = false; refreshPage = false;
+      const cached = result.cache;
+      if (result.counts) el('communityCounts').textContent = `This page: ${result.counts.acceptedPage} records; ${result.counts.contentControls} filtered; ${result.counts.returned} returned. More pages: ${cursor ? 'yes' : 'no'}.`;
+      if (first && cached) el('communityMode').textContent += ` \u00b7 ${cached.state === 'stale' ? 'Cached results - refresh pending' : 'Metadata cached'} \u00b7 ${new Date(cached.verifiedAt * 1000).toLocaleString()}`;
+      message(recommendations.size ? '' : cursor ? 'Checking more recommendations against your content controls as you scroll.' : 'No recommendations match your content controls yet. Spotlight an artist to get things started.');
+      // Recheck an initially empty cache only a bounded number of times. Never reset
+      // an already-rendered feed or its scroll position during background hydration.
+      if (!recommendations.size && !cursor && (result.metadataRefreshing || cached?.refreshing) && metadataRetries++ < 2) {
+        metadataTimer = setTimeout(()=>{ if (id === generation && !section.classList.contains('hidden')) load(); },2500);
+      }
+    } finally { clearSkeleton(); }
+  }
+  async function activate() {
+    pages.resume();
+    if (!initialized) return load();
+    const id = generation;
+    try {
+      const status = await api('/api/community/status');
+      if (id !== generation || section.classList.contains('hidden')) return;
+      quota(status.quota);
+      // A restarted server has a new volatile artwork admission list. Refresh the
+      // projection then; ordinary tab switches still keep their pages and scroll.
+      if (viewSession && status.viewSession && viewSession !== status.viewSession) return load();
+    } catch (error) { if (id === generation) message(error.message); }
+  }
+  function deactivate() {
+    ++generation; clearTimeout(metadataTimer); pages.pause();
+  }
+  function invalidate() {
+    deactivate(); initialized = false; cursor = null; firstPage = true;
+    ++draftVersion; clearCards(); dialog.close();
   }
   function recommend(value = '') {
     if (busy || !authorized) return;
@@ -155,15 +195,15 @@ export function mountCommunity() {
     authorized=!!detail.connected;
     tab.disabled=!authorized;
     if (authorized) configure().catch(() => {});
-    else { ++generation; ++draftVersion; clearCards(); dialog.close(); section.classList.add('hidden'); }
+    else { invalidate(); section.classList.add('hidden'); }
   });
   el('communityRecommend').onclick = () => recommend();
-  el('communityRefresh').onclick = () => load(false, true); el('communityMore').onclick = () => load(true);
+  el('communityRefresh').onclick = () => { metadataRetries = 0; load(false, true); };
   // A settings/account change invalidates all rendered previews and the pending draft.
   window.addEventListener('community-controls-changed', () => {
-    ++generation; ++draftVersion; clearCards(); dialog.close();
-    if (!section.classList.contains('hidden')) load();
+    invalidate();
+    if (!section.classList.contains('hidden')) activate();
   });
-  window.addEventListener('content-controls-changing', () => { ++generation; ++draftVersion; clearCards(); dialog.close(); });
-  window.CivitaiCommunity = Object.freeze({load, recommend});
+  window.addEventListener('content-controls-changing', invalidate);
+  window.CivitaiCommunity = Object.freeze({load, recommend, activate, deactivate});
 }

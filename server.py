@@ -101,6 +101,7 @@ INSTANCE_MUTEX = None
 RUNNING_PORT = None
 COMMUNITY = None
 COMMUNITY_LOCK = threading.Lock()
+COMMUNITY_VIEW_SESSION = os.urandom(16).hex()  # Cache generation, never authentication material.
 
 
 def community_content_profile(token):
@@ -1759,6 +1760,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise CommunityError('AUTH_EXPIRED', 401)
                 token = f'fixture:{selected}'
             result = client.request(operation, payload, self.client_address[0], fixture_token=token)
+            if operation == 'status':
+                result = {**result, 'viewSession':COMMUNITY_VIEW_SESSION}
             if operation == 'gallery':
                 client.remember_presented(result['items'], self.community_viewer(token))
             if operation == 'detail':

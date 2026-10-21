@@ -118,19 +118,27 @@ def main():
             assert not page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
             page.screenshot(path=str(output/'daily-mobile.png'))
             page.set_viewport_size({'width':1440,'height':1000})
+            community_requests=[]
+            page.on('request',lambda request:community_requests.append(request.url)
+                    if '/api/community/gallery?' in request.url else None)
             page.locator('#tabCommunity').click()
             page.wait_for_function('()=>document.querySelector("#communityQuota").textContent.includes("left")')
             page.wait_for_function('()=>[...document.querySelectorAll("#communityGrid img")].some(x=>x.naturalWidth>0)',timeout=30000)
-            pages=1
-            while page.locator('#communityMore').is_visible() and pages<10:
-                with page.expect_response(lambda response:'/api/community/gallery?' in response.url):page.locator('#communityMore').click()
-                page.wait_for_timeout(200);pages+=1
+            deadline=time.monotonic()+30
+            while 'caught up' not in page.locator('#communitySentinel').inner_text().lower():
+                assert time.monotonic()<deadline,'Community pagination did not exhaust within 30 seconds'
+                assert len(community_requests)<=10,'Read-only smoke exceeded its page budget'
+                page.locator('#communitySentinel').scroll_into_view_if_needed()
+                page.mouse.wheel(0,600)
+                page.wait_for_timeout(200)
+            assert page.locator('#communityMore').count()==0
             page.screenshot(path=str(output/'community-desktop.png'))
             names=page.locator('#communityGrid .creator-card').evaluate_all('(xs)=>xs.map(x=>x.dataset.username)')
             assert len(names)==len(set(names)), 'Community displayed duplicate artist cards'
             assert page.locator('#communityGrid .follow-button').count()==len(names)
             assert page.locator('#communityGrid .reaction-bar').count()==len(names)
-            result['liveChecks']['community']={'cards':page.locator('#communityGrid > *').count(),'pages':pages,
+            result['liveChecks']['community']={'cards':page.locator('#communityGrid > *').count(),'pageRequests':len(community_requests),
+                'exhausted':True,'noLoadMoreButton':True,
                 'uniqueArtistCards':True,'sharedFollowAndReactionsPresent':True,
                 'recommendedArtworks':page.locator('#communityGrid .image-progress button').count(),
                 'decodedImages':page.locator('#communityGrid img').evaluate_all('(xs)=>xs.filter(x=>x.naturalWidth>0).length')}

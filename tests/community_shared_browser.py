@@ -27,20 +27,35 @@ try:
             str(i):{'reactions':[],'stats':{'likeCount':5,'reactionCount':5}} for i in (1001,1002,1004)}}))
         def mutation(route):
             value=route.request.post_data_json; writes.append((route.request.url.split('/')[-1],value))
-            if route.request.url.endswith('/follow'): reply(route,{'userId':101,'following':True,'changed':True})
+            if route.request.url.endswith('/follow'): reply(route,{'userId':101,'following':value['following'],'changed':True})
             elif route.request.url.endswith('/reaction'): reply(route,{'reactions':['Like'],'stats':{'likeCount':6,'reactionCount':6}})
+            elif route.request.url.endswith('/collections/add'): reply(route,{'collectionName':'Synthetic collection','added':True})
             else: reply(route,{'hidden':True})
         page.route('**/api/follow',mutation);page.route('**/api/reaction',mutation)
         page.route('**/api/content-controls/hide-artist',mutation)
+        page.route('**/api/collections',lambda route:reply(route,{'collections':[{'id':77,'name':'Synthetic collection'}]}))
+        page.route('**/api/collections/add',mutation)
         page.goto(h.base,wait_until='networkidle');page.locator('#tabCommunity').click()
         card=page.locator('#communityGrid .creator-card');card.wait_for()
         assert card.count()==1
+        row=h.endpoint.request('/api/community/gallery')['items'][0]
+        page.evaluate('''row=>{
+          const art={...row.artwork,civitaiUrl:row.artwork.imageUrl};
+          const artist={username:art.username,userId:art.creatorId,profileUrl:art.profileUrl,representative:art,imageCount:1,following:false};
+          const mirror=window.DiscoveryGallery.createCard(artist,{images:[art],date:'',seenObserver:{observe(){},unobserve(){}},loadMore:async()=>{}});
+          mirror.classList.add('mirror');document.querySelector('#gallery').append(mirror);
+        }''',row)
         page.wait_for_function("()=>document.querySelectorAll('#communityGrid .image-progress button').length===3")
         card.locator('.reaction-bar [data-reaction="Like"] b').filter(has_text='5').wait_for()
         card.locator('.follow-button').click();card.locator('.follow-button').filter(has_text='Following').wait_for()
+        assert page.locator('#gallery .mirror .follow-button').evaluate("el=>el.classList.contains('is-following')")
+        card.locator('.follow-button').click();card.locator('.follow-button').filter(has_text='+ Follow').wait_for()
+        assert writes[-1][1]['following'] is False
+        assert not page.locator('#gallery .mirror .follow-button').evaluate("el=>el.classList.contains('is-following')")
         card.locator('[data-reaction="Like"]').click()
         card.locator('[data-reaction="Like"].selected b').filter(has_text='6').wait_for()
-        assert writes[0][1]['userId']==101 and writes[1][1]['imageId']==1004
+        assert page.locator('#gallery .mirror [data-reaction="Like"].selected b').text_content()=='6'
+        assert writes[0][1]['userId']==101 and writes[-1][1]['imageId']==1004
         card.locator('.next').click();page.wait_for_function("()=>document.querySelector('#communityGrid .creator-card').dataset.id==='1002'")
         assert 'Recommended by DemoMember01' in card.locator('.community-credit').inner_text()
         card.locator('.info-button').click();page.locator('#detailTags').filter(has_text='tag').wait_for()
@@ -48,14 +63,27 @@ try:
         page.locator('#close').click()
         card.locator('.more-menu').click()
         assert page.get_by_role('menuitem',name='Add image to collection').is_visible()
+        page.get_by_role('menuitem',name='Add image to collection').click()
+        page.get_by_role('menuitem',name='Synthetic collection',exact=True).click()
+        page.locator('#toast').filter(has_text='Added to Synthetic collection').wait_for()
+        assert writes[-1][1]=={'imageId':1002,'collectionId':77}
+        card.locator('.more-menu').click()
         page.get_by_role('menuitem',name='Recommend to Community').click()
         assert page.locator('#communityLink').input_value()=='1002'
         page.keyboard.press('Escape')
+        # Retain a cached tab across an external backend restart: it must re-admit
+        # its artwork instead of retaining buttons whose server admission was lost.
+        cached=card.element_handle()
+        page.locator('#tabGallery').click();h.stop();h.start()
+        page.locator('#tabCommunity').click()
+        page.wait_for_function('(el)=>!el.isConnected',arg=cached)
+        card.wait_for()
         page.set_viewport_size({'width':390,'height':844})
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
         page.on('dialog',lambda dialog:dialog.accept())
+        original=card.element_handle()
         card.locator('.more-menu').click();page.get_by_role('menuitem',name='Hide this artist').click()
-        card.wait_for(state='detached')
+        page.wait_for_function('(el)=>!el.isConnected',arg=original)
         assert writes[-1][1]=={'username':'DemoArtist1','userId':101}
         assert h.snapshot()==before
         assert not errors,errors

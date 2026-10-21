@@ -98,7 +98,7 @@ export function createCreatorCard(a, context) {
     wireReactions();
     if (navigating) reaction.querySelectorAll("[data-reaction]").forEach(button => { button.disabled = true; });
   }
-  function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!context.canWrite()) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
+  function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!context.canWrite()) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (context.notifyReactionState) context.notifyReactionState(imageId); else if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
   function cardDate() {
     const value = selectedDate || String(current.createdAt || '').slice(0, 10);
     const date = new Date(`${value}T12:00:00`);
@@ -305,6 +305,11 @@ export function createCreatorCard(a, context) {
   el.dataset.seenDate = selectedDate;
   if (!a.seen) seenObserver.observe(el);
   const follow = el.querySelector(".follow-button");
+  el.addEventListener('creatorfollow', ({detail}) => {
+    a.following = detail.following; a.userId = detail.userId;
+    follow.classList.toggle('is-following', a.following);
+    follow.textContent = a.following ? '\u2713 Following' : '+ Follow';
+  });
   follow.onclick = () => toggleCreatorFollow(follow, a, { api, canWrite: context.canWrite, toast });
   el.addEventListener("reactionstate", () => { if (document.body.contains(el)) renderReactions(); });
   el.applyCreatorMetadata = metadata => { a.avatarUrl = metadata.avatarUrl; a.following = !!metadata.following; a.userId = metadata.userId; const oldAvatar = el.querySelector(".creator-avatar"); if (a.avatarUrl && oldAvatar && oldAvatar.getAttribute("src") !== a.avatarUrl) { const image = document.createElement("img"); image.className = "creator-avatar"; image.src = a.avatarUrl; image.alt = ""; wireAvatarFallback(image, a.username); oldAvatar.replaceWith(image); } follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; applyCreatorFollowers(el, metadata); };
