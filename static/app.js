@@ -13,6 +13,7 @@ let buildSegment = "all", buildCoverageRating = "Soft", currentBlocks = null, es
 // How many creators this day's Civitai content controls removed, so the count on screen
 // can explain itself rather than looking like missing data.
 let hiddenCreators = 0, preferenceHidden = 0;
+let selectedMedia = "all";
 let selectedDate = null, selectedSegment = "evening", activeBuildSegment = null, selectedView = "foryou", newestDate = null, socialWrite = false, userWrite = false, collectionsWrite = false, oauthConnected = false, artistTotal = 0, imageTotal = 0, loadedArtists = 0, loadingMore = false, loadCancelled = false, loadingPhaseIndex = -1, activeLoadToken = 0, dayBuilt = false, activeRebuild = false;
 const PROFILE_REFRESH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let automaticProfileRefreshTimer = 0, automaticProfileRefreshPending = false;
@@ -75,6 +76,7 @@ function showContentRating() {
   $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
     const selected = visibleBrowsingLevels.has(Number(button.dataset.level));
     button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
     button.textContent = `${selected ? "✓ " : ""}${browsingLevelLabels.get(Number(button.dataset.level))}`;
   });
   const mature = [...visibleBrowsingLevels].some(level => level >= 4);
@@ -168,7 +170,6 @@ async function chooseContentRating(nextLevels) {
   window.dispatchEvent(new Event('content-controls-changing'));
   const previous = contentRating, buttons = [...$("contentMenu").querySelectorAll("[data-level]")];
   $("contentFilter").disabled = true; buttons.forEach(button => button.disabled = true);
-  $("contentMenu").classList.add("hidden"); $("contentFilter").setAttribute("aria-expanded", "false");
   try {
     const result = await api("/api/settings", { method: "POST", body: JSON.stringify({ browsingLevels: nextLevels }) });
     contentRating = result.contentRating; visibleBrowsingLevels = new Set(result.browsingLevels); showContentRating();
@@ -392,6 +393,9 @@ function renderCaptureState(state) {
     : `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
   $("captureAtClear").classList.toggle("hidden", minute === null || minute === undefined);
   $("captureNextRun").textContent = describeNextRun(state);
+  const recovery = state.recovery || [];
+  if (recovery.length) $("captureNextRun").textContent += ` · ${recovery.length} ${recovery.length === 1 ? "block needs" : "blocks need"} recovery`;
+  $("captureNextRun").title = recovery.map(item => `${item.block_key}: ${item.reason}`).join("\n");
 }
 async function refreshCaptureState() {
   try { renderCaptureState(await api("/api/history/capture")); }
@@ -457,7 +461,7 @@ function saveFeedState() {
   try {
     sessionStorage.setItem(FEED_STATE, JSON.stringify(window.CivitaiUI.browsingState({
       date: selectedDate, segment: selectedSegment, view: selectedView,
-      models: [...selectedModels], loaded: loadedArtists, scrollY: Math.round(window.scrollY),
+      models: [...selectedModels], media: selectedMedia, loaded: loadedArtists, scrollY: Math.round(window.scrollY),
     })));
   } catch (_) {}
 }
@@ -493,7 +497,7 @@ async function flushTagChecks() {
       body: JSON.stringify({ imageIds: entries.map(([id]) => Number(id)) }) });
     entries.forEach(([id, waiters]) => {
       const result = data.images?.[id] || { known: false, tags: [] };
-      imageTagState.set(id, result);
+      if (result.known) imageTagState.set(id, result);
       waiters.forEach(({ resolve }) => resolve(result));
     });
   } catch (error) {
@@ -512,23 +516,21 @@ function checkImageTags(imageId) {
   });
 }
 function tagsHideImage(result) { return !!result?.tags?.some(tag => tag.hidden); }
-// A tag check that fails takes the card out of use for the rest of the session, so a
-// single unlucky request is worth one retry: the batch behind it covers up to fifty
-// cards, and a transient server error otherwise leaves that whole group unreadable.
-// The rejection happens before the card changes any of its own state, so re-running
-// prepareArtwork is a clean second attempt rather than a resumption.
-const TAG_CHECK_RETRY_MS = 1500;
-function prepareCardArtwork(element, attempt = 0) {
-  if (!element.prepareArtwork) return;
+// The server owns read retries. A later explicit retry starts a fresh budget.
+function prepareCardArtwork(element) {
+  if (!element.prepareArtwork || element.tagCheckPending) return;
+  element.tagCheckPending = true;
+  element.classList.remove("tag-check-failed");
+  element.querySelector(".tag-check-retry")?.remove();
   element.prepareArtwork().catch(error => {
-    if (!attempt && element.isConnected) {
-      console.warn("Image tags could not be verified, retrying", error);
-      setTimeout(() => { if (element.isConnected) prepareCardArtwork(element, 1); }, TAG_CHECK_RETRY_MS);
-      return;
-    }
     element.classList.add("tag-check-failed");
+    const retry = document.createElement("button");
+    retry.className = "tag-check-retry";
+    retry.textContent = "Retry image check";
+    retry.onclick = event => { event.stopPropagation(); prepareCardArtwork(element); };
+    element.querySelector(".image-stage")?.append(retry);
     console.warn("Image tags could not be verified", error);
-  });
+  }).finally(() => { element.tagCheckPending = false; });
 }
 const cardImageObserver = new IntersectionObserver(entries => {
   entries.forEach(entry => {
@@ -617,11 +619,14 @@ function resumeSeenTracking() {
 }
 function clearGallery() {
   cancelPageLoad();
-  document.querySelectorAll(".creator-card").forEach(el => {
+  $("gallery").querySelectorAll(".creator-card").forEach(el => {
     seenObserver.unobserve(el);
     cardImageObserver.unobserve(el);
+    el.releaseVideo?.();
+    el.querySelector('.image-button img')?.cancelArtwork?.();
     el.seenEnteredAt = null;
   });
+  window.CivitaiUI.resetVideoRecoveryBudget();
   preferenceHidden = 0;
   // A different day's cards are a different page: the offset saved for this tab belongs
   // to the day being replaced, so returning to it must not jump into the new one.
@@ -633,11 +638,8 @@ function wireAvatarFallback(image, username) { if (!image) return; image.addEven
 // Civitai's generated preview can occasionally be missing even while the original is
 // still available. Retry the original once, then retain the normal broken-image state;
 // the one-shot marker prevents a bad original from creating an error loop.
-function wireArtworkFallback(image) {
-  window.CivitaiUI.wireArtworkFallback(image);
-}
-function showArtwork(image, previewUrl, originalUrl) {
-  window.CivitaiUI.showArtwork(image, previewUrl, originalUrl);
+function showArtwork(image, previewUrl, originalUrl, item) {
+  window.CivitaiUI.showArtwork(image, previewUrl, originalUrl, item);
 }
 function card(a) {
   return window.CivitaiUI.createCreatorCard(a, {
@@ -761,6 +763,7 @@ async function loadArtistPage() {
     const data = await api(`/api/history/artists?date=${selectedDate}&segment=${selectedSegment}&offset=${loadedArtists}&limit=${limit}&view=${selectedView}&session=${PAGE_SESSION}-${galleryToken}${modelQuery()}`, { signal: request.signal });
     if (token !== galleryToken || activePageRequest !== request) return;
     if (Number.isFinite(data.total)) artistTotal = data.total;
+    if (Number.isFinite(data.imageCount)) imageTotal = data.imageCount;
     preferenceHidden = safeCount(data.preferenceHidden);
     daySeenCount = safeCount(data.seenCount);
     const fragment = document.createDocumentFragment(), cards = [];
@@ -855,11 +858,20 @@ async function refreshBlockLabels(value) {
     $("completeDayPrompt").classList.toggle("hidden", !oneHalf || !dayBuilt);
     if (oneHalf) $("completeDayText").textContent =
       `${morning ? "Morning" : "Evening"} is ready. Build ${morning ? "Evening" : "Morning"} to complete the day.`;
+    window.updateGalleryCalendar?.();
     return data;
   } catch (error) { console.warn("Block states could not be read", error); }
 }
 function setNavigationBusy(busy) { $("olderDay").disabled = busy; $("newerDay").disabled = busy || selectedDate >= newestDate; $("daySegment").disabled = busy; $("dayView").disabled = busy; $("rebuildDay").textContent = selectedSegment === "all" ? "Rebuild day" : "Rebuild block"; $("rebuildDay").disabled = busy || !dayBuilt; $("rebuildDay").title = dayBuilt ? (busy ? "Wait for the current operation to finish" : `Rescan this ${selectedSegment === "all" ? "day" : "12-hour block"} and merge updated listings`) : `Build this ${selectedSegment === "all" ? "day" : "block"} before rebuilding it`; }
 function galleryCalendarState() {
+  // Tabs commonly stay open overnight while automatic capture builds the next
+  // gallery. Recompute the selectable boundary instead of keeping launch-day time.
+  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+  const latest = localDateString(yesterday);
+  if (newestDate !== latest) {
+    newestDate = latest;
+    $("newerDay").disabled = $("olderDay").disabled || selectedDate >= newestDate;
+  }
   return { date: selectedDate, segment: selectedSegment, newest: newestDate, built: dayBuilt };
 }
 async function selectGalleryDate(date, segment) {
@@ -1114,7 +1126,16 @@ function renderDetailTags(detail) {
       ? ' title="You hide this tag on Civitai"' : ""}>${escapeHtml(tag.name)}</span>`).join("")}`;
 }
 let detailRequestToken = 0;
-async function showDetails(image, artist, artistCard) { const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); showArtwork(artwork, image.thumbnailUrl, image.type === "video" ? "" : image.url); $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(image.community ? `/api/community/detail?id=${image.id}` : `/api/history/image?id=${image.id}`); if (token !== detailRequestToken || !dialog.open) return; showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.type === "video" ? "" : detail.url); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
+let detailRequestAbort = null;
+async function showDetails(image, artist, artistCard) { detailRequestAbort?.abort(); detailRequestAbort = new AbortController(); const detailSignal = detailRequestAbort.signal; const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); artwork.cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); if (image.type === "video") window.CivitaiUI.showVideoPoster(artwork, image); else {
+  artwork.onUnavailable = () => {
+    if (token !== detailRequestToken || !dialog.open) return;
+    dialog.close();
+    artistCard?.skipUnavailableArtwork?.();
+    toast('Skipped unavailable artwork.');
+  };
+  showArtwork(artwork, image.thumbnailUrl, image.url, image);
+} $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(image.community ? `/api/community/detail?id=${image.id}` : `/api/history/image?id=${image.id}`, { signal: detailSignal }); if (token !== detailRequestToken || !dialog.open) return; if (detail.type === "video") { if (!detail.tags?.some(tag => tag.hidden)) { window.CivitaiUI.showVideoPoster(artwork, detail); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl, detail.id); } } else showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.url, detail); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
     $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url;
     imageTagState.set(String(image.id), { known: detail.known, tags: detail.tags || [] });
     if (detail.tags?.some(tag => tag.hidden)) {
@@ -1123,10 +1144,11 @@ async function showDetails(image, artist, artistCard) { const token = ++detailRe
       toast("This image matches a tag you hide on Civitai. Removing it from the gallery…");
       artistCard?.removeHiddenImage?.(image.id).catch(error => toast(error.message));
     }
-  } catch (error) { if (token === detailRequestToken) { dialog.classList.remove("detail-loading"); $("detailPrompt").textContent = error.message; } } }
+  } catch (error) { if (token === detailRequestToken && dialog.open && error.name !== "AbortError") { dialog.classList.remove("detail-loading"); $("detailPrompt").textContent = error.message; } } }
+$('detailImage').addEventListener('artwork-unavailable', () => $('detailImage').onUnavailable?.());
 const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) loadMore().catch(error => toast(error.message)); }, { rootMargin: "800px" });
 new MutationObserver(() => { const sentinel = $("loadSentinel"); if (sentinel) observer.observe(sentinel); }).observe($("gallery"), { childList: true });
-$("details").addEventListener("close", () => { window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(false); }); $("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
+$("details").addEventListener("close", () => { detailRequestToken++; detailRequestAbort?.abort(); $("detailImage").cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(false); }); $("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
   const outage = error.kind === "service_unavailable";
   const historyWindow = error.kind === "history_window";
   // A rejected search service is not something retrying fixes, so it offers "Try again"
@@ -1248,13 +1270,14 @@ $("emergingModeChoices").querySelectorAll("[data-mode]").forEach(button => {
 $("prefEmergingLimit").onchange = () => saveGalleryPreferences({
   emergingReactionLimit: Number($("prefEmergingLimit").value)
 }).then(saved => { if (saved) toast("Strict discovery limit updated."); });
+function toggleBrowsingLevel(level) {
+  const next = new Set(visibleBrowsingLevels);
+  next.has(level) ? next.delete(level) : next.add(level);
+  if (!next.size) return toast("Select at least one browsing level.");
+  return chooseContentRating([...next]);
+}
 $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
-  button.onclick = () => {
-    const level = Number(button.dataset.level), next = new Set(visibleBrowsingLevels);
-    next.has(level) ? next.delete(level) : next.add(level);
-    if (!next.size) return toast("Select at least one browsing level.");
-    chooseContentRating([...next]);
-  };
+  button.onclick = () => toggleBrowsingLevel(Number(button.dataset.level));
 });
 document.addEventListener("click", event => {
   // Shared filters own outside dismissal and expanded state. A modal opened from a
@@ -1402,10 +1425,11 @@ async function openDay() {
     selectedSegment = saved.segment || selectedSegment;
     selectedView = saved.view || selectedView;
     selectedModels = new Set(saved.models || []);
+    selectedMedia = saved.media || selectedMedia;
     $("daySegment").value = selectedSegment; $("dayView").value = selectedView;
     $("modelFilter").textContent = modelButtonLabel();
     const state = await api(`/api/history/status?date=${saved.date}&segment=${selectedSegment}`);
-    if (state.complete) { pendingRestore = saved; return loadDay(saved.date, true); }
+    if (state.complete) { pendingRestore = saved; return loadDay(saved.date, false); }
   }
   const status = await api(`/api/history/status?date=${newestDate}&segment=all`);
   if (status.complete) { selectedSegment = "all"; $("daySegment").value = "all"; }
@@ -1489,7 +1513,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
 }
 async function startup() {
   const navigationAtStartup = navigationVersion;
-  try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
+  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
@@ -1603,8 +1627,19 @@ function modelQuery() {
 }
 function galleryFilterState() {
   return window.CivitaiUI.browsingState({ date: selectedDate, segment: selectedSegment,
-    view: selectedView, models: selectedModels, levels: visibleBrowsingLevels });
+    view: selectedView, models: selectedModels, media: selectedMedia, levels: visibleBrowsingLevels });
 }
+async function setGalleryMedia(value, reload = true) {
+  try {
+    const settings = await api('/api/settings', { method: 'POST', body: JSON.stringify({mediaType: value}) });
+    selectedMedia = settings.mediaType || value;
+    saveFeedState();
+    window.updateGalleryFilters?.();
+    await refreshModelMenu();
+    if (reload && dayBuilt) await reloadView();
+  } catch (error) { toast(error.message); window.updateGalleryFilters?.(); }
+}
+window.setGalleryMedia = setGalleryMedia;
 async function removeGalleryModel(model) {
   if (!selectedModels.delete(model)) return;
   $("modelFilter").textContent = modelButtonLabel();
@@ -1613,6 +1648,7 @@ async function removeGalleryModel(model) {
   if (dayBuilt) await reloadView();
 }
 async function resetGalleryFilters() {
+  await setGalleryMedia("all", false);
   selectedModels.clear();
   $("modelFilter").textContent = modelButtonLabel();
   saveFeedState();
@@ -1626,7 +1662,7 @@ function modelButtonLabel() {
 async function refreshModelMenu() {
   const menu = $("modelMenu");
   try {
-    const data = await api(`/api/history/models?date=${selectedDate}&segment=${selectedSegment}`);
+    const data = await api(`/api/history/models?date=${selectedDate}&segment=${selectedSegment}&media=${selectedMedia}`);
     const models = data.models || [];
     if (!models.length) { menu.innerHTML = '<p class="filter-empty">No model information for this day.</p>'; return; }
     menu.innerHTML = `<div class="filter-head"><strong>Generation model</strong><button id="modelClear" class="quiet-button">Clear</button></div>` +
@@ -1768,6 +1804,7 @@ function showView(name) {
   $("timeMachine").classList.toggle("hidden", !timeMachine);
   $("loading").classList.toggle("hidden", !gallery || dayBuilt);
   $("gallery").classList.toggle("hidden", !gallery || !dayBuilt);
+  window.CivitaiUI.refreshVideoEligibility();
   // Before seen tracking resumes below, so the observer's first report describes where
   // the reader actually is rather than the position the previous tab was left at.
   if (previous !== name) window.scrollTo({ top: viewScroll[name] ?? 0, behavior: "auto" });
@@ -1860,6 +1897,10 @@ function syncTimeMachineCards(entries) {
     seenObserver.unobserve(element);
     delete element.dataset.seenDate;
     element.classList.add("tm-card");
+    // A failure may use up to 40 already saved alternatives, without advancing the
+    // creator's saved position or requesting another Civitai listing page.
+    element.loadArtworkAlternatives = () => api(`/api/timemachine/creator?username=${encodeURIComponent(entry.username)}&limit=40&savedOnly=1`);
+    element.onUnavailableCardRemoved = () => { timeMachineSeenObserver.unobserve(element); element.tmEnteredAt = 0; };
     const basePrepareArtwork = element.prepareArtwork;
     element.prepareArtwork = async () => {
       if (tagsHideImage(await checkImageTags(entry.representative.id))) {
@@ -1868,7 +1909,9 @@ function syncTimeMachineCards(entries) {
         // creator past it and take the card off screen rather than leave it empty.
         timeMachinePending.add(key);
         scheduleTimeMachineFlush();
-        element.remove();
+        window.reportClientEvent?.('card_removed', { reason: 'image-hidden-by-civitai-tags',
+          username: entry.username, imageId: entry.representative.id, surface: 'time-machine' });
+        element.releaseVideo?.(); element.querySelector('.image-button img')?.cancelArtwork?.(); element.remove();
         return;
       }
       return basePrepareArtwork();
@@ -1877,7 +1920,7 @@ function syncTimeMachineCards(entries) {
     element.dataset.order = position;
     element.dataset.signature = signature;
     decorateTimeMachineCard(element, entry);
-    if (current) { current.replaceWith(element); }
+    if (current) { current.releaseVideo?.(); current.querySelector('.image-button img')?.cancelArtwork?.(); current.replaceWith(element); }
     else {
       const after = [...grid.children].find(
         node => Number(node.dataset.order) > position);
@@ -1886,12 +1929,17 @@ function syncTimeMachineCards(entries) {
     timeMachineSeenObserver.observe(element);
   });
   existing.forEach((node, key) => {
-    if (!wanted.has(key)) { timeMachineSeenObserver.unobserve(node); node.remove(); }
+    if (!wanted.has(key)) {
+      window.reportClientEvent?.('card_removed', { reason: 'not-in-latest-time-machine-results',
+        username: key, imageId: node.dataset.id, surface: 'time-machine' });
+      timeMachineSeenObserver.unobserve(node); node.releaseVideo?.(); node.querySelector('.image-button img')?.cancelArtwork?.(); node.remove();
+    }
   });
 }
 function renderTimeMachineCards(cards) {
   const grid = $("timeMachineGrid");
   if (!cards.length) {
+    grid.querySelectorAll('.creator-card').forEach(node => { node.releaseVideo?.(); node.querySelector('.image-button img')?.cancelArtwork?.(); });
     grid.innerHTML = "";
     $("timeMachineMessage").textContent = $("timeMachineBar").style.width === "0%"
       ? "Read your follows to begin."
@@ -2093,11 +2141,14 @@ function timeMachineCreatorCard(entry, image) {
   element.classList.add("tm-card");
   element.dataset.username = entry.username.toLowerCase();
   element.dataset.position = String(image.position);
+  element.onUnavailableCardRemoved = () => { tmCreatorSeenObserver.unobserve(element); element.tmEnteredAt = 0; };
   const basePrepareArtwork = element.prepareArtwork;
   element.prepareArtwork = async () => {
     if (tagsHideImage(await checkImageTags(entry.representative.id))) {
       tmCreatorSeenObserver.unobserve(element);
-      element.remove();
+      window.reportClientEvent?.('card_removed', { reason: 'image-hidden-by-civitai-tags',
+        username: entry.username, imageId: entry.representative.id, surface: 'time-machine-creator' });
+      element.releaseVideo?.(); element.querySelector('.image-button img')?.cancelArtwork?.(); element.remove();
       return;
     }
     return basePrepareArtwork();
@@ -2145,7 +2196,7 @@ function loadTimeMachineCreatorPage() {
 }
 function clearTimeMachineCreatorGrid() {
   const grid = $("timeMachineCreatorGrid");
-  [...grid.children].forEach(node => tmCreatorSeenObserver.unobserve(node));
+  [...grid.children].forEach(node => { tmCreatorSeenObserver.unobserve(node); node.releaseVideo?.(); node.querySelector('.image-button img')?.cancelArtwork?.(); });
   grid.replaceChildren();
 }
 async function openTimeMachineCreator(username) {
@@ -2164,6 +2215,7 @@ async function openTimeMachineCreator(username) {
   $("tmCreatorProgress").textContent = "";
   $("timeMachineGrid").classList.add("hidden");
   $("timeMachineCreatorGrid").classList.remove("hidden");
+  window.CivitaiUI.refreshVideoEligibility();
   $("tmCreatorBar").classList.remove("hidden");
   $("tmCreatorSentinel").classList.remove("hidden");
   window.scrollTo({ top: 0 });
@@ -2181,6 +2233,7 @@ async function closeTimeMachineCreator() {
   $("tmCreatorSentinel").classList.add("hidden");
   $("timeMachineCreatorGrid").classList.add("hidden");
   $("timeMachineGrid").classList.remove("hidden");
+  window.CivitaiUI.refreshVideoEligibility();
   [...$("timeMachineGrid").children].forEach(node => timeMachineSeenObserver.observe(node));
   window.scrollTo({ top: 0 });
   await refreshTimeMachine();

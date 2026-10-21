@@ -56,14 +56,14 @@ def run():
             trigger = page.locator('#contentFilter')
             trigger.focus()
             trigger.press('ArrowDown')
-            page.wait_for_function("document.querySelector('#contentMenu').contains(document.activeElement)")
+            page.wait_for_function("document.querySelector('#contentPanel').contains(document.activeElement)")
             page.keyboard.press('Escape')
-            assert page.locator('#contentMenu').is_hidden()
+            assert page.locator('#contentPanel').is_hidden()
             assert trigger.get_attribute('aria-expanded') == 'false'
             assert trigger.evaluate('node => node === document.activeElement')
             # Enter/Space leave focus on the opener; Escape must still dismiss.
             for trigger_id, panel_id in [('filterToggle', 'filterPanel'),
-                                         ('contentFilter', 'filterPanel'),
+                                         ('contentFilter', 'contentPanel'),
                                          ('galleryPreferences', 'preferencesMenu')]:
                 keyboard_trigger = page.locator(f'#{trigger_id}')
                 keyboard_trigger.focus()

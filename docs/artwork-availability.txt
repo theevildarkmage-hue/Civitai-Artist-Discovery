@@ -1,0 +1,82 @@
+Artwork availability (Discovery 2.0, Bug #004)
+
+The original shared image loader logged terminal errors but did not notify the
+shared card/carousel. Daily Gallery, historical days, Time Machine's walk, and
+Time Machine creator history all use createCreatorCard. Details use showArtwork
+directly. Video posters and video playback have their own recovery mechanisms.
+
+showArtwork now owns cancellable listeners for each artwork ID/original-source
+identity. It tries preview then original. Only if both fail does classify call
+POST /api/artwork/availability. The server validates HTTPS image.civitai.com image
+URLs, rejects queries, credentials, ports and non-image extensions, disables
+redirects, and sends HEAD (never reads a media body). Both distinct sources must
+return 404 or 410. One source returning 200, 429, 401/403, 5xx, 405, a redirect or
+a timeout means unknown. An image-element error alone never confirms absence.
+
+Cost and bounds:
+- Successful loads: zero extra requests, metadata fetches or archive scans.
+- Failed artwork: one local classification request, at most two CDN HEADs,
+  three seconds per HEAD, two concurrent classifications in browser and server.
+- Browser: at most 64 classifications per document lifetime; concurrent checks
+  for identical identities share a promise; results cool down for 60 seconds.
+- Server: at most 64 classifications per minute; 512 cached results for at most
+  60 seconds. Saturation returns unknown immediately. No request retries.
+- Session suppression: at most 2048 ID/source identities in browser memory.
+  Reload clears suppression. A changed original URL is a different identity.
+
+On unknown status the image gets one recovery pass after 1.5 seconds, then an
+explicit Retry button. It remains eligible and its artist is retained. Retry
+does not bypass classification limits. Unsupported formats, cancellations,
+authorization failures and outages do not become permanent negative records.
+Source changes, detached elements and canceled details invalidate callbacks.
+
+Cards remove only confirmed unavailable images from their local carousel array,
+retain its order, repaint position/count/controls and select the next candidate.
+Unknown artists with multiple images lazily load the existing filtered artist
+list first. Exhausted cards release observers/video and are removed from DOM;
+CSS grid reflows naturally. No gallery rebuild, score change or scroll reset.
+Daily pagination keeps original server offsets and uses the existing sentinel;
+media removal never starts an eager replacement/discovery loop. Time Machine
+creator-history pagination also uses its existing sentinel and saved offsets.
+
+Time Machine walk cards can load up to 40 already saved alternatives through
+the existing creator endpoint with savedOnly=1 (creator_history(refill=False)).
+This does not fetch new Civitai listing pages or advance saved progress. A card
+with no usable candidate in that bounded window is hidden for this visit. This
+deliberately does not search arbitrarily deep histories; creator-history browsing
+can still reach later saved artwork with its normal pagination.
+
+Details close on confirmed absence and ask the originating card to skip the
+same session-unavailable identity. Other valid artwork remains in the card.
+Poster failures do not imply missing videos: existing video poster/playback
+recovery, native controls and retry budgets remain unchanged. No video requests
+are introduced to verify availability. Missing video playback remains governed
+by that existing recovery UI, rather than inferring absence from poster errors.
+
+All suppression is separate from authoritative data. No migrations, record
+deletions, ranking/filter/preference changes, follows/reactions, or failure-driven
+seen/advance writes. New confirmed failures and exhausted-card removals use the
+existing bounded local browser-diagnostic log.
+
+Implementation:
+- discovery/availability.py: ArtworkAvailability.valid_url/check, NoRedirect.
+- server.py: Handler.do_POST availability route; Handler.do_GET savedOnly option.
+- static/ui/artwork.js: artworkKey/isArtworkUnavailable/classify/showArtwork;
+  showCardArtwork passes ID identity; generation-scoped fallback and recovery.
+- static/ui/cards.js: ensureImages/skipUnavailable/selectAllowed/removeCard;
+  count/control repaint, observer disposal and existing navigation integration.
+- static/app.js: showDetails and artwork-unavailable listener; Time Machine
+  walk's saved alternatives and walk/creator observer cleanup hooks.
+- static/styles/cards.css: transient Retry control; conceal broken image icon.
+- static/ui/bootstrap.js: remove obsolete standalone fallback wiring export;
+  the shared loader now owns and cancels each generation's listeners.
+
+Regression scripts:
+- tests/artwork_availability.py: HEAD-only transport, 404/410, mixed statuses,
+  timeout, rate limit, authorization, redirects, URL validation and request cap.
+- tests/unavailable_artwork_ui.py: controlled Choco_Tarte/Nebelx equivalents;
+  Daily, Time Machine walk and creator history in Chromium and Edge; partial
+  and exhausted carousels, counts/order, reflow/pagination, fallback/recovery,
+  details, older original-only records, keyboard/hover, deduplication, source
+  identity changes and detached/stale callbacks. Existing suite covers combined
+  filters, view switches, archive persistence and video playback/recovery.

@@ -21,6 +21,7 @@ import threading
 import time
 import sys
 import urllib.parse
+import urllib.error
 import webbrowser
 import traceback
 from discovery.community import (build_community, CommunityError, ContentProfile)
@@ -28,14 +29,17 @@ from discovery.cache import ThumbnailCache
 
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
+from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
-from discovery.history import HistoryArchive, parse_day, previous_local_day
+from discovery.history import HistoryArchive, RetryBudgetExhausted, parse_day, previous_local_day
+from discovery.selection import GallerySelection, media_type
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
                              set_client_id)
 from discovery.paths import application_root, data_root
 from discovery.settings import AppSettings
 from discovery.site import SITE_ORIGIN, profile_url
+from discovery.diagnostics import append_log, log_browser_events
 from discovery.social import (CivitaiHTTPError, SocialClient, auth_status,
                               following_ids, reaction_names)
 from discovery.taste import (EMERGING_FOLLOWERS, GALLERY_HEART_MIN, TasteStore,
@@ -66,6 +70,7 @@ CAPTURE = AutoCapture(HISTORY, SETTINGS)
 # than racing it for the same API budget.
 TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
 WRITE_LOCK = threading.Lock()
+ARTWORK_AVAILABILITY = ArtworkAvailability()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
 
@@ -292,8 +297,12 @@ def personal_preview(image):
     # Preserve anonymous/mock fixture transports; the authenticated desktop uses
     # a bounded local cache for actual Civitai image previews, including carousels.
     if (image.get('type')=='image' and urllib.parse.urlsplit(image.get('url','')).hostname=='image.civitai.com'
-            and auth_status().get('id')):
-        return {**image,'url':f'/api/history/thumbnail/{image["id"]}','thumbnailUrl':f'/api/history/thumbnail/{image["id"]}'}
+            and connected_user_id()):
+        return {**image,'url':f'/api/history/thumbnail/{image["id"]}',
+            'thumbnailUrl':f'/api/history/thumbnail/{image["id"]}',
+            # CDN hints allow bounded probes if a cached preview fails. Display still
+            # requires the existing rating, account and complete-tag checks.
+            'availabilitySources':list(dict.fromkeys(filter(None,(image.get('thumbnailUrl'),image['url']))))}
     return image
 
 
@@ -496,16 +505,17 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
                    signals: dict, hidden_images: set | None = None,
                    hidden_creators: set | None = None,
                    eligible_creators: set | None = None,
-                   seen: set | None = None) -> tuple[list[str] | None, int | None]:
+                   seen: set | None = None, archive=None) -> tuple[list[str] | None, int | None]:
     """Order (and for 'new', filter) a whole day's creators by personal signal.
 
     Returns None to mean "use the archive's own order", which keeps the default view on
     its existing SQL path.
     """
+    archive = archive or HISTORY
     if view not in GALLERY_VIEWS:
         return None, None
     followed, reacted = signals["followed"], signals["reacted"]
-    rows = HISTORY.day_artist_keys(key)
+    rows = archive.day_artist_keys(key)
     preferences = SETTINGS.load()
     hide_high_volume = preferences["hideHighVolumeCreators"]
     high_volume_threshold = preferences["highVolumeThreshold"]
@@ -520,13 +530,15 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
     if view == "discovery":
         # Popular is already the archive's native rank. It only needs an explicit order
         # when a gallery preference removes creators from that native list.
+        if isinstance(archive, GallerySelection) and not hide_high_volume and pinned:
+            rows.sort(key=lambda row: row["key"] != pinned)
         return (([row["key"] for row in rows], len(rows))
-                if hide_high_volume else (None, None))
+                if hide_high_volume or isinstance(archive, GallerySelection) else (None, None))
     if view == "foryou":
         # Score whichever image will actually be the card's cover, not the raw archive
         # pick: a hidden cover can carry the score while a different image renders, and
         # scoring the wrong one produces a top-ranked card with no visible explanation.
-        effective = HISTORY.effective_representative_ids(key, hidden_images)
+        effective = archive.effective_representative_ids(key, hidden_images)
         image_ids = [effective[row["key"]] for row in rows if row["key"] in effective]
         if hasattr(TASTE, "score_image_components"):
             components = TASTE.score_image_components(image_ids)
@@ -534,9 +546,9 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
             components = {image_id: {"reaction": score, "recent": 0.0}
                           for image_id, score in TASTE.score_images(image_ids).items()}
         model_weights = TASTE.recent_model_weights() if hasattr(TASTE, "recent_model_weights") else {}
-        image_models = HISTORY.image_model_versions(image_ids)
+        image_models = archive.image_model_versions(image_ids)
         counts = TASTE.follower_counts([row["username"] for row in rows])
-        quality = HISTORY.creator_quality_scores(key, hidden_images)
+        quality = archive.creator_quality_scores(key, hidden_images)
         quality_values = [quality.get(row["key"], 0.0) for row in rows]
         quality_low = min(quality_values, default=0.0)
         quality_high = max(quality_values, default=0.0)
@@ -740,7 +752,7 @@ ORDER_CACHE: dict = {}
 
 
 def _seen_last(key: str, order: list[str] | None, total: int | None,
-               seen: set) -> tuple[list[str] | None, int | None]:
+               seen: set, archive=None) -> tuple[list[str] | None, int | None]:
     """Push already-seen creators to the end without disturbing anyone else's order.
 
     Applies after whatever the view produced, including a view that returned None to
@@ -750,35 +762,35 @@ def _seen_last(key: str, order: list[str] | None, total: int | None,
     """
     if not seen:
         return order, total
-    base = order if order is not None else [row["key"] for row in HISTORY.day_artist_keys(key)]
+    base = order if order is not None else [row["key"] for row in (archive or HISTORY).day_artist_keys(key)]
     ordered = sorted(base, key=lambda item: item in seen)
     return ordered, len(ordered)
 
 
 def _finish_order(key: str, view: str, order: list[str] | None, total: int | None,
-                  hidden_images: set | None, seen: set) -> tuple[list[str] | None, int | None]:
+                  hidden_images: set | None, seen: set, archive=None) -> tuple[list[str] | None, int | None]:
     if view == "foryou" and order is not None:
         return order, total
-    return _seen_last(key, order, total, seen)
+    return _seen_last(key, order, total, seen, archive)
 
 
 def cached_day_view_order(key: str, view: str, pinned_username: str | None, signals: dict,
                           hidden_images: set | None, session_token: str | None, seen: set,
                           hidden_creators: set | None = None,
-                          eligible_creators: set | None = None
+                          eligible_creators: set | None = None, archive=None
                           ) -> tuple[list[str] | None, int | None]:
     if not session_token:
         order, total = day_view_order(key, view, pinned_username, signals, hidden_images,
-                                      hidden_creators, eligible_creators, seen)
-        return _finish_order(key, view, order, total, hidden_images, seen)
-    cache_key = (key, view, pinned_username)
+                                      hidden_creators, eligible_creators, seen, archive)
+        return _finish_order(key, view, order, total, hidden_images, seen, archive)
+    cache_key = (key, view, pinned_username, getattr(archive, "signature", None))
     with WRITE_LOCK:
         cached = ORDER_CACHE.get(cache_key)
         if cached is not None and cached[0] == session_token:
             return cached[1], cached[2]
     order, total = day_view_order(key, view, pinned_username, signals, hidden_images,
-                                  hidden_creators, eligible_creators, seen)
-    order, total = _finish_order(key, view, order, total, hidden_images, seen)
+                                  hidden_creators, eligible_creators, seen, archive)
+    order, total = _finish_order(key, view, order, total, hidden_images, seen, archive)
     with WRITE_LOCK:
         ORDER_CACHE[cache_key] = (session_token, order, total)
     return order, total
@@ -956,12 +968,8 @@ def artist_gallery(items: list[dict], limit: int, nonce: str) -> list[dict]:
 
 
 def log_internal_error(context: str, error: BaseException) -> None:
-    DATA_ROOT.mkdir(parents=True, exist_ok=True)
     message = f"\n[{datetime.now(timezone.utc).isoformat()}] {context}: {type(error).__name__}\n{traceback.format_exc()}"
-    try:
-        with (DATA_ROOT / "error.log").open("a", encoding="utf-8") as output: output.write(message)
-    except OSError:
-        pass
+    append_log(DATA_ROOT, message)
 
 
 def claim_single_instance(no_browser: bool, replacing: bool = False) -> bool:
@@ -1115,6 +1123,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def internal_error(self, context: str, error: BaseException) -> None:
         log_internal_error(context, error)
+        if isinstance(error, CivitaiHTTPError) and error.status in (401, 403):
+            self.json_response({"error": "Civitai refused access. Sign out and back in to renew your connection, then try again."}, error.status)
+            return
+        if isinstance(error, (TimeoutError, urllib.error.URLError, RetryBudgetExhausted)) or (
+                isinstance(error, CivitaiHTTPError) and (error.status == 429 or error.status >= 500)):
+            self.json_response({"error": "Civitai is temporarily unavailable or rate limiting requests. Your saved gallery is safe; please try again shortly."}, 503)
+            return
         self.json_response({"error": "The app encountered an internal error. Details were saved to the local error log."}, 500)
 
     def json_response(self, value: object, status: int = 200, headers=None) -> None:
@@ -1327,7 +1342,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 value = query.get("date", [previous_local_day()])[0]
                 key = HISTORY.archive_key(value, query.get("segment", ["all"])[0])
-                self.json_response({"date": value, "models": HISTORY.day_models(key)})
+                self.json_response({"date": value, "models": GallerySelection(HISTORY, key, media=media_type(query.get("media", ["all"])[0]), hidden=hidden_preferences()[1]).day_models(key)})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Day models", error)
             return
@@ -1379,7 +1394,8 @@ class Handler(BaseHTTPRequestHandler):
                 history = TIME_MACHINE.creator_history(
                     query.get("username", [""])[0],
                     after=int(after) if after not in (None, "") else None,
-                    limit=int(query.get("limit", ["40"])[0]))
+                    limit=int(query.get("limit", ["40"])[0]),
+                    refill=query.get("savedOnly", [""])[0] != "1")
                 signals = gallery_signals()
                 profiles, follows = creator_profiles(), signals["followed"]
                 # Each image rides in a one-image card entry so the gallery's own
@@ -1409,7 +1425,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 value = query.get("date", [previous_local_day()])[0]
                 key = HISTORY.archive_key(value, query.get("segment", ["all"])[0])
-                day = HISTORY.day_summary(key)
+                models = query.get("model", [])[:20]
+                media = media_type(query.get("media", ["all"])[0])
+                archive = GallerySelection(HISTORY, key, models, media, hidden_preferences()[1]) if models or media != "all" else HISTORY
+                day = archive.day_summary(key)
                 if not day.get("complete"):
                     self.json_response({"error": "That day is still loading"}, 409)
                     return
@@ -1417,8 +1436,8 @@ class Handler(BaseHTTPRequestHandler):
                 # can never reach by scrolling reads as a bug in the paging.
                 hidden_creators, hidden_images = hidden_preferences()
                 if hidden_creators or hidden_images:
-                    present = {row["key"] for row in HISTORY.day_artist_keys(key)}
-                    showable = visible_creator_keys(key, hidden_images) if hidden_images else present
+                    present = {row["key"] for row in archive.day_artist_keys(key)}
+                    showable = archive.creators_with_visible_images(key, hidden_images) if hidden_images else present
                     remaining = {name for name in present
                                  if name not in hidden_creators and name in showable}
                     day = {**day, "artistCount": len(remaining),
@@ -1459,8 +1478,11 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception: pinned_username = None
                 signals = gallery_signals()
                 hidden_creators, hidden_images = hidden_preferences()
-                showable = visible_creator_keys(key, hidden_images) if hidden_images else None
-                preference_rows = [row for row in HISTORY.day_artist_keys(key)
+                models = [item for item in query.get("model", []) if item][:20]
+                media = media_type(query.get("media", ["all"])[0])
+                archive = GallerySelection(HISTORY, key, models, media, hidden_images) if models or media != "all" else HISTORY
+                showable = archive.creators_with_visible_images(key, hidden_images) if archive is not HISTORY else (visible_creator_keys(key, hidden_images) if hidden_images else None)
+                preference_rows = [row for row in archive.day_artist_keys(key)
                                    if row["key"] not in hidden_creators and
                                    (showable is None or row["key"] in showable)]
                 if view == "emerging":
@@ -1475,24 +1497,16 @@ class Handler(BaseHTTPRequestHandler):
                 seen = TASTE.seen_creator_keys(value)
                 order, total = cached_day_view_order(key, view, pinned_username, signals,
                                                      hidden_images, session_token, seen,
-                                                     hidden_creators, showable)
-                models = [value for value in query.get("model", []) if value][:20]
+                                                     hidden_creators, showable, archive)
                 representatives = None
-                if models:
-                    picks = HISTORY.creators_using_models(key, models)
-                    representatives = picks
-                    allowed = set(picks)
-                    order = [key_name for key_name in (order or [row["key"] for row in
-                        HISTORY.day_artist_keys(key)]) if key_name in allowed]
-                    total = len(order)
                 if hidden_creators or hidden_images:
                     order = [key_name for key_name in (order or [row["key"] for row in
-                        HISTORY.day_artist_keys(key)])
+                        archive.day_artist_keys(key)])
                         if key_name not in hidden_creators
                         and (showable is None or key_name in showable)]
                     total = len(order)
                 artists = [decorate_history_artist(item, profiles, follows, signals, seen)
-                    for item in HISTORY.artists_page(key, offset, limit, pinned_username, order,
+                    for item in archive.artists_page(key, offset, limit, pinned_username, order,
                                                      representatives, hidden_images)]
                 if view in {"foryou", "emerging"}:
                     # State why each card placed where it did, rather than presenting a
@@ -1544,8 +1558,11 @@ class Handler(BaseHTTPRequestHandler):
                             artist["recommendationLabel"] = "New match"
                             reasons.append("New to you")
                         artist["recommendationReasons"] = reasons
+                counted_creators = set(order) if order is not None else None
                 self.json_response({"date": value, "offset": offset, "artists": attach_preview_tags(artists),
                     "view": view, "total": total,
+                    "imageCount": sum(row["imageCount"] for row in archive.day_artist_keys(key)
+                                      if counted_creators is None or row['key'] in counted_creators),
                     "preferenceHidden": len(preference_hidden_keys),
                     # Tells the client the list it is being handed has already had seen
                     # creators moved to the end, which makes a scroll offset saved
@@ -1576,13 +1593,7 @@ class Handler(BaseHTTPRequestHandler):
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
                 if any(not collected_image(image_id) for image_id in image_ids):
                     raise ValueError("Image is not in this history archive")
-                try:
-                    values = SocialClient().batch_query_optional("image.get", [{"id": image_id} for image_id in image_ids])
-                except CivitaiHTTPError:
-                    # Civitai fails the whole batch when any image has been deleted since
-                    # it was archived. Reaction state is decoration, so a batch containing
-                    # a removed image yields nothing rather than an error on the page.
-                    values = [None] * len(image_ids)
+                values = SocialClient().batch_query_optional("image.get", [{"id": image_id} for image_id in image_ids])
                 self.json_response({"images": {str(image_id): {"reactions": sorted(reaction_names(value))}
                     for image_id, value in zip(image_ids, values) if value is not None}})
             except ValueError as error:
@@ -1630,8 +1641,9 @@ class Handler(BaseHTTPRequestHandler):
                 key = HISTORY.archive_key(value, query.get("segment", ["all"])[0])
                 models = [item for item in query.get("model", []) if item][:20]
                 self.json_response({"date": value, "username": username,
-                    "images": [personal_preview(image) for image in HISTORY.artist_images(key, username, models,
-                                                    hidden_preferences()[1])]})
+                    "images": [personal_preview(image) for image in
+                        GallerySelection(HISTORY, key, models, media_type(query.get("media", ["all"])[0]),
+                                         hidden_preferences()[1]).artist_images(key, username)]})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Artist image history", error)
             return
@@ -1716,10 +1728,13 @@ class Handler(BaseHTTPRequestHandler):
         authorize_test(self.headers, DATA_ROOT)
         origin = self.headers.get("Origin")
         if origin:
-            parsed = urllib.parse.urlparse(origin)
-            if parsed.scheme != "http" or not is_own_address(parsed.hostname):
+            parsed = urllib.parse.urlsplit(origin)
+            expected = urllib.parse.urlsplit(f"http://{self.headers.get('Host') or ''}")
+            if (parsed.scheme != "http" or not is_own_address(parsed.hostname)
+                    or parsed.hostname != expected.hostname or parsed.port != expected.port
+                    or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
                 raise PermissionError("Request origin is not allowed")
-        if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+        if (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower() != "application/json":
             raise ValueError("Content-Type must be application/json")
         length = int(self.headers.get("Content-Length") or 0)
         if length < 2 or length > 8192:
@@ -1775,6 +1790,13 @@ class Handler(BaseHTTPRequestHandler):
                 if operation not in ("verify", "recommend", "withdraw") or 'artwork' not in body or not set(body) <= allowed:
                     self.json_response(CommunityError("INVALID_REQUEST").response(), 400); return
                 self.community_response(operation, body); return
+            if parsed.path == "/api/artwork/availability":
+                self.json_response(ARTWORK_AVAILABILITY.check(body.get("sources")))
+                return
+            if parsed.path == "/api/diagnostics/browser":
+                log_browser_events(DATA_ROOT, body.get("events"))
+                self.json_response({"logged": True})
+                return
             if parsed.path == "/api/oauth/login":
                 start_oauth_login()
                 with OAUTH_LOCK: state = OAUTH_JOB["state"]
@@ -1811,8 +1833,9 @@ class Handler(BaseHTTPRequestHandler):
                 content_change = ("browsingLevels" in body or "contentRating" in body)
                 gallery_change = any(name in body for name in (
                     "hideHighVolumeCreators", "highVolumeThreshold",
-                    "emergingReactionMode", "emergingReactionLimit"))
-                value = SETTINGS.update(browsing_levels_value=body.get("browsingLevels"),
+                    "emergingReactionMode", "emergingReactionLimit", "mediaType"))
+                value = SETTINGS.update(media_type_value=body.get("mediaType"),
+                                        browsing_levels_value=body.get("browsingLevels"),
                                         content_rating_value=body.get("contentRating"),
                                         dim_seen_cards_value=body.get("dimSeenCards"),
                                         check_for_updates_value=body.get("checkForUpdates"),

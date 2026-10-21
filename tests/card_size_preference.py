@@ -91,18 +91,17 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
             # blocking browser confirmation every time. Returning to the safe level uses
             # the completed local archive and never starts another collection.
             page.click("#contentFilter")
-            page.click('#contentMenu [data-level="1"]')
+            page.click('#contentPanel [data-level="1"]')
             page.wait_for_selector("#contentFilter:has-text('PG-13')")
             page.wait_for_selector("#contentFilter:enabled")
-            page.click("#contentFilter")
-            page.click('#contentMenu [data-level="4"]')
+            page.click('#contentPanel [data-level="4"]')
             page.wait_for_selector("#contentFilter:has-text('PG-13 + R')")
             page.wait_for_selector("#contentFilter:enabled")
-            page.click("#contentFilter")
-            page.click('#contentMenu [data-level="4"]')
+            page.click('#contentPanel [data-level="4"]')
             page.wait_for_selector("#contentFilter:has-text('PG-13')")
             page.wait_for_selector("#contentFilter:enabled")
             page.wait_for_selector(".creator-card", timeout=30000)
+            page.keyboard.press('Escape')
             assert not dialogs, dialogs
             assert not history_starts, history_starts
             assert page.is_hidden("#loading"), "a local content downgrade looked like a download"

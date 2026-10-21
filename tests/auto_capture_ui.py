@@ -56,6 +56,11 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
             page.locator("#captureNextRun", has_text="Next:").wait_for(timeout=10000)
             enabled_text = page.locator("#captureNextRun").inner_text()
             assert "·" in enabled_text, enabled_text
+            page.evaluate("""() => renderCaptureState({...captureState, recovery: [{
+                block_key: '2026-10-01#morning', reason: 'Saved progress is retained.'
+            }]})""")
+            assert "1 block needs recovery" in page.locator("#captureNextRun").inner_text()
+            assert "2026-10-01#morning" in page.locator("#captureNextRun").get_attribute("title")
             page.screenshot(path=str(SHOTS / "enabled.png"), full_page=False)
 
             # A chosen time is honoured and described as the user's own.

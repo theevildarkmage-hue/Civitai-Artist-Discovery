@@ -74,15 +74,11 @@ with tempfile.TemporaryDirectory(prefix="civitai-model-filter-", ignore_cleanup_
                 page.check('#modelMenu input[value="Pony"]')
             page.wait_for_selector(".creator-card")
 
-            with page.expect_request(lambda request: "/api/history/artist?" in request.url) as requested:
-                page.click(".carousel-arrow.next")
-            assert "model=Pony" in requested.value.url, requested.value.url
-            deadline = time.monotonic() + 10
-            while page.text_content(".image-position") != "1 of 1 images":
-                if time.monotonic() > deadline:
-                    raise AssertionError(page.text_content(".image-position"))
-                page.wait_for_timeout(50)
-            assert page.is_hidden(".carousel-arrow.next"), "filtered one-image carousel still has arrows"
+            page.wait_for_selector('.image-position', timeout=10000)
+            page.wait_for_function("document.querySelector('.image-position').textContent === '1 of 1 images'")
+            assert page.is_hidden('.carousel-arrow.next'), 'single matching image should have no carousel arrows'
+            images = page.evaluate("""async () => (await fetch('/api/history/artist?date=' + galleryCalendarState().date + '&segment=all&username=ModelArtist&model=Pony')).json()""")
+            assert len(images['images']) == 1 and images['images'][0]['baseModel'] == 'Pony'
             browser.close()
     finally:
         process.terminate()

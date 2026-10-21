@@ -10,7 +10,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from discovery.capture import AutoCapture, CAPTURE_LOOKBACK_DAYS
+from discovery.capture import AutoCapture, CAPTURE_LOOKBACK_DAYS, segment_bounds
 from discovery.history import LOCAL_ZONE, HistoryArchive
 from discovery.settings import AUTO_CAPTURE_INTERVALS, AppSettings
 
@@ -23,7 +23,7 @@ class FakeArchive:
 
     def __init__(self, floor_day: date, complete: set[str]):
         self.floor_day, self.complete, self.started = floor_day, complete, []
-        self.requested_ratings, self.window_ratings = [], []
+        self.requested_ratings, self.window_ratings, self.requested_bounds = [], [], []
         self.root = Path(".")
 
     @staticmethod
@@ -40,6 +40,10 @@ class FakeArchive:
                 "state": "complete" if key in self.complete else "not_started"}
 
     def start(self, value, start_utc, end_utc, timezone_name, segment, rating):
+        expected = segment_bounds(date.fromisoformat(value), segment)
+        assert (datetime.fromisoformat(start_utc), datetime.fromisoformat(end_utc)) == expected
+        assert (expected[1] - expected[0]) == timedelta(hours=12)
+        self.requested_bounds.append((value, segment, start_utc, end_utc))
         key = self.archive_key(value, segment)
         self.started.append(key)
         self.requested_ratings.append(rating)

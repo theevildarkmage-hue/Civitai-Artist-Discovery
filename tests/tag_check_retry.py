@@ -88,14 +88,17 @@ with tempfile.TemporaryDirectory(prefix="civitai-tag-retry-", ignore_cleanup_err
             page.wait_for_selector("#timeMachine:not(.hidden)")
             page.locator(".tm-card", has_text="Ana").wait_for(timeout=10000)
 
-            # The batch behind this card fails once. It must not be written off before
-            # the retry has run.
+            # The server owns automatic read retries. The browser offers an explicit
+            # retry without multiplying the server's budget.
             card = page.locator(".tm-card").first
             page.evaluate("() => prepareCardArtwork(document.querySelector('.tm-card'))")
             page.wait_for_timeout(500)
             assert len(attempts) == 1, f"the first attempt should stand alone: {len(attempts)}"
-            assert "tag-check-failed" not in (card.get_attribute("class") or ""), \
-                "a card was written off before its retry"
+            assert "tag-check-failed" in (card.get_attribute("class") or ""), \
+                "a failed check must be reported"
+            page.wait_for_timeout(2000)
+            assert len(attempts) == 1, "the browser automatically repeated the server budget"
+            card.locator('.tag-check-retry').click()
 
             # The retry succeeds, so the card ends up with artwork and no message.
             page.wait_for_timeout(2500)
@@ -130,7 +133,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-tag-retry-", ignore_cleanup_err
             page.locator(".tm-card", has_text="Ana").wait_for(timeout=10000)
             page.evaluate("() => prepareCardArtwork(document.querySelector('.tm-card'))")
             page.wait_for_timeout(3500)
-            assert len(down) == 2, f"a persistent failure must stop at one retry: {len(down)}"
+            assert len(down) == 1, f"a persistent failure must not automatically retry: {len(down)}"
             assert "tag-check-failed" in (page.locator(".tm-card").first.get_attribute("class") or ""), \
                 "a card that never verified must say so"
 
@@ -140,4 +143,4 @@ with tempfile.TemporaryDirectory(prefix="civitai-tag-retry-", ignore_cleanup_err
         process.terminate()
         process.wait(timeout=20)
 
-print({"retriedOnce": True, "recoveredCardShowsArtwork": True, "persistentFailureReported": True})
+print({"explicitRetry": True, "noMultipliedBudget": True, "recoveredCardShowsArtwork": True, "persistentFailureReported": True})

@@ -1,75 +1,88 @@
-# Stops whatever copy of the app is running and starts a fresh one from the current
-# source. A running copy holds its code in memory, so editing or pulling source changes
-# nothing until it is restarted -- which is why a stale process can keep reporting an old
-# version number long after the working tree has moved on.
-param(
-  [int]$Port = 0,          # 0 lets the app pick a free port, as it does normally.
-  [switch]$NoBrowser       # Leave the browser alone; useful when a tab is already open.
-)
-
+# Restart only the instance belonging to this checkout. Never enumerate/kill other apps.
+param([int]$Port = 0, [switch]$NoBrowser)
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
-$instanceFile = Join-Path $root 'data\running-instance.json'
 
-Write-Host 'Stopping any running copy...' -ForegroundColor Cyan
-$stopped = @()
-foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-                       Where-Object { $_.CommandLine -like '*server.py*' })) {
-  $stopped += $process.ProcessId
-}
-foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='CivitaiArtistDiscovery.exe'" -ErrorAction SilentlyContinue)) {
-  $stopped += $process.ProcessId
-}
-foreach ($id in $stopped) {
-  try { Stop-Process -Id $id -Force -ErrorAction Stop; Write-Host "  stopped process $id" }
-  catch { Write-Host "  process $id was already gone" }
-}
-if (-not $stopped) { Write-Host '  nothing was running' }
-
-# The replacement needs the old copy's port and single-instance lock, which are only
-# released once that process has fully exited.
-$deadline = (Get-Date).AddSeconds(20)
-while ((Get-Date) -lt $deadline) {
-  $alive = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-             Where-Object { $_.CommandLine -like '*server.py*' })
-  $alive += @(Get-CimInstance Win32_Process -Filter "Name='CivitaiArtistDiscovery.exe'" -ErrorAction SilentlyContinue)
-  if (-not $alive) { break }
-  Start-Sleep -Milliseconds 300
+function Test-DiscoveryProcess($Process, [string]$Root) {
+  if (-not $Process) { return $false }
+  $source = [regex]::Escape((Join-Path $Root 'server.py'))
+  $sourceArgument = '(?i)(?:^|\s)(?:"' + $source + '"|' + $source + ')(?=\s|$)'
+  $python = [System.IO.Path]::GetFileName($Process.ExecutablePath) -in @('python.exe', 'pythonw.exe')
+  $package = Join-Path $Root 'CivitaiArtistDiscovery.exe'
+  return ($python -and $Process.CommandLine -match $sourceArgument) -or
+    ($Process.ExecutablePath -and $Process.ExecutablePath -eq $package)
 }
 
-Remove-Item $instanceFile -ErrorAction SilentlyContinue
-
-Write-Host 'Starting from current source...' -ForegroundColor Cyan
-# Start-Process joins its argument list with spaces and does no quoting of its own, so a
-# path containing spaces -- which this project's own folder has -- arrives at Python split
-# into several arguments. Quote it here rather than relying on the caller's folder name.
-$arguments = @('-B', ('"{0}"' -f (Join-Path $root 'server.py')))
-if ($Port -gt 0)  { $arguments += @('--port', $Port) }
-if ($NoBrowser)   { $arguments += '--no-browser' }
-Start-Process -FilePath 'python' -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden
-
-# The app records where it ended up, which is the only way to learn a port it chose itself.
-$url = $null
-$deadline = (Get-Date).AddSeconds(60)
-while ((Get-Date) -lt $deadline) {
-  if (Test-Path $instanceFile) {
-    try { $url = (Get-Content $instanceFile -Raw | ConvertFrom-Json).url } catch { $url = $null }
-    if ($url) { break }
+function Restart-DiscoverySource([string]$Root, [int]$Port = 0, [switch]$NoBrowser) {
+  $Root = [System.IO.Path]::GetFullPath($Root)
+  $pin = Join-Path $Root '.data-directory-3.0.json'
+  $dataRoot = if ($env:CIVITAI_HISTORY_DATA_DIR) { $env:CIVITAI_HISTORY_DATA_DIR } elseif (Test-Path -LiteralPath $pin) {
+    Join-Path $Root ((Get-Content -LiteralPath $pin -Raw | ConvertFrom-Json).directory)
+  } else { Join-Path $Root 'data-dev-3.0' }
+  $dataRoot = [System.IO.Path]::GetFullPath($dataRoot)
+  if (-not $dataRoot.StartsWith($Root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw '3.0 restart data must remain inside this checkout.'
   }
-  Start-Sleep -Milliseconds 500
+  $instanceFile = Join-Path $dataRoot 'running-instance.json'
+  $localPython = Join-Path $Root '.venv-3.0\Scripts\python.exe'
+  $python = if (Test-Path -LiteralPath $localPython) { $localPython } else { (Get-Command python -ErrorAction Stop).Source }
+  if ($python -eq $localPython) {
+    $privateSite = Join-Path $Root '.venv-3.0\Lib\site-packages'
+    $env:PYTHONPATH = (@($privateSite, $env:PYTHONPATH) | Where-Object { $_ }) -join [IO.Path]::PathSeparator
+    $python = (& $localPython -c 'import sys; print(sys._base_executable)').Trim()
+  }
+  $bindAddress = $null
+  if (Test-Path -LiteralPath $instanceFile) {
+    $instance = Get-Content -LiteralPath $instanceFile -Raw | ConvertFrom-Json
+    $instanceId = 0
+    if (-not [int]::TryParse([string]$instance.pid, [ref]$instanceId) -or $instanceId -le 0) {
+      throw 'Invalid Discovery instance record; no process was stopped.'
+    }
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$instanceId" -ErrorAction Stop
+    if ($process) {
+      if (-not (Test-DiscoveryProcess $process $Root)) {
+        throw 'The recorded process does not belong to this checkout; no process was stopped.'
+      }
+      $address = [uri]$instance.url
+      if ($address.Scheme -ne 'http' -or $address.Port -le 0 -or $address.UserInfo -or
+          $address.AbsolutePath -ne '/' -or $address.Query -or $address.Fragment) {
+        throw 'Invalid Discovery instance address; no process was stopped.'
+      }
+      $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $address.Port -ErrorAction Stop)
+      if (-not $listeners.Count -or @($listeners | Where-Object OwningProcess -ne $instanceId).Count) {
+        throw 'The recorded port belongs to another process; no process was stopped.'
+      }
+      if ($Port -eq 0) { $Port = $address.Port }
+      $bindAddress = $listeners[0].LocalAddress
+      if ([System.IO.Path]::GetFileName($process.ExecutablePath) -eq 'python.exe') { $python = $process.ExecutablePath }
+      $waitable = Get-Process -Id $instanceId -ErrorAction Stop
+      $null = $waitable.Handle
+      $close = "http://127.0.0.1:$($address.Port)/api/app/close"
+      Invoke-RestMethod -Uri $close -Method Post -ContentType 'application/json' -Body '{}' -TimeoutSec 15 -MaximumRedirection 0 | Out-Null
+      if (-not $waitable.WaitForExit(30000)) { throw 'Discovery did not close; no replacement was started.' }
+    }
+  }
+  $arguments = @('-B', ('"{0}"' -f (Join-Path $Root 'server.py')))
+  if ($Port -gt 0) { $arguments += @('--port', $Port) }
+  if ($bindAddress -in @('127.0.0.1', '::1', '0.0.0.0')) { $arguments += @('--host', $bindAddress) }
+  if ($NoBrowser) { $arguments += '--no-browser' }
+  $started = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+  $deadline = (Get-Date).AddSeconds(60)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-Path -LiteralPath $instanceFile) {
+      try {
+        $ready = Get-Content -LiteralPath $instanceFile -Raw | ConvertFrom-Json
+        if ($ready.pid -eq $started.Id) {
+          $config = Invoke-RestMethod -Uri "http://127.0.0.1:$(([uri]$ready.url).Port)/api/history/config" -TimeoutSec 10 -MaximumRedirection 0
+          Write-Host "Running version $($config.version) at $($ready.url) (PID $($started.Id))"
+          return
+        }
+      } catch { }
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  throw 'The new Discovery process did not report ready within 60 seconds.'
 }
 
-if (-not $url) {
-  Write-Warning 'The app did not report a URL within 60 seconds. It may still be starting.'
-  exit 1
+if ($MyInvocation.InvocationName -ne '.') {
+  Restart-DiscoverySource -Root (Split-Path -Parent $PSScriptRoot) -Port $Port -NoBrowser:$NoBrowser
 }
-
-$version = '(unknown)'
-try {
-  $version = (Invoke-RestMethod -Uri "$url/api/history/config" -TimeoutSec 15).version
-} catch {
-  Write-Warning "Started at $url but its version could not be read yet."
-}
-
-Write-Host ''
-Write-Host "Running version $version at $url" -ForegroundColor Green

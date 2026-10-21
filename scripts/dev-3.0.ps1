@@ -22,5 +22,12 @@ $env:CAD_COMMUNITY_MODE = if ($Offline) { 'offline' } elseif ($RealVerification)
 Set-Location -LiteralPath $projectRoot
 $launchArgs = @('server.py', '--host', '127.0.0.1', '--port', "$Port")
 if ($NoBrowser) { $launchArgs += '--no-browser' }
-python @launchArgs
+$localPython = Join-Path $projectRoot '.venv-3.0\Scripts\python.exe'
+$python = if (Test-Path -LiteralPath $localPython) { $localPython } else { (Get-Command python -ErrorAction Stop).Source }
+if ($python -eq $localPython) {
+  $privateSite = Join-Path $projectRoot '.venv-3.0\Lib\site-packages'
+  $env:PYTHONPATH = (@($privateSite, $env:PYTHONPATH) | Where-Object { $_ }) -join [IO.Path]::PathSeparator
+  $python = (& $localPython -c 'import sys; print(sys._base_executable)').Trim()
+}
+& $python @launchArgs
 exit $LASTEXITCODE

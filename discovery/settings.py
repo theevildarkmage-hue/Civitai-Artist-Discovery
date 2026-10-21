@@ -5,6 +5,7 @@ from pathlib import Path
 import secrets
 import threading
 
+from .selection import media_type
 from .site import (CONTENT_RATINGS, DEFAULT_CONTENT_RATING, browsing_levels, content_rating,
                    levels_for_rating, rating_for_levels)
 
@@ -90,7 +91,8 @@ class AppSettings:
             capture_coverage = raw.get("captureCoverage")
             if capture_coverage not in CONTENT_RATINGS:
                 capture_coverage = rating if raw else "X"
-            return {"contentRating": rating_for_levels(levels),
+            return {"mediaType": raw.get("mediaType") if raw.get("mediaType") in ("all", "image", "video") else "all",
+                    "contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),
                     "dimSeenCards": dim_seen_cards,
                     "checkForUpdates": check_for_updates,
@@ -105,7 +107,13 @@ class AppSettings:
                     "allowLanAccess": allow_lan_access,
                     "captureCoverage": capture_coverage}
 
-    def update(self, *, browsing_levels_value: object = None,
+    def update(self, **changes) -> dict:
+        # The entire read/modify/write must be one transaction. Locking just the
+        # final replace lets concurrent filter/settings requests lose each other.
+        with self.lock:
+            return self._update(**changes)
+
+    def _update(self, *, media_type_value: object = None, browsing_levels_value: object = None,
                content_rating_value: object = None,
                dim_seen_cards_value: object = None,
                check_for_updates_value: object = None,
@@ -175,7 +183,8 @@ class AppSettings:
                             else capture_coverage_value)
         if capture_coverage not in CONTENT_RATINGS:
             raise ValueError("captureCoverage must be Soft, Mature, or X")
-        value = {"contentRating": rating_for_levels(levels),
+        value = {"mediaType": media_type(current["mediaType"] if media_type_value is None else media_type_value),
+                 "contentRating": rating_for_levels(levels),
                  "browsingLevels": list(levels),
                  "dimSeenCards": dim_seen_cards,
                  "checkForUpdates": check_for_updates,

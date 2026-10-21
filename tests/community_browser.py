@@ -24,8 +24,11 @@ def run(mode):
         env={**os.environ,'CAD_TEST_INSTANCE':nonce,'CAD_COMMUNITY_TESTING':'1' if mode=='fixture' else '0','CIVITAI_HISTORY_DATA_DIR':temporary,'CAD_DEVELOPMENT':'1','CAD_COMMUNITY_MODE':mode}
         # Disable optional background work in this clean test universe.
         Path(temporary,'settings.json').write_text(json.dumps({'autoCapture':False,'checkForUpdates':False}))
+        (ROOT/'reports').mkdir(exist_ok=True)
+        log_path=ROOT/'reports'/f'community-browser-{mode}.log'
+        server_log=log_path.open('w',encoding='utf-8')
         process=subprocess.Popen([sys.executable,'server.py','--port',str(port),'--no-browser'],
-                                 cwd=ROOT,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                                 cwd=ROOT,env=env,stdout=server_log,stderr=subprocess.STDOUT)
         base=f'http://127.0.0.1:{port}'
         def request(path,body=None):
             req=urllib.request.Request(base+path,data=None if body is None else json.dumps(body).encode(),
@@ -33,9 +36,11 @@ def run(mode):
             with urllib.request.urlopen(req,timeout=5) as response:return json.loads(response.read())
         try:
             for _ in range(80):
+                if process.poll() is not None:
+                    raise AssertionError('Server exited before readiness: '+log_path.read_text(encoding='utf-8',errors='replace'))
                 try:request('/api/history/config');break
-                except OSError:time.sleep(.1)
-            else:raise AssertionError('Server did not start')
+                except OSError as error:last_error=error;time.sleep(.1)
+            else:raise AssertionError(f'Server readiness failed: {last_error}')
             assert request('/api/history/config')['version']=='3.0.0-dev'
             assert request('/api/auth-status')['connected'] is False
             if mode=='offline':
@@ -104,7 +109,11 @@ def run(mode):
                 assert request('/api/community/status')['quota']['used']==2
                 assert page.locator('#communityLink').input_value()=='1006'
                 first=json.loads(requests[-1].post_data)['idempotencyKey']
-                page.locator('#communitySubmit').click();page.locator('#communityDialogTitle').wait_for(state='hidden')
+                page.locator('#communitySubmit').click()
+                try:page.locator('#communityDialogTitle').wait_for(state='hidden')
+                except Exception:
+                    raise AssertionError({'message':page.locator('#communityDialogMessage').inner_text(),
+                        'errors':errors,'requests':[req.post_data for req in requests]})
                 assert json.loads(requests[-1].post_data)['idempotencyKey']==first
                 assert request('/api/community/status')['quota']['used']==2
                 submit('1011');page.locator('#communityDialogTitle').wait_for(state='hidden')
@@ -119,7 +128,7 @@ def run(mode):
                 page.locator('#communityCancel').click()
                 # The shared setting updates through Community's browsing controls.
                 page.locator('#contentFilter').click()
-                page.locator('#contentMenu [data-level="1"]').click()
+                page.locator('#contentPanel [data-level="1"]').click()
                 page.locator('#communityMessage').filter(has_text='No recommendations match').wait_for()
                 assert page.locator('#communityGrid img').count()==0
                 assert 'thumbnailUrl' not in json.dumps(request('/api/community/gallery'))
@@ -130,5 +139,6 @@ def run(mode):
             print('PASS: single modal, loading/double click/replay/keyboard, card action, duplicates/self/fake/link/quota errors, privacy, mobile')
         finally:
             process.terminate();process.wait(timeout=10)
+            server_log.close()
 
 if __name__=='__main__':run('fixture');run('offline')

@@ -24,7 +24,9 @@ import json
 import threading
 import traceback
 
-from .history import LOCAL_ZONE, oldest_buildable_day
+from .history import LOCAL_ZONE, active_backend, oldest_buildable_day
+from .recovery import CaptureRecovery
+from .site import RATING_RANK
 
 
 # A capture only ever collects days that have already ended, so a day is never captured
@@ -44,6 +46,16 @@ def day_bounds(value: date) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
+def segment_bounds(value: date, segment: str) -> tuple[datetime, datetime]:
+    start, end = day_bounds(value)
+    midday = start + timedelta(hours=12)
+    if segment == "morning":
+        return start, midday
+    if segment == "evening":
+        return midday, end
+    raise ValueError("Automatic capture requires a morning or evening segment")
+
+
 class AutoCapture:
     """Runs the listing sweep for recent days on a fixed interval."""
 
@@ -57,6 +69,7 @@ class AutoCapture:
         self.stopping = threading.Event()
         self.last_run: str | None = None
         self.last_result: dict | None = None
+        self.recovery = CaptureRecovery(archive) if hasattr(archive, "connect") else None
 
     # -- planning ---------------------------------------------------------------
 
@@ -67,23 +80,49 @@ class AutoCapture:
         the window, so it is the one that cannot wait for the next interval.
         """
         rating = self.settings.load()["captureCoverage"]
-        window = self.archive.history_window(rating)
+        now = self._now()
+        if self.recovery:
+            self.recovery.audit(now)
+        retries = self.recovery.entries() if self.recovery else {}
+        try:
+            window = self.archive.history_window(rating) if active_backend() != "search" else {}
+        except Exception as error:
+            if self.recovery:
+                keys = {key for key, row in retries.items() if row["next_retry_at"] <= now.timestamp()}
+                yesterday = (now.date() - timedelta(days=1)).isoformat()
+                for segment in CAPTURE_SEGMENTS:
+                    key = self.archive.archive_key(yesterday, segment)
+                    status = self.archive.status(key)
+                    if not status["complete"] and status["state"] != "loading":
+                        keys.add(key)
+                for key in keys:
+                    self.recovery.failed(key, str(error), now)
+            raise
         floor = window.get("floor")
         oldest = None
         if floor:
             oldest = oldest_buildable_day(datetime.fromisoformat(floor))
-        today = self._now().date()
-        pending: list[tuple[str, str]] = []
+        today = now.date()
+        candidates = set(retries)
         for back in range(CAPTURE_LOOKBACK_DAYS, 0, -1):
             value = today - timedelta(days=back)
-            if oldest is not None and value < oldest:
-                continue  # Already out of reach; attempting it only wastes requests.
             for segment in CAPTURE_SEGMENTS:
-                key = self.archive.archive_key(value.isoformat(), segment)
-                status = self.archive.status(key)
-                if status["complete"] or status["state"] == "loading":
-                    continue
-                pending.append((value.isoformat(), segment))
+                candidates.add(self.archive.archive_key(value.isoformat(), segment))
+        pending: list[tuple[str, str]] = []
+        for key in sorted(candidates):
+            value, segment = key.split("#", 1)
+            retry = retries.get(key)
+            if retry and retry["next_retry_at"] > now.timestamp():
+                continue
+            if oldest is not None and date.fromisoformat(value) < oldest:
+                if retry:
+                    self.recovery.failed(key, "Civitai's public feed cannot currently reach this date. "
+                                         "Saved progress is retained.", now, unreachable=True)
+                continue
+            status = self.archive.status(key)
+            if status["state"] == "loading" or (status["complete"] and not retry):
+                continue
+            pending.append((value, segment))
         return pending
 
     # -- running ----------------------------------------------------------------
@@ -108,16 +147,27 @@ class AutoCapture:
         for value, segment in self.pending_blocks():
             if self.stopping.is_set():
                 break
-            start, end = day_bounds(date.fromisoformat(value))
+            start, end = segment_bounds(date.fromisoformat(value), segment)
             key = self.archive.archive_key(value, segment)
             try:
+                retry = self.recovery.entries().get(key) if self.recovery else None
+                rating = self.settings.load()["captureCoverage"]
+                if retry:
+                    with self.archive.connect() as db:
+                        stored = db.execute("SELECT content_rating FROM days WHERE day=?", (key,)).fetchone()
+                    if stored and stored[0] in RATING_RANK:
+                        rating = max((rating, stored[0]), key=RATING_RANK.get)
+                if retry and retry["restart_required"]:
+                    self.archive.restart_capture(key)
+                    self.recovery.restarted(key)
                 self.archive.start(value, start.isoformat(), end.isoformat(),
-                                   str(LOCAL_ZONE), segment,
-                                   self.settings.load()["captureCoverage"])
+                                   str(LOCAL_ZONE), segment, rating)
             except ValueError as error:
                 # Out of reach or otherwise refused before any work started.
                 skipped.append(key)
                 details.append({"block": key, "outcome": "skipped", "reason": str(error)[:300]})
+                if self.recovery:
+                    self.recovery.failed(key, str(error), self._now())
                 continue
             # A block is collected start to finish before the next one begins, so the
             # archive never has two feeds competing for the same paced request lane.
@@ -127,6 +177,12 @@ class AutoCapture:
                     break
             status = self.archive.status(key)
             done = bool(status["complete"])
+            if self.recovery:
+                if done:
+                    self.recovery.completed(key)
+                else:
+                    self.recovery.failed(key, status.get("error") or "Collection was interrupted.",
+                                         self._now(), restart=status.get("errorKind") == "suspicious_capture")
             (captured if done else failed).append(key)
             details.append({"block": key, "outcome": "captured" if done else "failed",
                             "images": status.get("itemCount"),
@@ -184,10 +240,16 @@ class AutoCapture:
                                  second=0, microsecond=0)
             while target <= now:
                 target += timedelta(seconds=period)
-            return target
+            return self._with_recovery_time(target, settings, now)
         slot = settings["captureSeed"] % period
         elapsed = (now.timestamp() - slot) % period
-        return now + timedelta(seconds=period - elapsed)
+        return self._with_recovery_time(now + timedelta(seconds=period - elapsed), settings, now)
+
+    def _with_recovery_time(self, scheduled: datetime, settings: dict, now: datetime) -> datetime:
+        retry = self.recovery.next_retry_at() if self.recovery and settings["autoCapture"] else None
+        if retry is not None:
+            return min(scheduled, datetime.fromtimestamp(max(now.timestamp() + 1, retry), now.tzinfo))
+        return scheduled
 
     def _worker(self) -> None:
         while not self.stopping.is_set():
@@ -238,6 +300,7 @@ class AutoCapture:
                     "coverage": settings["captureCoverage"],
                     "running": running, "lastRun": self.last_run,
                     "lastResult": self.last_result,
+                    "recovery": list(self.recovery.entries().values()) if self.recovery else [],
                     "atMinute": settings.get("autoCaptureMinute"),
                     "nextRunAt": next_run.isoformat(),
                     "nextRunInSeconds": round((next_run - now).total_seconds())}

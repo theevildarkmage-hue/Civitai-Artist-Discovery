@@ -17,9 +17,11 @@ import random
 import sqlite3
 import threading
 import time
+import urllib.error
 
 from .civitai import API_LANE
 from .social import CivitaiHTTPError, SocialClient, auth_status
+from .retry import retry_after_seconds
 
 # Civitai's own reaction set. Dislike is collected so reconciliation stays complete,
 # but the dashboard only names it when the user actually has some.
@@ -52,11 +54,11 @@ MAX_ATTEMPTS = 5
 
 def _retry_wait(error: CivitaiHTTPError, attempt: int) -> float:
     """Respect a 429 Retry-After value, with a conservative fallback if absent."""
-    if error.status == 429:
-        try:
-            requested = float(error.retry_after) if error.retry_after else 0.0
-        except (TypeError, ValueError):
-            requested = 0.0
+    requested = retry_after_seconds(getattr(error, "retry_after", None))
+    if requested is not None:
+        return max(MIN_PAUSE, requested)
+    if getattr(error, "status", 503) == 429:
+        requested = 0.0
         return max(MIN_PAUSE, requested or min(300.0, 30.0 * (2 ** (attempt - 1))))
     return min(60.0, 4.0 * (2 ** (attempt - 1)))
 
@@ -364,8 +366,8 @@ class TasteStore:
                 raise SyncCancelled()
             try:
                 return client.images_page(**kwargs)
-            except CivitaiHTTPError as error:
-                retryable = error.status == 429 or error.status >= 500
+            except (CivitaiHTTPError, TimeoutError, urllib.error.URLError) as error:
+                retryable = getattr(error, "status", 503) == 429 or getattr(error, "status", 503) >= 500
                 if not retryable or attempt == MAX_ATTEMPTS:
                     raise
                 self._progress(message="Civitai is rate limiting; waiting before retrying…")
@@ -621,8 +623,8 @@ class TasteStore:
                     profiles = client.batch_query_optional(
                         "user.getCreator", [{"username": name} for name in chunk])
                     break
-                except CivitaiHTTPError as error:
-                    if (error.status != 429 and error.status < 500) or attempt == MAX_ATTEMPTS:
+                except (CivitaiHTTPError, TimeoutError, urllib.error.URLError) as error:
+                    if (getattr(error, "status", 503) != 429 and getattr(error, "status", 503) < 500) or attempt == MAX_ATTEMPTS:
                         raise
                     delay = _retry_wait(error, attempt)
                     if cancel.wait(delay):
@@ -801,8 +803,8 @@ class TasteStore:
                 try:
                     page = client.creator_images_page(username, cursor=cursor, limit=200)
                     break
-                except CivitaiHTTPError as error:
-                    if (error.status != 429 and error.status < 500) or attempt == MAX_ATTEMPTS:
+                except (CivitaiHTTPError, TimeoutError, urllib.error.URLError) as error:
+                    if (getattr(error, "status", 503) != 429 and getattr(error, "status", 503) < 500) or attempt == MAX_ATTEMPTS:
                         raise
                     delay = _retry_wait(error, attempt)
                     if self.cancel.wait(delay):
@@ -1058,8 +1060,8 @@ class TasteStore:
                     results = client.batch_query_optional(
                         "tag.getVotableTags", [{"id": value, "type": "image"} for value in chunk])
                     break
-                except CivitaiHTTPError as error:
-                    if (error.status != 429 and error.status < 500) or attempt == MAX_ATTEMPTS:
+                except (CivitaiHTTPError, TimeoutError, urllib.error.URLError) as error:
+                    if (getattr(error, "status", 503) != 429 and getattr(error, "status", 503) < 500) or attempt == MAX_ATTEMPTS:
                         raise
                     delay = _retry_wait(error, attempt)
                     if cancel.wait(delay):
@@ -1071,6 +1073,8 @@ class TasteStore:
             stamp = _now()
             tag_rows, seen_rows = [], []
             for image_id, tags in zip(chunk, results):
+                if not isinstance(tags, list):
+                    continue
                 seen_rows.append((image_id, stamp))
                 for tag in tags if isinstance(tags, list) else []:
                     name = str((tag or {}).get("name") or "").strip().casefold()
@@ -1201,7 +1205,8 @@ class TasteStore:
                     tag_rows)
                 db.executemany(
                     "INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)",
-                    [(image_id, stamp) for image_id in missing])
+                    [(image_id, stamp) for image_id, result in zip(missing, results)
+                     if isinstance(result, list)])
         return self.image_tags_many(wanted)
 
     def gallery_signals(self) -> dict:

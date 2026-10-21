@@ -26,8 +26,10 @@ See [artwork restoration, count reconciliation and validation](docs/3.0-artwork-
 
 See [launching and testing](docs/3.0-development.md), [architecture and source
 verification](docs/3.0-architecture.md), [API contract](docs/3.0-api.md), and
-[undeployed Supabase readiness](docs/3.0-supabase.md). Known local-only 2.x
-improvements are listed in the architecture document and were not imported.
+[undeployed Supabase readiness](docs/3.0-supabase.md). The reviewed 2.2.1 security,
+capture, filtering, artwork and video improvements are incorporated selectively;
+see the [integration report](docs/3.0-integration-2026-10-21.md) for preservation,
+validation and remaining production limits.
 
 See [the ten-member integration and stress workflow](docs/3.0-community-testing.md) for metadata sampling, shared-control regression tests, and the private validation report.
 

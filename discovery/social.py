@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 import urllib.error
 import urllib.parse
@@ -10,7 +11,9 @@ import urllib.request
 
 
 from .flatjson import unwrap_result
-from .oauth import get_access_token, status
+from .oauth import get_access_token, refresh_access_token, status
+from .retry import retry_after_seconds
+from .diagnostics import redact_sensitive
 
 
 BASE_URL = "https://civitai.red"
@@ -39,6 +42,23 @@ class SocialClient:
         self.lane = lane
 
     def public_model_version(self, model_version_id: int) -> dict:
+        for attempt in range(3):
+            try:
+                return self._public_model_version_once(model_version_id)
+            except CivitaiHTTPError as error:
+                if error.status not in (429, 500, 502, 503, 504) or attempt == 2:
+                    raise
+                delay = retry_after_seconds(error.retry_after)
+                delay = delay if delay is not None else 2 ** attempt
+                if delay > 30:
+                    raise
+            except (TimeoutError, urllib.error.URLError):
+                if attempt == 2:
+                    raise
+                delay = 2 ** attempt
+            time.sleep(delay + random.uniform(0, .5))
+
+    def _public_model_version_once(self, model_version_id: int) -> dict:
         """Resolve a public model-version id without sending the OAuth token."""
         request = urllib.request.Request(
             f"{BASE_URL}/api/v1/model-versions/{int(model_version_id)}",
@@ -46,10 +66,10 @@ class SocialClient:
                      "User-Agent": "CivitaiArtistDiscovery/1.0 (local artist discovery app)"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=20) as response:
                 value = json.loads(response.read())
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:600]
+            detail = redact_sensitive(error.read(4096).decode("utf-8", "replace"))[:600]
             raise CivitaiHTTPError(
                 error.code, f"Civitai returned HTTP {error.code}: {detail}",
                 (error.headers or {}).get("Retry-After")) from error
@@ -58,17 +78,18 @@ class SocialClient:
         return value
 
     def _request(self, request: urllib.request.Request) -> object:
-        request.add_header("Authorization", f"Bearer {get_access_token()}")
+        token = get_access_token()
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
         request.add_header("Accept", "application/json")
         request.add_header("User-Agent", "CivitaiArtistDiscovery/1.0 (local Windows artist discovery app; user-requested reads)")
         if self.lane is None:
-            return self._send(request)
+            return self._send_authenticated(request, token)
         with self.lane.lock:
             self.lane.wait()
             self.lane.last_request = time.monotonic()
             started = time.monotonic()
             try:
-                value = self._send(request)
+                value = self._send_authenticated(request, token)
             except CivitaiHTTPError as error:
                 # Feed the shared pacer so a limit hit here also slows the collection
                 # engine, instead of each subsystem having to rediscover it alone.
@@ -83,13 +104,39 @@ class SocialClient:
             self.lane.pacer.success(time.monotonic() - started)
             return value
 
+    def _send_authenticated(self, request: urllib.request.Request, token: str) -> object:
+        read = request.get_method() == 'GET'
+        # Background callers own their larger, cancellable budget. Never replay writes.
+        attempts = (3 if self.lane is None else 2) if read else 1
+        refreshed = False
+        for attempt in range(attempts):
+            try:
+                return self._send(request)
+            except CivitaiHTTPError as error:
+                if read and error.status == 401 and not refreshed and attempt + 1 < attempts:
+                    request.add_unredirected_header('Authorization', f'Bearer {refresh_access_token(token)}')
+                    refreshed = True
+                    continue
+                if not read or self.lane is not None or error.status not in (429, 500, 502, 503, 504) or attempt + 1 == attempts:
+                    raise
+                delay = retry_after_seconds(error.retry_after)
+                delay = delay if delay is not None else 2 ** attempt
+                # Long server pauses belong to background scheduling or a later user retry.
+                if delay > 30:
+                    raise
+            except (TimeoutError, urllib.error.URLError):
+                if not read or self.lane is not None or attempt + 1 == attempts:
+                    raise
+                delay = 2 ** attempt
+            time.sleep(delay + random.uniform(0, .5))
+
     @staticmethod
     def _send(request: urllib.request.Request) -> object:
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=20) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:600]
+            detail = redact_sensitive(error.read(4096).decode("utf-8", "replace"))[:600]
             raise CivitaiHTTPError(
                 error.code, f"Civitai returned HTTP {error.code}: {detail}",
                 (error.headers or {}).get("Retry-After")) from error
@@ -115,6 +162,16 @@ class SocialClient:
         response = self._request(urllib.request.Request(f"{BASE_URL}/api/trpc/{procedures}?batch=1&input={encoded}"))
         if not isinstance(response, list) or len(response) != len(payloads):
             raise RuntimeError("Civitai returned an incomplete query batch")
+        for item in response:
+            if not isinstance(item, dict):
+                raise RuntimeError('Civitai returned a malformed query result')
+            if 'error' in item:
+                detail = item['error'].get('json', {})
+                data = detail.get('data') or {}
+                code = data.get('httpStatus')
+                if code == 404 or data.get('code') == 'NOT_FOUND':
+                    continue
+                raise CivitaiHTTPError(int(code or 502), detail.get('message') or 'Civitai query failed')
         if optional:
             return [None if not isinstance(item, dict) or "error" in item
                     else unwrap_result(item["result"]) for item in response]

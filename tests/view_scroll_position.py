@@ -118,6 +118,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-view-scroll-", ignore_cleanup_e
             deep = page.evaluate("() => window.scrollY")
             assert deep > gallery_at + 1000, f"the Time Machine did not scroll far enough: {deep}"
 
+            # The initial, real wheel scroll may already have marked cards seen.
+            # Let its batched POST finish before measuring the tab switch itself.
+            page.wait_for_timeout(3200)
+            seen_before_switch = page.locator(".creator-card.is-seen").count()
             seen_posts.clear()
             page.locator("#tabGallery").click()
             page.wait_for_selector("#gallery:not(.hidden)")
@@ -129,7 +133,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-view-scroll-", ignore_cleanup_e
             # Nothing may be dimmed by the switch itself: the reader passed no cards.
             page.wait_for_timeout(2000)
             assert not seen_posts, f"switching tabs marked creators seen: {seen_posts}"
-            assert page.locator(".creator-card.is-seen").count() == 0, \
+            assert page.locator(".creator-card.is-seen").count() == seen_before_switch, \
                 "switching tabs dimmed cards the reader never scrolled past"
 
             # And the Time Machine keeps its own place in turn.

@@ -1,3 +1,5 @@
+import { anchorPopover } from './menu.js';
+
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
   'September', 'October', 'November', 'December'];
 
@@ -34,6 +36,7 @@ export function mountCalendar({ api, state, select, rebuild }) {
   toolbar.prepend(button);
   document.body.append(panel);
   let coverage = new Map(), shown = null, opener = button;
+  const position = anchorPopover(panel, () => button);
   const paintButton = () => {
     const current = state();
     const label = current.date ? localDate(current.date).toLocaleDateString(undefined,
@@ -79,15 +82,33 @@ export function mountCalendar({ api, state, select, rebuild }) {
     panel.querySelector('[data-month="1"]').disabled = shown.getFullYear() === newest.getFullYear() && shown.getMonth() >= newest.getMonth();
     panel.querySelector('.rebuild-calendar').hidden = !current.built;
     paintButton();
+    position();
+  };
+  let coverageRequest = null;
+  const refreshCoverage = () => {
+    if (coverageRequest) return coverageRequest;
+    coverageRequest = (async () => {
+      try {
+        const data = await api('/api/history/calendar');
+        coverage = new Map((data.days || []).map(day => [day.date, day]));
+        if (!panel.classList.contains('hidden')) render();
+      } catch (_) { /* Keep existing coverage and date selection usable while offline. */ }
+      finally { coverageRequest = null; }
+    })();
+    return coverageRequest;
+  };
+  const update = () => {
+    paintButton();
+    if (!panel.classList.contains('hidden')) {
+      render();
+      return refreshCoverage();
+    }
   };
   const open = async () => {
     opener = button; shown = localDate(state().date || state().newest);
     panel.classList.remove('hidden'); button.setAttribute('aria-expanded', 'true');
     render();
-    try {
-      const data = await api('/api/history/calendar');
-      coverage = new Map((data.days || []).map(day => [day.date, day])); render();
-    } catch (_) { /* Date selection remains usable when coverage hints fail. */ }
+    await refreshCoverage();
   };
   button.onclick = () => panel.classList.contains('hidden') ? open() : close();
   button.onkeydown = event => {
@@ -110,5 +131,9 @@ export function mountCalendar({ api, state, select, rebuild }) {
   document.addEventListener('click', event => {
     if (!panel.contains(event.target) && !button.contains(event.target)) close();
   });
-  return { update: paintButton };
+  // Fetch when opened or when a local build finishes; an inactive tab catches up
+  // as soon as the reader returns. There is no periodic calendar polling.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) update(); });
+  window.addEventListener('focus', update);
+  return { update };
 }

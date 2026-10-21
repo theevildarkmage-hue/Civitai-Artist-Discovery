@@ -83,13 +83,67 @@ Neither was caused by videos; both were made easy to hit by the extra requests a
 | `transcode=true,width=450,optimized=true` | About 3 MB MP4 (card playback) |
 | `transcode=true,width=768,optimized=true` | About 8 MB MP4 (details playback) |
 
-Some videos (about 1 in 9 cards in testing) ignore the transform and redirect to the
-original on `blobs-b2.civitai.com`. For those videos, the "still" is a 78 MB MP4 and the
-"450 px" file is 27 MB. The browser refuses to put video bytes into an `<img>`, so the still
-fails cheaply. The card then shows the video's own first frame (`preload="metadata"`),
-which reads the header and first frame only. Playback of those videos streams the larger
-file, and it still happens only while someone is watching. `media-src` in the CSP allows
-`https://*.civitai.com` for this reason.
+Some videos ignore still transforms and redirect to the original file. Failed
+posters now fall through to a stable "Video preview unavailable" placeholder. They
+never create a video element or fetch a first frame as a fallback. Eligible autoplay
+and explicit Play still use the existing playback transforms.
+
+## Thumbnail and playback reliability (October 2026)
+
+Listing responses already fetched by Daily gallery or Time Machine can supply video
+thumbnail hints. A process-memory cache retains at most 2,048 hints and 2 MiB of URL
+payload for 24 hours, keyed by artwork ID, original URL, and request browsing mask.
+A hint is reused only if its entire browsing mask is allowed in the current view.
+Only HTTPS image.civitai.com URLs are accepted. Recognized unsigned transforms are
+sized to 768 pixels; opaque formats and signed/query URLs are preserved verbatim.
+No schema, stored archive row, or existing preference changes are required.
+
+Poster priority is compatible listing thumbnail, existing generated still, then
+placeholder. Historical artwork and process restarts normally use the generated
+still until an existing listing request supplies a hint. There is no backfill or
+extra metadata request. Browser poster success/failure caches hold 256 entries each;
+failed candidates are skipped for five minutes and a candidate times out after
+15 seconds. Candidate callbacks belong to one artwork selection, so an obsolete
+load or error cannot repaint the next item. Details can reuse a successful poster.
+
+Playback retains half-visible/300 ms muted card autoplay, reduced-motion behavior,
+native detail controls, and focused-card keyboard controls. Loading or buffering
+feedback appears after two seconds without playback advancement. Fifteen seconds
+without useful progress triggers bounded recovery. Useful progress includes time
+advancement, growing buffered ranges, increased readiness, and native initial-load
+progress events while fetching. Seeking does not count as playback advancement.
+At 45 seconds a still-progressing load offers Retry while continuing the download;
+45 seconds is a soft threshold so functioning slow streams are never forced to
+redownload. A stalled restoration offers an explicit restart from the beginning.
+
+Cards get one automatic reload, details two, with a shared maximum of two per
+artwork per feed session. Backoff is three seconds and then ten seconds; concurrent
+recoveries are spaced by at least one second. A new Daily gallery feed resets the
+shared budget. Manual Retry explicitly resets that artwork's allowance. Temporary
+offline periods wait for connectivity without consuming a dispatched attempt.
+Autoplay denial waits for a user gesture; unsupported media offers an explanation
+and Retry instead of automatic reloads. Native media errors do not reliably expose
+HTTP status, so the client does not probe with extra HEAD or metadata requests.
+
+Recovery preserves seekable playback position, speed, volume, and mute state; card
+playback remains muted. Cancellation invalidates timers, events, and play promises,
+removes listeners, pauses, clears the source, calls load(), and removes the obsolete
+element before replacement. Explicit cleanup covers card removal, carousel changes,
+dialog closure, navigation, and hidden tabs. A manual pause remains effective for
+that visibility visit. No video is prebuffered to manufacture a poster. Local
+client diagnostics include video_retry/video_failed and failed/recovered posters,
+using the existing scrubbed, rate-limited log pipeline.
+
+`tests/video_thumbnail_hints.py` checks URL safety, browsing masks, cache bounds,
+expiration, archive compatibility, and unchanged stored rows. Deterministic lifecycle
+tests cover progressing loads, deadlines, budgets, restoration, cancellation,
+offline recovery, and native controls. `tests/video_recovery_browser.py` uses real
+Chromium/Edge media playback against a controlled local range-capable server,
+including slow, briefly interrupted, and persistently stalled MP4 streams, poster
+fallbacks, stale callbacks, and cleanup. Its synthetic silent test-pattern fixture
+was generated with ffmpeg (320x240, 15 fps, 20 seconds, H.264 CRF 24, yuv420p,
+faststart); ffmpeg is not needed to run tests. Browser fixture timings are accelerated;
+production constants are exercised separately by deterministic tests.
 
 ## Verified
 

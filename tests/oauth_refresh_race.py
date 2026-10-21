@@ -61,4 +61,24 @@ assert stored["refresh_token"] == "second"
 assert oauth.get_access_token() == "new-after-first"
 assert len(posts) == 1
 
+# Civitai can reject an access token before its advertised expiry. All requests
+# that used that token must share one forced rotation, even though it looks fresh.
+stored.update(access_token="rejected", refresh_token="first",
+              expires_at=int(time.time()) + 3600)
+posts.clear()
+results.clear()
+failures.clear()
+
+def rejected_worker():
+    try: results.append(oauth.refresh_access_token("rejected"))
+    except Exception as error: failures.append(error)
+
+threads = [threading.Thread(target=rejected_worker) for _ in range(8)]
+for thread in threads: thread.start()
+for thread in threads: thread.join()
+assert not failures, failures
+assert posts == ["first"], posts
+assert set(results) == {"new-after-first"}, results
+assert oauth.get_access_token() == "new-after-first"
+
 print("oauth refresh race: one redemption for 8 concurrent callers")

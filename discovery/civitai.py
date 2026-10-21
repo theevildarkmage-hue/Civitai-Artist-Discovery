@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .models import normalize_base_model
+
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -135,7 +137,7 @@ def normalize(item: dict) -> dict:
         "type": item.get("type") or "image",
         "nsfwLevel": item.get("nsfwLevel"),
         "browsingLevel": item.get("browsingLevel"),
-        "baseModel": item.get("baseModel") or "Unknown",
+        "baseModel": normalize_base_model(item.get("baseModel")),
         "modelVersionIds": item.get("modelVersionIds") or [],
         "prompt": meta.get("prompt") or "",
         "negativePrompt": meta.get("negativePrompt") or "",
