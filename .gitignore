@@ -93,3 +93,24 @@ logs/
 !tests/fixtures/recovery.mp4
 !tests/fixtures/video_lifecycle.mjs
 !docs/artwork-availability.txt
+
+# Defense in depth after source allowlists: runtime and sensitive artifacts stay local.
+**/__pycache__/
+**/*.pyc
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.db
+**/*.dpapi
+**/*.log
+**/*.jsonl
+**/.env
+**/.env.*
+!supabase/.env.example
+data-*/
+data_*/
+.venv*/
+.data-directory-3.0.json
+
+# Local commit gate; install explicitly with the documented local Git configuration.
+!.githooks/
+!.githooks/pre-commit

@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 PORT = 8899
-SHOTS = ROOT / "reports" / "auto-capture"
+SHOTS = test_safety.REPORTS / "auto-capture"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:

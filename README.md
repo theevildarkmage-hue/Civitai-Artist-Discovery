@@ -31,6 +31,9 @@ capture, filtering, artwork and video improvements are incorporated selectively;
 see the [integration report](docs/3.0-integration-2026-10-21.md) for preservation,
 validation and remaining production limits.
 
+For the launcher, read-only diagnostics, smoke command, local CI and manual acceptance
+checklist, see [local development readiness](docs/3.0-local-readiness.md).
+
 See [the ten-member integration and stress workflow](docs/3.0-community-testing.md) for metadata sampling, shared-control regression tests, and the private validation report.
 
 The documentation below describes the existing Discovery features and release line.

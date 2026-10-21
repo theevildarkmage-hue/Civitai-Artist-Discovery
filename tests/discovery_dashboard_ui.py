@@ -17,7 +17,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 PORT = 8887
-SHOTS = ROOT / "reports" / "discovery-dashboard"
+SHOTS = test_safety.REPORTS / "discovery-dashboard"
 
 with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_errors=True) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary

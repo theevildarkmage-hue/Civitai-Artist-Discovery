@@ -17,7 +17,7 @@ from test_safety import IsolatedEndpoint, ROOT
 class Harness:
     def __init__(self, *, port=8907, root=None, sample=True):
         if root is None:
-            self.temporary=tempfile.TemporaryDirectory(prefix='data-test-community-run-',dir=ROOT,ignore_cleanup_errors=True)
+            self.temporary=tempfile.TemporaryDirectory(prefix='data-test-community-run-',ignore_cleanup_errors=True)
             root=self.temporary.name
             if sample:
                 # Fully synthetic manifest: clean worktrees never read personal caches.
@@ -52,7 +52,7 @@ class Harness:
         settings=self.root/'settings.json'
         if not settings.exists():
             settings.write_text(json.dumps({'browsingLevels':[1,2,4,8,16], 'autoCapture':False,'checkForUpdates':False}))
-        logs=ROOT/'reports';logs.mkdir(exist_ok=True)
+        logs=test_safety.REPORTS;logs.mkdir(exist_ok=True)
         self.log=open(logs/'community-stress-server.log','a',encoding='utf-8')
         self.process=subprocess.Popen([sys.executable,str(ROOT/'server.py'),'--host','127.0.0.1',
             '--port',str(self.port),'--no-browser'],cwd=ROOT,env=self.env,stdout=self.log,stderr=self.log)

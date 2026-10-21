@@ -29,7 +29,7 @@ def artist(name, image_id, day, *, seen, known, complete):
                                "browsingLevel": 1, "stats": {}},
             "seenCount": seen, "knownCount": known, "complete": complete}
 PORT = 8901
-SHOTS = ROOT / "reports" / "time-machine"
+SHOTS = test_safety.REPORTS / "time-machine"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=True) as temporary:

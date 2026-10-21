@@ -20,7 +20,7 @@ if ($UseMetadataSample -or (-not $RealVerification -and -not $Offline -and (Test
 }
 $env:CAD_COMMUNITY_MODE = if ($Offline) { 'offline' } elseif ($RealVerification) { 'local' } else { 'fixture' }
 Set-Location -LiteralPath $projectRoot
-$launchArgs = @('server.py', '--host', '127.0.0.1', '--port', "$Port")
+$launchArgs = @('scripts/dev-launcher.py', '--port', "$Port", '--data-directory', $devDataRoot)
 if ($NoBrowser) { $launchArgs += '--no-browser' }
 $localPython = Join-Path $projectRoot '.venv-3.0\Scripts\python.exe'
 $python = if (Test-Path -LiteralPath $localPython) { $localPython } else { (Get-Command python -ErrorAction Stop).Source }

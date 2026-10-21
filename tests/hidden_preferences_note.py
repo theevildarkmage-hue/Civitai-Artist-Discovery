@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 PORT = 8898
-SHOTS = ROOT / "reports" / "hidden-note"
+SHOTS = test_safety.REPORTS / "hidden-note"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="civitai-hidden-note-", ignore_cleanup_errors=True) as temporary:

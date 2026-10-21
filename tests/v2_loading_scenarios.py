@@ -118,7 +118,7 @@ def run():
     finally:
         server.shutdown()
         server.server_close()
-    output = ROOT / 'reports' / 'v2' / 'loading-scenarios.json'
+    output = test_safety.REPORTS / 'v2' / 'loading-scenarios.json'
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(results, indent=2), encoding='utf-8')
     print(json.dumps(results))

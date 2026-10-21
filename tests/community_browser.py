@@ -17,15 +17,15 @@ from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
 
 def run(mode):
-    with tempfile.TemporaryDirectory(prefix='data-test-community-browser-',dir=ROOT,ignore_cleanup_errors=True) as temporary:
+    with tempfile.TemporaryDirectory(prefix='data-test-community-browser-',ignore_cleanup_errors=True) as temporary:
         with socket.socket() as sock:
             sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
         nonce=secrets.token_hex(24)
         env={**os.environ,'CAD_TEST_INSTANCE':nonce,'CAD_COMMUNITY_TESTING':'1' if mode=='fixture' else '0','CIVITAI_HISTORY_DATA_DIR':temporary,'CAD_DEVELOPMENT':'1','CAD_COMMUNITY_MODE':mode}
         # Disable optional background work in this clean test universe.
         Path(temporary,'settings.json').write_text(json.dumps({'autoCapture':False,'checkForUpdates':False}))
-        (ROOT/'reports').mkdir(exist_ok=True)
-        log_path=ROOT/'reports'/f'community-browser-{mode}.log'
+        (test_safety.REPORTS).mkdir(exist_ok=True)
+        log_path=test_safety.REPORTS/f'community-browser-{mode}.log'
         server_log=log_path.open('w',encoding='utf-8')
         process=subprocess.Popen([sys.executable,'server.py','--port',str(port),'--no-browser'],
                                  cwd=ROOT,env=env,stdout=server_log,stderr=subprocess.STDOUT)
@@ -119,7 +119,7 @@ def run(mode):
                 submit('1011');page.locator('#communityDialogTitle').wait_for(state='hidden')
                 submit('1016');page.locator('#communityDialogMessage').filter(has_text='all three recommendations').wait_for()
                 assert request('/api/community/status')['quota']['used']==3
-                reports=ROOT/'reports';reports.mkdir(exist_ok=True)
+                reports=test_safety.REPORTS;reports.mkdir(exist_ok=True)
                 page.screenshot(path=str(reports/'submission-synthetic-desktop.png'))
                 page.set_viewport_size({'width':390,'height':844})
                 page.screenshot(path=str(reports/'submission-synthetic-mobile.png'))

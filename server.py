@@ -52,6 +52,8 @@ ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
 APP_VERSION = "3.0.0-dev"
+from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
+DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 PERSONAL_THUMBNAILS=ThumbnailCache(DATA_ROOT/'cache'/'artwork-thumbnails',allow_downscale=True)
@@ -1153,6 +1155,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(403); return
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
+        if parsed.path == '/api/development/diagnostics':
+            if not development_diagnostics_enabled() or self.client_address[0] not in ('127.0.0.1','::1'):
+                self.send_error(404);return
+            from discovery.community_dev import authorize_test
+            from discovery.dev_diagnostics import snapshot
+            try:
+                authorize_test(self.headers,DATA_ROOT)
+                with TASTE.lock:job=dict(TASTE.job)
+                self.json_response(snapshot(ROOT,DATA_ROOT,APP_VERSION,DEVELOPMENT_COMMIT,
+                    auth_status=auth_status,job=job,probe=query.get('probe')==['1']))
+            except PermissionError:self.send_error(403)
+            except Exception as error:self.internal_error('Development diagnostics',error)
+            return
         if parsed.path.startswith('/api/history/thumbnail/'):
             try:
                 if not auth_status().get('id'):raise CommunityError('AUTH_REQUIRED',401)
@@ -1299,7 +1314,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 archives = False
             self.json_response({"timezoneSource": "browser", "storage": "Isolated Discovery 3.0 development directory",
-                "hasArchives": archives, "version": APP_VERSION})
+                "hasArchives": archives, "version": APP_VERSION, "developmentDiagnostics": development_diagnostics_enabled()})
             return
         if parsed.path == "/api/settings":
             self.json_response({**SETTINGS.load(), "siteOrigin": SITE_ORIGIN,

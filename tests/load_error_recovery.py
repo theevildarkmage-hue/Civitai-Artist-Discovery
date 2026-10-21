@@ -25,7 +25,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 PORT = 8903
-SHOTS = ROOT / "reports" / "load-error"
+SHOTS = test_safety.REPORTS / "load-error"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 

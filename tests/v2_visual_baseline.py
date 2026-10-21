@@ -131,7 +131,7 @@ def install_fixture(page, base_url, *, cached_tags=False):
 def capture(label):
     if not label.replace("-", "").replace("_", "").isalnum():
         raise ValueError("Use an alphanumeric label with optional hyphens/underscores")
-    output = ROOT / "reports" / "v2" / label
+    output = test_safety.REPORTS / "v2" / label
     output.mkdir(parents=True, exist_ok=True)
     handler = partial(StaticHandler, directory=str(ROOT / "static"))
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
