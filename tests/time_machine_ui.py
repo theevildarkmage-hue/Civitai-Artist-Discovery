@@ -1,5 +1,7 @@
 """The Time Machine tab explains itself, and shows priming progress in creators."""
 
+import test_safety  # Fail closed before any test network request.
+
 import os
 from pathlib import Path
 import subprocess

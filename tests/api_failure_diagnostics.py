@@ -1,5 +1,7 @@
 """Failed public API responses leave bounded, useful, credential-free diagnostics."""
 
+import test_safety  # Fail closed before any test network request.
+
 from email.message import Message
 import json
 from pathlib import Path

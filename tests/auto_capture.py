@@ -1,5 +1,7 @@
 """Unattended capture takes the reachable, unbuilt days -- oldest first -- and no others."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import date, datetime, timedelta
 import json
 from pathlib import Path

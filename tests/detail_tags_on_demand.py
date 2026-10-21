@@ -1,5 +1,7 @@
 """Opening an unswept image fetches and permanently caches only that image's tags."""
 
+import test_safety  # Fail closed before any test network request.
+
 import os
 from pathlib import Path
 import sys

@@ -1,5 +1,7 @@
 """Each followed creator is walked from their oldest image, one card at a time."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sqlite3
 import sys

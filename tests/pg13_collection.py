@@ -1,5 +1,7 @@
 """Regression: the safe Red default retains PG and PG-13 images, including multi-image posts."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import tempfile

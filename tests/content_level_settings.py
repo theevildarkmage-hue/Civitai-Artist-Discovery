@@ -1,5 +1,7 @@
 """Browsing-level preferences migrate safely and preserve independent selections."""
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 from pathlib import Path
 import sys

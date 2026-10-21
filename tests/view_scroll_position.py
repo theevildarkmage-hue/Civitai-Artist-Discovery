@@ -6,9 +6,12 @@ through -- and because those cards are then on screen, reading on from there dim
 they never actually passed.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -20,7 +23,9 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-PORT = 8907
+with socket.socket() as port_probe:
+    port_probe.bind(('127.0.0.1',0))
+    PORT = port_probe.getsockname()[1]
 
 
 def tm_card(name, image_id):

@@ -2,6 +2,8 @@
 notice on their own, with a live link to where it is actually managed.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

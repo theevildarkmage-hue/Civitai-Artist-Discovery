@@ -1,5 +1,7 @@
 """The Windows tray exposes Open and Exit without becoming a Linux dependency."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 

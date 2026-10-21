@@ -1,5 +1,7 @@
 """Navigation opens an available legacy All-day archive instead of an empty block."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -56,6 +58,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-window-fallback-", ignore_clean
             page.route("**/api/discovery/summary", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"hasData":true}'))
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            page.locator("#discovery:not(.hidden)").wait_for()
+            page.locator('#tabGallery').click()
             page.wait_for_selector("#startLoading:not(.hidden)")
             assert page.locator("#daySegment").input_value() == "evening"
 

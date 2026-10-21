@@ -1,5 +1,7 @@
 """Content switches are lazy and reuse indexes already built for a level combination."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile

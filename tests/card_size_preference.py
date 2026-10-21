@@ -2,6 +2,8 @@
 a reload without asking Civitai for anything.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import os
 from pathlib import Path

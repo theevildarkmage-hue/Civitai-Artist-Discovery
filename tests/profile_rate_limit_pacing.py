@@ -1,5 +1,7 @@
 """Profile analysis uses the gallery collector's safe cadence and honors 429 waits."""
 
+import test_safety  # Fail closed before any test network request.
+
 from io import BytesIO
 from pathlib import Path
 import sys

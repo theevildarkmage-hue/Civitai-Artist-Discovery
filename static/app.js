@@ -8,6 +8,7 @@ let emergingReactionMode = "balanced", emergingReactionLimit = 0;
 let updateChecksEnabled = true, updateState = null, updatePollTimer = 0;
 // Which tab is open. Async work that finishes late must not reveal another view's chrome.
 let currentView = "gallery";
+let navigationVersion = 0;
 let buildSegment = "all", buildCoverageRating = "Soft", currentBlocks = null, estimateToken = 0;
 // How many creators this day's Civitai content controls removed, so the count on screen
 // can explain itself rather than looking like missing data.
@@ -81,6 +82,15 @@ function showContentRating() {
     ? "⚠ Mature content is off until you explicitly enable it."
     : "⚠ Mature content is enabled. Some images may be explicit.";
 }
+window.addEventListener('shared-settings-changed', async event => {
+  visibleBrowsingLevels = new Set(event.detail.browsingLevels);
+  contentRating = event.detail.contentRating;
+  showContentRating();
+  if (currentView === 'gallery' && selectedDate) {
+    try { await loadDay(selectedDate, false, true); }
+    catch (error) { toast(error.message); }
+  }
+});
 function showSeenDimming() {
   document.documentElement.classList.toggle("disable-seen-dimming", !dimSeenCards);
   if ($("prefDimSeen")) $("prefDimSeen").checked = dimSeenCards;
@@ -155,6 +165,7 @@ async function saveGalleryPreferences(patch, reload = true) {
   }
 }
 async function chooseContentRating(nextLevels) {
+  window.dispatchEvent(new Event('content-controls-changing'));
   const previous = contentRating, buttons = [...$("contentMenu").querySelectorAll("[data-level]")];
   $("contentFilter").disabled = true; buttons.forEach(button => button.disabled = true);
   $("contentMenu").classList.add("hidden"); $("contentFilter").setAttribute("aria-expanded", "false");
@@ -164,7 +175,7 @@ async function chooseContentRating(nextLevels) {
     const lowering = ({ Soft: 0, Mature: 1, X: 2 }[contentRating] || 0) < ({ Soft: 0, Mature: 1, X: 2 }[previous] || 0);
     toast(lowering ? `Showing ${contentButtonLabel()} from saved galleries. No download needed.`
       : `Showing ${contentButtonLabel()}. Incomplete coverage will be marked for upgrade.`);
-    if (selectedDate) await loadDay(selectedDate, false, true);
+    if (selectedDate && currentView === 'gallery') await loadDay(selectedDate, false, true);
   } catch (error) { toast(error.message); }
   finally { $("contentFilter").disabled = false; buttons.forEach(button => button.disabled = false); }
 }
@@ -797,11 +808,11 @@ async function loadArtistPage() {
     }
   }
 }
-function applyAuth(auth) { oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; userWrite = !!auth.userWrite; collectionsWrite = !!auth.collectionsWrite; const waiting = auth.oauthJob?.state === "loading";
+function applyAuth(auth) { oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; userWrite = !!auth.userWrite; collectionsWrite = !!auth.collectionsWrite; window.dispatchEvent(new CustomEvent('discovery-auth-changed',{detail:auth})); const waiting = auth.oauthJob?.state === "loading";
   // Follows and reactions are granted at sign-in, so the normal signed-in state needs no
   // qualifier. The exception is worth naming: Civitai can complete a sign-in while
   // withholding write access, and silently dead buttons would look like a broken app.
-  $("accountStatus").textContent = !oauthConnected ? "Not signed in"
+  $("accountStatus").textContent = auth.needsReauthentication && auth.cachedSession ? "Session expired · sign in to resume updates" : auth.sessionState === 'offline' ? `Cached profile @${auth.username || 'Civitai'} · offline` : auth.sessionState === 'refreshing' ? `@${auth.username || 'Civitai'} · refreshing session…` : !oauthConnected ? "Not signed in"
     : `Signed in as @${auth.username || "Civitai"}${socialWrite ? "" : " · follows & reactions not granted"}`;
   $("accountStatus").title = !oauthConnected ? "Signing in is encrypted and saved for future launches."
     : socialWrite ? "Follows and reactions are sent only when you click them."
@@ -1055,6 +1066,7 @@ async function loadDay(value, preferAvailable = true, preserveCurrent = false) {
   }
   let status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`);
   if (token !== activeLoadToken || selectedDate !== value) return;
+    if (status.fixtureArchiveExcluded) throw new Error('This date contains a preserved development test archive. No real artwork gallery is cached here; test images are excluded from normal browsing.');
   // A completed all-day union is the most useful representation of a date and is always
   // the automatic default. Passing preferAvailable=false is the explicit user action of
   // choosing a half from the selector, so that choice still remains available.
@@ -1102,7 +1114,7 @@ function renderDetailTags(detail) {
       ? ' title="You hide this tag on Civitai"' : ""}>${escapeHtml(tag.name)}</span>`).join("")}`;
 }
 let detailRequestToken = 0;
-async function showDetails(image, artist, artistCard) { const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); showArtwork(artwork, image.thumbnailUrl, image.type === "video" ? "" : image.url); $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(`/api/history/image?id=${image.id}`); if (token !== detailRequestToken || !dialog.open) return; showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.type === "video" ? "" : detail.url); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
+async function showDetails(image, artist, artistCard) { const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); showArtwork(artwork, image.thumbnailUrl, image.type === "video" ? "" : image.url); $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(image.community ? `/api/community/detail?id=${image.id}` : `/api/history/image?id=${image.id}`); if (token !== detailRequestToken || !dialog.open) return; showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.type === "video" ? "" : detail.url); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
     $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url;
     imageTagState.set(String(image.id), { known: detail.known, tags: detail.tags || [] });
     if (detail.tags?.some(tag => tag.hidden)) {
@@ -1440,7 +1452,8 @@ async function runFirstAnalysis() {
   } catch (error) { $("welcomeStatus").textContent = `Skipping analysis: ${error.message}`; }
 }
 function profileRefreshDue(summary, now = Date.now()) {
-  if (!summary?.hasData) return false;
+  const attempted = Date.parse(summary?.sync?.lastAttemptAt || "");
+  if (Number.isFinite(attempted) && now - attempted < 60000) return false;
   const refreshed = Date.parse(summary.lastSyncAt || "");
   return !Number.isFinite(refreshed) || now - refreshed >= PROFILE_REFRESH_MAX_AGE_MS;
 }
@@ -1452,7 +1465,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
     if (!automaticProfileRefreshPending || !oauthConnected) return;
     // A daily build is both more visible and much more API-intensive. Let it finish
     // before this quiet maintenance read so the two jobs never compete for Civitai.
-    if (!dayBuilt || activeBuildSegment || activeRebuild) {
+    if (activeBuildSegment || activeRebuild) {
       scheduleAutomaticProfileRefresh(summary, 60000);
       return;
     }
@@ -1475,6 +1488,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
   }, delay);
 }
 async function startup() {
+  const navigationAtStartup = navigationVersion;
   try { const settings = await api("/api/settings"); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
@@ -1484,21 +1498,26 @@ async function startup() {
   // The gallery is ordered by the user's own reactions and its actions are follows and
   // reactions, so there is nothing to show a signed-out visitor. Sign-in is the entry
   // point rather than an optional upgrade.
-  if (!auth.connected) {
+  if (!auth.connected && !auth.cachedSession) {
     setChrome(false); $("welcome").classList.remove("hidden"); $("loading").classList.add("hidden");
     await refreshOwnApp();
     return;
   }
   const summary = await api("/api/discovery/summary").catch(() => ({ hasData: true }));
-  if (!summary.hasData) {
-    setChrome(false);
-    $("welcome").classList.remove("hidden"); $("loading").classList.add("hidden");
-    $("welcomeTitle").textContent = "Getting to know your taste";
-    $("welcomeBody").textContent = "Reading the artwork you have reacted to on Civitai. The first review may take several minutes because requests are paced to respect Civitai’s limits; later refreshes reuse the analysis already saved.";
-    $("welcomeConnect").classList.add("hidden");
-    await runFirstAnalysis();
+  setChrome(true);
+  $("welcome").classList.add("hidden");
+  $("loading").classList.add("hidden");
+  const saved = readFeedState();
+  let archived = await Promise.all(['all','morning','evening'].map(segment =>
+    api(`/api/history/status?date=${saved?.date || newestDate}&segment=${segment}`).catch(() => ({}))));
+  if (saved?.date && saved.date!==newestDate && !archived.some(block=>block.complete)) {
+    archived=await Promise.all(['all','morning','evening'].map(segment=>
+      api(`/api/history/status?date=${newestDate}&segment=${segment}`).catch(() => ({}))));
   }
-  await openDay();
+  if (navigationVersion === navigationAtStartup) {
+    if (archived.some(block => block.complete)) await openDay();
+    else showView('discovery');
+  }
   scheduleAutomaticProfileRefresh(summary);
 }
 $("welcomeConnect").onclick = async () => {
@@ -1511,14 +1530,10 @@ $("welcomeConnect").onclick = async () => {
     // to in the meantime happens quietly, not behind the full onboarding screen — "this
     // takes about a minute and only happens once" would be a lie the second time.
     const existing = await api("/api/discovery/summary").catch(() => ({ hasData: false }));
-    if (existing.hasData) {
-      scheduleAutomaticProfileRefresh(existing);
-    } else {
-      $("welcomeTitle").textContent = "Getting to know your taste";
-      $("welcomeConnect").classList.add("hidden");
-      await runFirstAnalysis();
-    }
-    await openDay();
+    setChrome(true);
+    $("welcome").classList.add("hidden");
+    $("loading").classList.add("hidden");
+    showView('discovery');
     scheduleAutomaticProfileRefresh(existing);
   } catch (error) { $("welcomeStatus").textContent = error.message; $("welcomeConnect").disabled = false; }
 };
@@ -1657,6 +1672,7 @@ function renderDiscovery(data) {
 // That filtering is otherwise invisible unless the user notices fewer creators than
 // expected, so this states it plainly and links straight to where it is managed.
 function renderHiddenPreferencesNote(data) {
+  window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:{hiddenCreators:safeCount(data.creators),hiddenTags:safeCount(data.tags),hiddenArtworks:safeCount(data.images)}}));
   const note = $("hiddenPreferencesNote"), total = safeCount(data.creators) + safeCount(data.tags) + safeCount(data.images);
   $("hiddenPreferencesText").textContent = !data.importedAt
     ? "Civitai Content Controls will be applied to the daily gallery once your account is read."
@@ -1729,17 +1745,24 @@ async function pollDiscovery() {
 // that point dims work the reader never actually passed.
 const viewScroll = { gallery: 0, discovery: 0, timemachine: 0 };
 function showView(name) {
+  if (name==='community' && !oauthConnected) return;
+  navigationVersion++;
   const previous = currentView;
   if (previous !== name) viewScroll[previous] = window.scrollY;
   currentView = name;
   const discovery = name === "discovery";
   const timeMachine = name === "timemachine";
-  const gallery = !discovery && !timeMachine;
+  const community = name === "community";
+  document.body.classList.toggle('community-view', community);
+  const gallery = !discovery && !timeMachine && !community;
+  document.getElementById('community')?.classList.toggle('hidden', !community);
+  const communityTab = document.getElementById('tabCommunity');
+  if (communityTab) { communityTab.classList.toggle('active', community); communityTab.setAttribute('aria-pressed', String(community)); }
   if (!gallery) pauseSeenTracking();
   $("tabGallery").classList.toggle("active", gallery); $("tabGallery").setAttribute("aria-pressed", String(gallery));
   $("tabDiscovery").classList.toggle("active", discovery); $("tabDiscovery").setAttribute("aria-pressed", String(discovery));
   $("tabTimeMachine").classList.toggle("active", timeMachine); $("tabTimeMachine").setAttribute("aria-pressed", String(timeMachine));
-  segmentToolbar.classList.toggle("hidden", !gallery);
+  segmentToolbar.classList.toggle("hidden", !gallery && !community);
   ["olderDay", "newerDay", "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", !gallery));
   $("discovery").classList.toggle("hidden", !discovery);
   $("timeMachine").classList.toggle("hidden", !timeMachine);
@@ -1748,6 +1771,7 @@ function showView(name) {
   // Before seen tracking resumes below, so the observer's first report describes where
   // the reader actually is rather than the position the previous tab was left at.
   if (previous !== name) window.scrollTo({ top: viewScroll[name] ?? 0, behavior: "auto" });
+  if (community) { window.CivitaiCommunity?.load(); return; }
   if (timeMachine) {
     refreshTimeMachine().catch(error => window.CivitaiUI.showPageError(
       $("timeMachineMessage"), error.message, refreshTimeMachine));
@@ -1773,7 +1797,10 @@ function showView(name) {
     window.CivitaiUI.showPageError($("discoveryMessage"), error.message, loadProfile);
   });
 }
-$("tabGallery").onclick = () => showView("gallery");
+$("tabGallery").onclick = () => {
+  showView("gallery");
+  if (!dayBuilt && !activeBuildSegment && !activeRebuild) loadDay(selectedDate || newestDate).catch(showLoadError);
+};
 $("tabDiscovery").onclick = () => showView("discovery");
 $("tabTimeMachine").onclick = () => showView("timemachine");
 

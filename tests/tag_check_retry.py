@@ -7,6 +7,8 @@ transient failure must not be the final answer -- but a persistent one still mus
 reported rather than retried forever.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 import os
 from pathlib import Path

@@ -1,5 +1,7 @@
 """Videos are archived with images and served with a still frame plus a playback file."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import tempfile

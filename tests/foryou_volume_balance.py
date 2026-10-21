@@ -1,5 +1,7 @@
 """For You rewards representative quality without letting upload volume buy rank."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import os
 from pathlib import Path

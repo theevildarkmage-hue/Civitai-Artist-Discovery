@@ -3,6 +3,8 @@
 Reports browser timings, not live Civitai/CDN speed. Assertions cover bounded paging,
 content verification, filtered reloads and deep-scroll restoration.
 """
+
+import test_safety  # Fail closed before any test network request.
 from functools import partial
 from http.server import ThreadingHTTPServer
 import json

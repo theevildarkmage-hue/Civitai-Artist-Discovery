@@ -6,6 +6,8 @@ shows nothing but alt text. Cards need the JPEG still (a plain width= transform 
 video returns another MP4) plus a separate transcoded file to play.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sqlite3
 import sys

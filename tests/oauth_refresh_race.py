@@ -5,6 +5,8 @@ The gallery issues several requests at once, so an unsynchronised refresh failed
 request but one -- which reached the browser as cards stuck on the tag-check message.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import threading

@@ -1,5 +1,7 @@
 """A checkpointed history build survives an outage longer than one retry cycle."""
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 from pathlib import Path
 import sys

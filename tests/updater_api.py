@@ -1,5 +1,7 @@
 """Update preference and source-build API behavior."""
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 import os
 from pathlib import Path

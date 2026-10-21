@@ -1,5 +1,7 @@
 """Gallery preferences filter locally and give Emerging First distinct modes."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import os
 from pathlib import Path

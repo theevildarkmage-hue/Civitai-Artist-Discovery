@@ -166,6 +166,11 @@ export function createCreatorCard(a, context) {
   function resetActionMenu() {
     actionMenu.innerHTML = `<button type="button" data-action="collections" role="menuitem">♡ Add image to collection</button><button type="button" data-action="hide" class="danger-item" role="menuitem">⊘ Hide this artist</button>`;
     actionMenu.querySelector('[data-action="collections"]').onclick = event => { event.stopPropagation(); showCollections(); };
+    const recommend = document.createElement('button');
+    recommend.type = 'button'; recommend.setAttribute('role', 'menuitem');
+    recommend.textContent = 'Recommend to Community';
+    recommend.onclick = event => { event.stopPropagation(); closeActionMenu(); window.CivitaiCommunity?.recommend(current.id); };
+    actionMenu.prepend(recommend);
     actionMenu.querySelector('[data-action="hide"]').onclick = async event => {
       event.stopPropagation();
       if (context.canManageContentControls && !context.canManageContentControls()) {

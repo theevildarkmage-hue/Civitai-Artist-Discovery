@@ -9,11 +9,14 @@ order), and it composes with hidden/model filtering without reintroducing the
 duplicate-card bug the session-freeze mechanism exists to prevent.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
 import sqlite3
+import socket
 import subprocess
 import sys
 import tempfile
@@ -24,7 +27,9 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-PORT = 8906
+with socket.socket() as isolated_socket:
+    isolated_socket.bind(('127.0.0.1', 0))
+    PORT = isolated_socket.getsockname()[1]
 
 with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=True) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
@@ -90,6 +95,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
     try:
         deadline = time.monotonic() + 25
         while True:
+            if process.poll() is not None:
+                raise AssertionError('Isolated test server exited before readiness')
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/history/config", timeout=1).read()
                 break
@@ -183,6 +190,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
             # welcome/sign-in screen otherwise). This test is about scrolling, not sign-in,
             # so the account layer is stubbed exactly as the discovery-dashboard UI test
             # does, and left read-only throughout.
+            page.route("**/api/community/config", lambda route: route.fulfill(content_type="application/json", body='{"development":false}'))
             page.route("**/api/auth-status", lambda route: route.fulfill(status=200,
                 content_type="application/json",
                 body='{"connected":true,"socialWrite":false,"username":"tester"}'))

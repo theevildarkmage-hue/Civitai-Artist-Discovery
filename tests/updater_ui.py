@@ -1,5 +1,7 @@
 """Browser workflow for update notification, changelog, progress, and install handoff."""
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 import os
 from pathlib import Path
