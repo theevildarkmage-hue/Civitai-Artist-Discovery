@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import types
+import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -78,7 +79,7 @@ def main():
     parser.add_argument("--child")
     parser.add_argument("--only", nargs="*")
     parser.add_argument("--timeout", type=int, default=180)
-    parser.add_argument("--output", type=Path, default=ROOT/'reports'/'full-suite')
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     interpreter = test_interpreter()
     if args.child:
@@ -86,16 +87,22 @@ def main():
         return
     names = args.only or [path.stem for path in sorted((ROOT / "tests").glob("*.py"))
                          if path.stem not in ('test_safety', 'community_harness')]
-    output = args.output
+    output = args.output or Path(tempfile.mkdtemp(prefix='cad3-validation-'))
     output.mkdir(parents=True, exist_ok=True)
+    print(f'Validation artifacts: {output.resolve()}',flush=True)
     results = []
     for index, name in enumerate(names, 1):
         with tempfile.TemporaryDirectory(
             prefix="civitai-suite-", ignore_cleanup_errors=True
         ) as data:
+            scratch=Path(data)/'tmp';scratch.mkdir()
+            profile=scratch/'cad3-default';profile.mkdir()
+            artifacts=Path(data)/'artifacts';artifacts.mkdir()
             env = {
                 **os.environ,
-                "CIVITAI_HISTORY_DATA_DIR": data,
+                "CIVITAI_HISTORY_DATA_DIR": str(profile),
+                "TMP": str(scratch), "TEMP": str(scratch), "TMPDIR": str(scratch),
+                "CAD_TEST_REPORT_DIR": str(artifacts),
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONIOENCODING": "utf-8",
@@ -142,6 +149,8 @@ def main():
                 "seconds": round(time.monotonic() - started, 1),
             }
             results.append(result)
+            if any(artifacts.iterdir()):
+                shutil.copytree(artifacts, output/'artifacts'/name, dirs_exist_ok=True)
             (output / "results.json").write_text(
                 json.dumps(results, indent=2), encoding="utf-8"
             )
@@ -150,17 +159,15 @@ def main():
                 flush=True,
             )
     failed = [row["name"] for row in results if row["state"] not in ('passed','skipped')]
-    print(
-        json.dumps(
-            {
+    summary = {
                 "total": len(results),
                 "passed": sum(row['state']=='passed' for row in results),
                 "skipped": sum(row['state']=='skipped' for row in results),
                 "failed": failed,
+                "artifacts": str(output.resolve()),
             }
-        ),
-        flush=True,
-    )
+    (output/'summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+    print(json.dumps(summary),flush=True)
     raise SystemExit(bool(failed))
 
 

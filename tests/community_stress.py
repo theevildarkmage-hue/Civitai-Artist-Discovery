@@ -32,7 +32,7 @@ class Stress:
         self.extra=next(r for r in self.manifest['artworks'] if r['id'] not in used and artists[r['creatorId']]<3)
 
     def save(self):
-        target=ROOT/'reports/community-stress.json'
+        target=test_safety.REPORTS/'community-stress.json'
         target.parent.mkdir(exist_ok=True)
         target.write_text(json.dumps(self.report,indent=2),encoding='utf-8')
 

@@ -19,7 +19,7 @@ from discovery.taste import TasteStore
 from test_safety import IsolatedEndpoint
 
 
-with tempfile.TemporaryDirectory(prefix='data-test-persistent-browser-',dir=test_safety.ROOT,ignore_cleanup_errors=True) as temporary:
+with tempfile.TemporaryDirectory(prefix='data-test-persistent-browser-',ignore_cleanup_errors=True) as temporary:
     root=Path(temporary);instance=secrets.token_hex(24)
     with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     env={**os.environ,'CIVITAI_HISTORY_DATA_DIR':temporary,'CAD_DEVELOPMENT':'1',
@@ -100,7 +100,7 @@ with tempfile.TemporaryDirectory(prefix='data-test-persistent-browser-',dir=test
             for member in range(1,11):assert endpoint.request('/api/community/status',member=member)['quota']['used']==3
             assert endpoint.request('/api/auth-status')['username']=='MockAccount'
             assert endpoint.request('/api/discovery/summary')['reactedImages']==1
-            reports=test_safety.ROOT/'reports';reports.mkdir(exist_ok=True)
+            reports=test_safety.REPORTS;reports.mkdir(exist_ok=True)
             page.screenshot(path=str(reports/'community-persistent-desktop.png'),full_page=True)
             page.set_viewport_size({'width':390,'height':844})
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')

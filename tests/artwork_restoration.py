@@ -182,7 +182,8 @@ class MetadataIsolation(unittest.TestCase):
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         from discovery.history import HistoryArchive
         from discovery.taste import TasteStore
-        with tempfile.TemporaryDirectory(prefix='data-test-restore-',dir=ROOT,ignore_cleanup_errors=True) as folder:
+        with tempfile.TemporaryDirectory(prefix='data-test-restore-',ignore_cleanup_errors=True) as folder:
+            module.ROOT=Path(folder)  # The disposable fixture is this test's workspace.
             base=Path(folder);source=base/'source';target=base/'target';day='2026-10-13'
             original=HistoryArchive(source/'history','X',(1,2));taste=TasteStore(source/'discovery');other=TasteStore(target/'discovery')
             for store in (taste,other):

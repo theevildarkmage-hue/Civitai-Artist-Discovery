@@ -27,7 +27,7 @@ assert 'artwork.removeAttribute("src")' in app_source
 assert 'dialog.classList.add("detail-loading")' in app_source
 assert "token !== detailRequestToken" in app_source
 PORT = 8897
-SHOTS = ROOT / "reports" / "detail-dialog"
+SHOTS = test_safety.REPORTS / "detail-dialog"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 # More tags than any dialog could show at once, which is the whole point.

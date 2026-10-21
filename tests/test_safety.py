@@ -15,10 +15,14 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import atexit
 import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
+REPORTS = Path(os.environ.get('CAD_TEST_REPORT_DIR') or
+               tempfile.mkdtemp(prefix='cad3-test-artifacts-')).resolve()
+REPORTS.mkdir(parents=True,exist_ok=True)
 FORBIDDEN_PORTS = {8906, 33101, 33201}
 ENDPOINTS = {}
 OWNED_PROCESSES = []
@@ -197,4 +201,14 @@ class IsolatedEndpoint:
             return json.load(response)
 
 
+def _cleanup_owned_processes():
+    for process, _ in OWNED_PROCESSES:
+        if process.poll() is None:
+            process.terminate()
+            try:process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill();process.wait(timeout=5)
+
+
+atexit.register(_cleanup_owned_processes)
 install()

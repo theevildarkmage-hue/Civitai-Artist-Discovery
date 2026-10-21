@@ -70,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-first-launch-", ignore_cleanup_
             assert not page.is_disabled("#welcomeConnect"), "bundled application did not enable sign-in"
             assert page.is_hidden("#ownAppToggle"), "onboarding offered OAuth configuration"
             assert page.is_hidden("#ownAppPanel") and page.is_hidden("#ownAppInput")
-            page.screenshot(path=str(ROOT / "reports" / "discovery-dashboard" / "first-launch.png"))
+            page.screenshot(path=str(test_safety.REPORTS / "discovery-dashboard" / "first-launch.png"))
             assert not errors, errors
             page.close()
             browser.close()

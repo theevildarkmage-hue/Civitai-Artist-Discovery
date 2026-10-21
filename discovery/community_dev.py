@@ -7,6 +7,7 @@ from pathlib import Path
 import secrets
 import socket
 import sys
+import tempfile
 from .community import CommunityError, FixtureVerifier, LocalCommunityBackend
 
 
@@ -24,7 +25,9 @@ def test_identity(data_root):
     selected=(project/json.loads(pin.read_text(encoding='utf-8'))['directory']).resolve() if pin.exists() else project/'data-dev-3.0'
     if root in (selected,project/'data-test-community',project/'data-dev-3.0'):
         raise RuntimeError('Interactive profiles cannot be used as automated fixture sandboxes')
-    if len(nonce) < 24 or project not in root.parents or not root.name.startswith('data-test-'):
+    temp_root=Path(tempfile.gettempdir()).resolve()
+    if (len(nonce) < 24 or not (project in root.parents or temp_root in root.parents)
+            or not root.name.startswith('data-test-')):
         raise RuntimeError('Automated fixture server requires an isolated test data root and instance challenge')
     return {'instance': nonce, 'dataIdentity': hashlib.sha256(str(root).casefold().encode()).hexdigest(), 'fixture': True}
 

@@ -26,7 +26,7 @@ assert conservative_eta_range(9) is None
 assert conservative_eta_range(120) == (60, 180)
 assert conservative_eta_range(600) == (420, 900)
 
-SCREENSHOTS = ROOT / "reports" / "loading-validation"
+SCREENSHOTS = test_safety.REPORTS / "loading-validation"
 SCREENSHOTS.mkdir(parents=True, exist_ok=True)
 PORT = 8879
 
