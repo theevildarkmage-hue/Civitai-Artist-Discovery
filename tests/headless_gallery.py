@@ -1,4 +1,6 @@
 """Clean-profile browser test with no dependency on developer data or identity."""
+
+import test_safety  # Fail closed before any test network request.
 from datetime import datetime, timedelta
 import json
 import os

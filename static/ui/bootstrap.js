@@ -13,6 +13,7 @@ import { renderProfile } from './profile.js';
 import { startPerformanceTrace } from './performance.js';
 import { mountCalendar } from './calendar.js';
 import { mountPreferences } from './preferences.js';
+import { mountCommunity } from './community.js';
 import { showDetailVideo, clearDetailVideo, suspendCardVideos } from './video.js';
 
 if (new URLSearchParams(location.search).get('uiPerf') === '1') {
@@ -28,6 +29,7 @@ window.CivitaiUI = Object.freeze({ api, showArtwork, wireArtworkFallback, showGa
 const controller = document.createElement('script');
 controller.src = '/app.js';
 controller.onload = () => {
+  mountCommunity();
   groupPageControls();
   mountPageLayout();
   const preferences = mountPreferences();

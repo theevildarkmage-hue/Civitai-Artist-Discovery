@@ -9,6 +9,8 @@ no visible way to try again short of reloading the page.
 
 from __future__ import annotations
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 import os
 from pathlib import Path
@@ -77,6 +79,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-load-error-", ignore_cleanup_er
             page.route("**/api/history/status**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body=current["status"]))
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            page.locator("#discovery:not(.hidden)").wait_for()
+            page.locator('#tabGallery').click()
             page.wait_for_selector("#startLoading:not(.hidden)", timeout=20000)
 
             page.click("#startLoading")

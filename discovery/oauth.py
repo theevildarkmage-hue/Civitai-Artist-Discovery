@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 import webbrowser
 
@@ -42,19 +43,24 @@ COLLECTIONS_WRITE = 1 << 18
 READ_SCOPE = 1 | 32  # UserRead | MediaRead
 APP_DATA = data_root()
 TOKEN_PATH = APP_DATA / "oauth_tokens.dpapi"
-KEYRING_SERVICE = "CivitaiArtistDiscovery"
+KEYRING_SERVICE = "CivitaiArtistDiscovery-3.0-dev"
 KEYRING_ACCOUNT = "oauth-tokens"
-# An earlier build derived this path separately from the rest of the app and dropped the
-# token in %LOCALAPPDATA% itself rather than the documented per-app folder. Keep the old
-# location only to move it.
-LEGACY_TOKEN_PATH = Path(os.environ.get("CIVITAI_HISTORY_DATA_DIR")
-    or os.environ.get("LOCALAPPDATA") or Path.home() / ".civitai-artist-history") / "oauth_tokens.dpapi"
+# The 3.0 development namespace must not import a token from an earlier installation.
+LEGACY_TOKEN_PATH = TOKEN_PATH  # No credential migration in the isolated 3.0 build.
 HEADERS = {"Accept": "application/json", "User-Agent": "CivitaiArtistDiscovery/1.0"}
 CLIENT_PATH = APP_DATA / "oauth_client.json"
 
 
 class OAuthSetupError(RuntimeError):
     """A failure the user can act on, so its message is shown rather than generalised."""
+
+
+class OAuthReauthenticationRequired(RuntimeError):
+    pass
+
+
+class OAuthTemporarilyUnavailable(RuntimeError):
+    pass
 
 
 def _uses_dpapi() -> bool:
@@ -230,7 +236,16 @@ def _save(tokens: dict) -> None:
 def _post(name: str, values: dict) -> dict:
     request = urllib.request.Request(f"{AUTH_BASE}/{name}", data=urllib.parse.urlencode(values).encode(), method="POST",
         headers={**HEADERS, "Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(request, timeout=60) as response: return json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response: return json.loads(response.read(65537))
+    except urllib.error.HTTPError as error:
+        try:code=json.loads(error.read(8192)).get('error')
+        except (ValueError,AttributeError):code=None
+        if name=='token' and values.get('grant_type')=='refresh_token' and code=='invalid_grant':
+            raise OAuthReauthenticationRequired('Your Civitai authorization was revoked. Please sign in again.') from None
+        raise OAuthTemporarilyUnavailable('Civitai authorization is temporarily unavailable. Your saved session was kept.') from None
+    except (OSError,ValueError):
+        raise OAuthTemporarilyUnavailable('Civitai authorization is temporarily unavailable. Your saved session was kept.') from None
 
 
 def _userinfo(token: str) -> dict:
@@ -284,7 +299,10 @@ def login(timeout: int = 300) -> dict:
     tokens = _post("token", {"grant_type": "authorization_code", "code": result["code"], "code_verifier": verifier,
         "client_id": active, "redirect_uri": REDIRECT_URI})
     tokens["expires_at"] = int(time.time()) + int(tokens.get("expires_in", 3600)); tokens["client_id"] = active
-    identity = _userinfo(tokens["access_token"]); tokens["identity"] = {"id": identity.get("id"), "username": identity.get("username")}
+    identity = _userinfo(tokens["access_token"])
+    identity_id=int(identity.get('id') or identity.get('sub') or 0)
+    if identity_id<=0:raise OAuthSetupError('Civitai did not return a verifiable account identity.')
+    tokens["identity"] = {"id": identity_id, "username": identity.get("username") or identity.get('preferred_username')}
     _save(tokens); return tokens["identity"]
 
 
@@ -300,17 +318,26 @@ def _refreshed_tokens(active: str) -> dict:
         # Re-read inside the lock: whoever held it before this thread may already have
         # saved a fresh token, and redeeming the old one again would fail.
         tokens = _load()
+        if tokens.get('reauth_required'):raise OAuthReauthenticationRequired('Please sign in to Civitai again.')
         if tokens.get("client_id") != active:
             raise RuntimeError("Stored authorization belongs to a different Civitai application")
         if int(tokens.get("expires_at", 0)) > int(time.time()) + 120:
             return tokens
-        tokens = {**_post("token", {"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": active}), "identity": tokens.get("identity", {}), "client_id": active}
+        try:
+            refreshed = _post("token", {"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": active})
+        except OAuthReauthenticationRequired:
+            _save({**tokens,'reauth_required':True})
+            raise
+        if not isinstance(refreshed.get('access_token'),str) or not refreshed['access_token']:
+            raise OAuthTemporarilyUnavailable('Civitai did not return a valid refreshed authorization.')
+        tokens = {**tokens,**refreshed, "identity": tokens.get("identity", {}), "client_id": active,'reauth_required':False}
         tokens["expires_at"] = int(time.time()) + int(tokens.get("expires_in", 3600)); _save(tokens)
         return tokens
 
 
 def get_access_token() -> str:
     tokens = _load()
+    if tokens.get('reauth_required'):raise OAuthReauthenticationRequired('Please sign in to Civitai again.')
     active = client_id()
     if not active or tokens.get("client_id") != active:
         raise RuntimeError("Stored authorization belongs to a different Civitai application")
@@ -333,14 +360,49 @@ def status() -> dict:
     # single source of truth. A grant that came back without write access still means
     # no writes, which keeps the app from attempting one it is not allowed to make.
     scope_value = int(scope)
-    granted = (scope_value & SOCIAL_WRITE) == SOCIAL_WRITE
-    user_write = (scope_value & USER_WRITE) == USER_WRITE
-    collections_read = (scope_value & COLLECTIONS_READ) == COLLECTIONS_READ
-    collections_write = (scope_value & COLLECTIONS_WRITE) == COLLECTIONS_WRITE
-    return {"connected": True, **(tokens.get("identity") or {}), "scope": scope,
+    usable = not tokens.get('reauth_required',False)
+    granted = usable and (scope_value & SOCIAL_WRITE) == SOCIAL_WRITE
+    user_write = usable and (scope_value & USER_WRITE) == USER_WRITE
+    collections_read = usable and (scope_value & COLLECTIONS_READ) == COLLECTIONS_READ
+    collections_write = usable and (scope_value & COLLECTIONS_WRITE) == COLLECTIONS_WRITE
+    return {"connected": not tokens.get('reauth_required',False), **(tokens.get("identity") or {}), "scope": scope,
             "scopeGrantsWrite": granted, "socialWrite": granted,
             "userWrite": user_write,
             "collectionsRead": collections_read, "collectionsWrite": collections_write}
+
+
+_SESSION_LOCK=threading.Lock()
+_SESSION_STATE={'running':False,'attemptedAt':0,'error':None}
+
+
+def session_status() -> dict:
+    """Render protected cached identity immediately; refresh expired grants off-thread."""
+    try:
+        tokens=_load()
+        if tokens.get('client_id')!=client_id():raise RuntimeError('Application changed')
+        value=status()
+    except Exception:
+        return {'connected':False,'cachedSession':False,'needsReauthentication':True,'sessionState':'missing',
+                'socialWrite':False,'userWrite':False,'collectionsRead':False,'collectionsWrite':False}
+    expired=int(tokens.get('expires_at',0))<=int(time.time())
+    near_expiry=int(tokens.get('expires_at',0))<=int(time.time())+120
+    revoked=bool(tokens.get('reauth_required'))
+    with _SESSION_LOCK:
+        if near_expiry and not revoked and not _SESSION_STATE['running'] and time.time()-_SESSION_STATE['attemptedAt']>=60:
+            _SESSION_STATE.update(running=True,attemptedAt=time.time(),error=None)
+            def renew():
+                error=None
+                try:get_access_token()
+                except OAuthReauthenticationRequired:error='reauthentication_required'
+                except Exception:error='temporarily_unavailable'
+                with _SESSION_LOCK:_SESSION_STATE.update(running=False,error=error)
+            threading.Thread(target=renew,daemon=True,name='oauth-refresh').start()
+        state=dict(_SESSION_STATE)
+    if expired or revoked:
+        value.update(socialWrite=False,userWrite=False,collectionsRead=False,collectionsWrite=False)
+    return {**value,'cachedSession':True,'needsReauthentication':revoked,
+        'sessionState':'reauthentication_required' if revoked else ('refreshing' if state['running'] else
+            ('offline' if expired else 'ready')),'refreshError':state['error']}
 
 
 def _revoke(token: str, hint: str, client: str) -> bool:

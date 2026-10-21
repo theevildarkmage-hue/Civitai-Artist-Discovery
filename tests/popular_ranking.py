@@ -1,5 +1,7 @@
 """Popular totals every reaction for the day and opens on the strongest image."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timezone
 from pathlib import Path
 import sys

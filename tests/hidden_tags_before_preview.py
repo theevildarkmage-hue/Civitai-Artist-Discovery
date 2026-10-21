@@ -1,5 +1,7 @@
 """Hidden tags gate previews, and a late discovery removes one image without a feed reset."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

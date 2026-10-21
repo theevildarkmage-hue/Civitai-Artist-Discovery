@@ -1,5 +1,7 @@
 """Evening must visibly restart its phases after Morning finishes."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import json
 import os
@@ -97,6 +99,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-full-day-progress-", ignore_cle
                 content_type="application/json", body='{"cancelled":true}'))
 
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            page.locator("#discovery:not(.hidden)").wait_for()
+            page.locator('#tabGallery').click()
             page.wait_for_selector("#buildSetup:not(.hidden)")
             page.locator("#startLoading").click()
             page.locator("#loadingTitle", has_text="Evening").wait_for(timeout=10000)

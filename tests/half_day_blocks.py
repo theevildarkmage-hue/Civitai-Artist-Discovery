@@ -1,5 +1,7 @@
 """Morning and evening archives build independently while sharing image rows."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import tempfile

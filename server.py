@@ -7,6 +7,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import SimpleCookie
 import json
 import math
 import mimetypes
@@ -22,6 +23,8 @@ import sys
 import urllib.parse
 import webbrowser
 import traceback
+from discovery.community import (build_community, CommunityError, ContentProfile)
+from discovery.cache import ThumbnailCache
 
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
@@ -44,9 +47,10 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "2.2.0"
+APP_VERSION = "3.0.0-dev"
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
+PERSONAL_THUMBNAILS=ThumbnailCache(DATA_ROOT/'cache'/'artwork-thumbnails',allow_downscale=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
 FOLLOW_CACHE = DATA_ROOT / "following.json"
 CREATOR_PROFILES = DATA_ROOT / "cache" / "creator_profiles.json"
@@ -88,6 +92,49 @@ REACTIONS = {"Like": "likeCount", "Heart": "heartCount", "Laugh": "laughCount", 
 INSTANCE_FILE = DATA_ROOT / "running-instance.json"
 INSTANCE_MUTEX = None
 RUNNING_PORT = None
+COMMUNITY = None
+COMMUNITY_LOCK = threading.Lock()
+
+
+def community_content_profile(token):
+    levels = frozenset(SETTINGS.load()["browsingLevels"])
+    from discovery.oauth import status, get_access_token
+    from discovery.community import CivitaiVerifier, content_profile
+    if os.environ.get('CAD_COMMUNITY_MODE') == 'fixture' and os.environ.get('CAD_COMMUNITY_TESTING') == '1':
+        with TASTE.connect() as db:
+            account=TASTE._state(db,'account_id')
+            if not account or str(auth_status().get('id'))!=str(account):return ContentProfile(levels=levels)
+            return ContentProfile(levels=levels,
+                creators=frozenset(row[0] for row in db.execute('SELECT creator_id FROM hidden_creators')),
+                usernames=frozenset(row[0] for row in db.execute('SELECT username_key FROM hidden_creators WHERE username_key IS NOT NULL')),
+                images=frozenset(row[0] for row in db.execute('SELECT image_id FROM hidden_images')),
+                tags=frozenset(row[0] for row in db.execute('SELECT tag_name FROM hidden_tags')),
+                tag_ids=frozenset(row[0] for row in db.execute('SELECT tag_id FROM hidden_tags')),
+                blocked_creators=frozenset(row[0] for row in db.execute("SELECT creator_id FROM hidden_creators WHERE reason='blocked'")),
+                blocked_usernames=frozenset(row[0] for row in db.execute("SELECT username_key FROM hidden_creators WHERE reason='blocked' AND username_key IS NOT NULL")))
+    account=status().get('id')
+    if not account:raise CommunityError('AUTH_REQUIRED',401)
+    store=community_client().store
+    key=f'controls:{account}'
+    def load():
+        hidden=CivitaiVerifier().query('hiddenPreferences.getHidden',{},get_access_token())
+        content_profile(hidden,levels)
+        return hidden
+    entry=store.get(key)
+    if entry:
+        if entry['stale']:store.refresh(key,load,background=True)
+        return content_profile(entry['value'],levels)
+    hidden=load();store.put(key,hidden)
+    return content_profile(hidden,levels)
+
+
+def community_client():
+    global COMMUNITY
+    with COMMUNITY_LOCK:
+        if COMMUNITY is None:
+            from discovery.oauth import get_access_token
+            COMMUNITY = build_community(DATA_ROOT, community_content_profile, get_access_token)
+    return COMMUNITY
 # How long a restarting copy waits for the outgoing one to release the single-instance
 # mutex and its port. Both are held until that process finishes its shutdown, and a
 # replacement that gave up immediately would leave the reader with no app running.
@@ -234,10 +281,20 @@ def attach_preview_tags(artists: list[dict]) -> list[dict]:
     ids = [(artist.get("representative") or {}).get("id") for artist in artists]
     tags = TASTE.image_tags_many(value for value in ids if value is not None)
     for artist, image_id in zip(artists, ids):
+        if artist.get('representative'):artist['representative']=personal_preview(artist['representative'])
         state = tags.get(image_id)
         if state and state["known"]:
             artist["representative"] = {**artist["representative"], "tagState": state}
     return artists
+
+
+def personal_preview(image):
+    # Preserve anonymous/mock fixture transports; the authenticated desktop uses
+    # a bounded local cache for actual Civitai image previews, including carousels.
+    if (image.get('type')=='image' and urllib.parse.urlsplit(image.get('url','')).hostname=='image.civitai.com'
+            and auth_status().get('id')):
+        return {**image,'url':f'/api/history/thumbnail/{image["id"]}','thumbnailUrl':f'/api/history/thumbnail/{image["id"]}'}
+    return image
 
 
 def followed_usernames(user_id: int | None = None) -> set[str]:
@@ -1060,12 +1117,13 @@ class Handler(BaseHTTPRequestHandler):
         log_internal_error(context, error)
         self.json_response({"error": "The app encountered an internal error. Details were saved to the local error log."}, 500)
 
-    def json_response(self, value: object, status: int = 200) -> None:
+    def json_response(self, value: object, status: int = 200, headers=None) -> None:
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in (headers or {}).items(): self.send_header(key, value)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -1080,6 +1138,100 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(403); return
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
+        if parsed.path.startswith('/api/history/thumbnail/'):
+            try:
+                if not auth_status().get('id'):raise CommunityError('AUTH_REQUIRED',401)
+                from discovery.community import positive_id
+                image_id=positive_id(parsed.path.rsplit('/',1)[-1])
+                with HISTORY.connect() as db:row=db.execute('SELECT * FROM images WHERE id=?',(image_id,)).fetchone()
+                if not row or row['type']!='image':raise CommunityError('INVALID_ARTWORK',404)
+                level=row['browsing_level'] or {'None':1,'Soft':2,'Mature':4,'X':8}.get(row['nsfw_level'])
+                hidden_names,hidden_images=hidden_preferences()
+                tags=TASTE.image_tags_many([image_id])[image_id]
+                if (level not in SETTINGS.load()['browsingLevels'] or row['username_key'] in hidden_names or image_id in hidden_images
+                        or (TASTE.hidden_tag_names() and (not tags['known'] or any(tag['hidden'] for tag in tags['tags'])))):
+                    raise CommunityError('CONTENT_FILTERED',403)
+                body,kind=PERSONAL_THUMBNAILS.get(row['url'])
+                self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
+                self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+                self.end_headers();self.wfile.write(body)
+            except CommunityError as error:self.json_response(error.response(),error.status)
+            except Exception:self.send_error(503)
+            return
+        if parsed.path.startswith('/api/history/') and os.environ.get('CAD_COMMUNITY_TESTING')!='1':
+            requested_day=query.get('date',[None])[0]
+            requested_id=query.get('id',[None])[0]
+            with HISTORY.connect() as db:
+                if requested_day:
+                    fixture=db.execute("SELECT 1 FROM block_images b JOIN images i ON i.id=b.image_id WHERE b.block_key=? AND i.url LIKE '%/community-fixture.svg%' LIMIT 1",(requested_day,)).fetchone()
+                elif requested_id:
+                    fixture=db.execute("SELECT 1 FROM images WHERE id=? AND url LIKE '%/community-fixture.svg%'",(requested_id,)).fetchone()
+                else:fixture=None
+            if fixture:
+                if parsed.path=='/api/history/status':
+                    self.json_response({'complete':False,'date':requested_day,'fixtureArchiveExcluded':True});return
+                self.json_response({'error':'This archive contains isolated test artwork, not personal Civitai metadata.','code':'TEST_ARCHIVE'},409);return
+        if parsed.path.startswith('/api/community/'):
+            try:self.require_community_session()
+            except CommunityError as error:
+                self.json_response(error.response(),error.status);return
+        if parsed.path.startswith('/api/community/thumbnail/'):
+            try:
+                if self.client_address[0] not in ('127.0.0.1','::1'):raise CommunityError('FORBIDDEN',403)
+                client=community_client()
+                token=None
+                if client.mode=='fixture':
+                    cookie=SimpleCookie();cookie.load(self.headers.get('Cookie',''))
+                    member=cookie.get('cad_fixture_member')
+                    token=f'fixture:{member.value if member else "1"}'
+                    if token not in client.verifier.members:raise CommunityError('AUTH_REQUIRED',401)
+                profile=client.profile_provider(token)
+                from discovery.community import positive_id
+                art,_=client.browse_artwork(positive_id(parsed.path.rsplit('/',1)[-1]),profile)
+                body,kind=client.thumbnails.get(art.preview)
+                self.send_response(200);self.send_header('Content-Type',kind)
+                self.send_header('Content-Length',str(len(body)))
+                self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+                self.end_headers();self.wfile.write(body)
+            except CommunityError as error:self.json_response(error.response(),error.status)
+            except Exception:self.send_error(503)
+            return
+        if parsed.path == '/api/test-isolation':
+            from discovery.community_dev import test_identity
+            identity = test_identity(DATA_ROOT)
+            if identity: self.json_response(identity)
+            else: self.send_error(404)
+            return
+        if parsed.path == "/api/community/config":
+            from discovery.community_dev import fixture_enabled
+            development = fixture_enabled()
+            members = community_client().verifier.members.values() if development else []
+            self.json_response({"apiVersion": 1, "development": development,
+                "members": [{'id': m.id, 'username': m.username} for m in members]}); return
+        if parsed.path.startswith("/api/community/"):
+            operation = parsed.path.rsplit("/", 1)[-1]
+            if operation not in ("status", "gallery",'detail'):
+                self.json_response({"error": "Unknown community operation"}, 404); return
+            payload = {"cursor": query.get("cursor", [None])[0], 'refresh':query.get('refresh',['0'])[0]=='1'}
+            if operation=='detail':payload={'artwork':query.get('id',[None])[0]}
+            self.community_response(operation, payload); return
+        if parsed.path == "/community-fixture.svg":
+            if os.environ.get("CAD_DEVELOPMENT") != "1" or os.environ.get("CAD_COMMUNITY_MODE") != "fixture" or os.environ.get('CAD_COMMUNITY_TESTING')!='1':
+                self.send_error(404); return
+            try:self.require_community_session()
+            except CommunityError as error:
+                self.json_response(error.response(),error.status);return
+            # Synthetic, local artwork: no internet images, credentials or third-party assets.
+            value = query.get("id", ["1001"])[0]
+            hue = (int(value) * 37) % 360 if value.isascii() and value.isdigit() and len(value) < 16 else 200
+            body = (f'<svg xmlns="http://www.w3.org/2000/svg" width="640" height="800" viewBox="0 0 640 800">'
+                    f'<rect width="640" height="800" fill="hsl({hue},45%,18%)"/>'
+                    f'<circle cx="450" cy="230" r="100" fill="hsl({hue},65%,65%)"/>'
+                    '<path d="M0 650L200 310L400 650L550 420L640 600V800H0Z" fill="#27383d"/>'
+                    '<text x="35" y="45" fill="white" opacity=".55" font-size="18">Development fixture</text></svg>').encode()
+            self.send_response(200); self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store")
+            self.end_headers(); self.wfile.write(body); return
         if parsed.path == "/api/artists":
             try:
                 limit = min(1000, max(1, int(query.get("limit", [500])[0])))
@@ -1109,10 +1261,9 @@ class Handler(BaseHTTPRequestHandler):
                 # refresh it, so an idle app would sit until the authorization expired and
                 # the next action failed. The page polls this, so the session stays alive
                 # while someone is reading rather than dying underneath them.
-                try: renew_session_if_stale()
-                except Exception: pass
+                from discovery.oauth import session_status
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
-                self.json_response({**auth_status(), "oauthJob": job})
+                self.json_response({**session_status(), "oauthJob": job})
             except Exception:
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
                 self.json_response({"connected": False, "socialWrite": False,
@@ -1132,7 +1283,7 @@ class Handler(BaseHTTPRequestHandler):
                     archives = bool(db.execute("SELECT 1 FROM days WHERE complete=1 LIMIT 1").fetchone())
             except Exception:
                 archives = False
-            self.json_response({"timezoneSource": "browser", "storage": "Windows Local AppData",
+            self.json_response({"timezoneSource": "browser", "storage": "Isolated Discovery 3.0 development directory",
                 "hasArchives": archives, "version": APP_VERSION})
             return
         if parsed.path == "/api/settings":
@@ -1289,7 +1440,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/history/calendar":
             try:
-                self.json_response({"days": HISTORY.calendar_days()})
+                days=HISTORY.calendar_days()
+                if os.environ.get('CAD_COMMUNITY_TESTING')!='1':
+                    with HISTORY.connect() as db:
+                        excluded={row[0].split('#')[0] for row in db.execute("SELECT DISTINCT b.block_key FROM block_images b JOIN images i ON i.id=b.image_id WHERE i.url LIKE '%/community-fixture.svg%'")}
+                    days=[day for day in days if day['date'] not in excluded]
+                self.json_response({"days": days})
             except Exception as error:
                 self.internal_error("History calendar", error)
             return
@@ -1474,8 +1630,8 @@ class Handler(BaseHTTPRequestHandler):
                 key = HISTORY.archive_key(value, query.get("segment", ["all"])[0])
                 models = [item for item in query.get("model", []) if item][:20]
                 self.json_response({"date": value, "username": username,
-                    "images": HISTORY.artist_images(key, username, models,
-                                                    hidden_preferences()[1])})
+                    "images": [personal_preview(image) for image in HISTORY.artist_images(key, username, models,
+                                                    hidden_preferences()[1])]})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Artist image history", error)
             return
@@ -1526,7 +1682,38 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass
 
+    def community_response(self, operation, payload):
+        try:
+            self.require_community_session()
+            # Isolated development is loopback-only, even if a forged setting enables LAN.
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                raise CommunityError("FORBIDDEN", 403)
+            if os.environ.get("CAD_COMMUNITY_MODE") == "offline":
+                raise CommunityError("UNAVAILABLE", 503)
+            client = community_client()
+            from discovery.community_dev import fixture_enabled
+            token = None
+            if fixture_enabled():
+                cookie = SimpleCookie(); cookie.load(self.headers.get('Cookie', ''))
+                identity = cookie.get('cad_fixture_member')
+                selected = identity.value if identity else '1'
+                if selected not in {str(m.id) for m in client.verifier.members.values()}:
+                    raise CommunityError('AUTH_EXPIRED', 401)
+                token = f'fixture:{selected}'
+            result = client.request(operation, payload, self.client_address[0], fixture_token=token)
+            if operation == 'recommend' and getattr(client, 'dev_lost_response', False):
+                client.dev_lost_response = False
+                raise CommunityError('UNAVAILABLE', 503)
+            self.json_response(result)
+        except CommunityError as error:
+            self.json_response(error.response(), error.status)
+        except Exception:
+            # Never log upstream requests/exceptions that might contain Authorization.
+            self.json_response(CommunityError("UNAVAILABLE", 503).response(), 503)
+
     def request_json(self) -> dict:
+        from discovery.community_dev import authorize_test
+        authorize_test(self.headers, DATA_ROOT)
         origin = self.headers.get("Origin")
         if origin:
             parsed = urllib.parse.urlparse(origin)
@@ -1542,12 +1729,52 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("JSON body must be an object")
         return value
 
+    def require_community_session(self):
+        """Normal OAuth, or an explicitly challenged isolated automation process."""
+        from discovery.community_dev import test_identity,authorize_test
+        if test_identity(DATA_ROOT):
+            try:authorize_test(self.headers,DATA_ROOT)
+            except PermissionError:raise CommunityError('AUTH_REQUIRED',401) from None
+            return
+        from discovery.oauth import get_access_token,status,OAuthReauthenticationRequired,OAuthTemporarilyUnavailable
+        try:
+            get_access_token()
+            identity=status()
+            if not identity.get('connected') or int(identity.get('id') or 0)<=0:raise ValueError()
+        except OAuthReauthenticationRequired:raise CommunityError('AUTH_EXPIRED',401) from None
+        except OAuthTemporarilyUnavailable:raise CommunityError('UNAVAILABLE',503) from None
+        except Exception:raise CommunityError('AUTH_REQUIRED',401) from None
+
     def do_POST(self) -> None:  # noqa: N802
         if not self.host_allowed():
             self.send_error(403); return
         parsed = urllib.parse.urlparse(self.path)
         try:
             body = self.request_json()
+            if parsed.path.startswith('/api/community/'):self.require_community_session()
+            if parsed.path == '/api/community/development/member':
+                from discovery.community_dev import fixture_enabled
+                if not fixture_enabled() or self.client_address[0] != '127.0.0.1':
+                    self.json_response(CommunityError('FORBIDDEN', 403).response(), 403); return
+                value = body.get('member')
+                if type(value) is not int or f'fixture:{value}' not in community_client().verifier.members:
+                    self.json_response(CommunityError('INVALID_REQUEST').response(), 400); return
+                self.json_response({'apiVersion': 1, 'member': value, 'development': True}, headers={
+                    'Set-Cookie': f'cad_fixture_member={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000'})
+                return
+            if parsed.path == '/api/community/development/control':
+                from discovery.community_dev import control, test_identity
+                if not test_identity(DATA_ROOT) or self.client_address[0] != '127.0.0.1':
+                    self.json_response(CommunityError('FORBIDDEN', 403).response(), 403); return
+                try: self.json_response(control(community_client(), body))
+                except CommunityError as error: self.json_response(error.response(), error.status)
+                return
+            if parsed.path.startswith("/api/community/"):
+                operation = parsed.path.rsplit("/", 1)[-1]
+                allowed = {'artwork','idempotencyKey'} if operation == 'recommend' else {'artwork'}
+                if operation not in ("verify", "recommend", "withdraw") or 'artwork' not in body or not set(body) <= allowed:
+                    self.json_response(CommunityError("INVALID_REQUEST").response(), 400); return
+                self.community_response(operation, body); return
             if parsed.path == "/api/oauth/login":
                 start_oauth_login()
                 with OAUTH_LOCK: state = OAUTH_JOB["state"]
@@ -1856,6 +2083,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.handle_follow(body)
                 return
             self.json_response({"error": "Unknown action"}, 404)
+        except CommunityError as error:
+            self.json_response(error.response(),error.status)
         except PermissionError as error:
             self.json_response({"error": str(error)}, 403)
         except (ValueError, TypeError, json.JSONDecodeError) as error:
@@ -1951,13 +2180,17 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=None)
-    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--port", type=int, default=8907)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--replacing", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    from discovery.community_dev import disable_test_outbound
+    disable_test_outbound(DATA_ROOT)
     allow_lan_access = SETTINGS.load()["allowLanAccess"]
-    bind_host = args.host or ("0.0.0.0" if allow_lan_access else "127.0.0.1")
+    bind_host = args.host or "127.0.0.1"
+    if bind_host != "127.0.0.1" or args.port in (8906, 33101, 33201):
+        raise ValueError("Discovery 3.0 development requires loopback and a separate port (default 8907)")
     allowed_hosts = {"127.0.0.1", "localhost", "::1"} | ({"0.0.0.0"} if allow_lan_access else set())
     if bind_host not in allowed_hosts:
         raise ValueError("For your privacy, this app can only listen on the local computer "

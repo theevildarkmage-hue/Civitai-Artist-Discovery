@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -67,6 +69,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                     route.fulfill(status=200, content_type="application/json", body=response(value))
                 page.route("**/api/history/status**", responsive_status)
                 page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+                page.locator("#discovery:not(.hidden)").wait_for()
+                page.locator('#tabGallery').click()
                 page.wait_for_selector("#startLoading:not(.hidden)")
                 assert starts["count"] == 0
                 assert page.locator("#stopLoading").is_hidden()
@@ -112,6 +116,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
             legacy.route("**/api/history/status**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body=response({"collectionBackend": "v1-feed", "listingsChecked": 9000})))
             legacy.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            legacy.locator("#discovery:not(.hidden)").wait_for()
+            legacy.locator('#tabGallery').click()
             legacy.wait_for_selector("#startLoading:not(.hidden)")
             legacy.locator("#startLoading").click()
             legacy.wait_for_selector("#phaseFinding.active")
@@ -144,6 +150,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
             page.route("**/api/history/status**", status_route)
             page.route("**/api/history/cancel", cancel_route)
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            page.locator("#discovery:not(.hidden)").wait_for()
+            page.locator('#tabGallery').click()
             page.wait_for_selector("#startLoading:not(.hidden)")
             assert calls["startRequests"] == 0
             # Dates follow the clock: the app opens yesterday, so these must be relative.

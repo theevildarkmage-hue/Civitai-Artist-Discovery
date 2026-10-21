@@ -1,5 +1,7 @@
 """Dashboard suggestions and gallery familiarity hearts use separate thresholds."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

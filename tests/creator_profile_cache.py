@@ -5,6 +5,8 @@ and measured ~0.15s of each page. Caching it must never serve a stale copy, and 
 hand out a dict a caller can edit underneath the cache.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 import os
 from pathlib import Path

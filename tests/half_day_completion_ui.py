@@ -1,5 +1,7 @@
 """A completed half stays viewable and offers an explicit path to finish the day."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import json
 import os

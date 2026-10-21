@@ -1,5 +1,7 @@
 """Build estimates scale with coverage and omit halves already ready at that coverage."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timezone
 import os
 from pathlib import Path

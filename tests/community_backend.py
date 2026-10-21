@@ -1,0 +1,205 @@
+"""Deterministic community rules, network shapes, privacy and concurrency tests."""
+
+import test_safety  # Fail closed before any test network request.
+import concurrent.futures
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from discovery.community import (Artwork, CommunityClient, CommunityError, ContentProfile,
+    CivitaiVerifier, FixtureVerifier, LocalCommunityBackend, RateLimiter, SupabaseCommunityBackend,
+    bounded_json, build_community, parse_artwork, content_profile)
+
+
+class CommunityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.verifier = FixtureVerifier(development=True)
+        self.now = datetime(2026, 10, 18, 23, 59, 59, tzinfo=timezone.utc)
+        self.backend = LocalCommunityBackend(Path(self.temp.name)/'community.sqlite3', self.verifier, clock=lambda:self.now)
+        self.backend.rate = RateLimiter(1000)
+
+    def request(self, image, member=1, operation='recommend'):
+        return self.backend.request(operation, f'fixture:{member}', {'artwork':image})
+
+    def assertCode(self, code, function, *args):
+        with self.assertRaises(CommunityError) as error:
+            function(*args)
+        self.assertEqual(code, error.exception.code)
+
+    def used(self, member=1):
+        return self.backend.request('status', f'fixture:{member}', {})['quota']['used']
+
+    def test_valid_and_preview_does_not_consume(self):
+        self.request(1001, operation='verify'); self.assertEqual(0,self.used())
+        self.assertEqual(1,self.request(1001)['quota']['used'])
+        self.assertCode('DUPLICATE',self.request,1001,2); self.assertEqual(0,self.used(2))
+
+    def test_self_rejected(self):
+        self.assertCode('SELF_RECOMMENDATION',self.request,1099); self.assertEqual(0,self.used())
+
+    def test_member_quota(self):
+        for image in (1001,1006,1011): self.request(image)
+        self.assertCode('MEMBER_QUOTA', self.request,1016); self.assertEqual(3,self.used())
+
+    def test_artist_three_not_one(self):
+        for image, member in ((1001,1),(1002,2),(1003,3)): self.request(image,member)
+        self.assertCode('ARTIST_QUOTA',self.request,1004,4); self.assertEqual(0,self.used(4))
+
+    def test_week_reset(self):
+        for image in (1001,1006,1011): self.request(image)
+        self.now += timedelta(seconds=1)
+        self.assertEqual(0,self.used()); self.request(1016)
+        self.assertEqual(1,self.used())
+        self.assertCode('DUPLICATE',self.request,1001,2)
+
+    def test_artist_reset_and_utc_offset(self):
+        for image,member in ((1001,1),(1002,2),(1003,3)): self.request(image,member)
+        self.now = datetime(2026,10,18,19,0,tzinfo=timezone(timedelta(hours=-5)))
+        self.request(1004,4)
+
+    def test_withdraw_and_moderation_keep_slots_and_audit(self):
+        for image in (1001,1006,1011): self.request(image)
+        self.request(1001, operation='withdraw')
+        self.backend.moderate(1006,'hidden'); self.backend.moderate(1011,'removed')
+        self.assertCode('MEMBER_QUOTA', self.request,1016)
+        self.assertEqual([],self.backend.request('gallery','fixture:1',{})['items'])
+        with self.backend.connect() as db:
+            self.assertEqual(6,db.execute('SELECT count(*) FROM audit').fetchone()[0])
+
+    def test_withdraw_requires_author(self):
+        self.request(1001); self.assertCode('FORBIDDEN', self.request,1001,2,'withdraw')
+
+    def test_invalid_inputs(self):
+        for value in (0,-1,True,1.2,'01','1e2','https://evil.test/images/1001',
+            'https://civitai.red@evil.test/images/1001','https://civitai.red:443/images/1001',
+            'https://civitai.red/images/1001?url=http://127.0.0.1',
+            'https://civitai.red/images/%31','http://civitai.red/images/1001',
+            'https://civitai.red.evil.test/images/1001','https://civitai.red/images/1001#x',
+            'file:///etc/passwd',{},'9'*1000):
+            self.assertCode('INVALID_ARTWORK',parse_artwork,value)
+        self.assertEqual(1001,parse_artwork('https://www.civitai.com/images/1001/'))
+        self.assertCode('INVALID_ARTWORK',self.request,999999)
+        self.assertEqual(0,self.used())
+
+    def test_simultaneous_member_limit_separate_connections(self):
+        images=(1001,1006,1011,1016,1021,1026)
+        def submit(image):
+            backend=LocalCommunityBackend(self.backend.path,self.verifier,clock=lambda:self.now)
+            try: backend.request('recommend','fixture:1',{'artwork':image}); return 'OK'
+            except CommunityError as error: return error.code
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            results=list(pool.map(submit,images))
+        self.assertEqual(3,results.count('OK')); self.assertEqual(3,results.count('MEMBER_QUOTA'))
+
+    def test_simultaneous_artist_and_duplicate(self):
+        def submit(pair):
+            try: self.request(*pair); return 'OK'
+            except CommunityError as error: return error.code
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            result=list(pool.map(submit,[(1001+i,i+1) for i in range(5)]))
+        self.assertEqual(3,result.count('OK'))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            result=list(pool.map(submit,[(1011,i+1) for i in range(5)]))
+        self.assertEqual(1,result.count('OK')); self.assertEqual(4,result.count('DUPLICATE'))
+
+    def test_privacy_and_removed_art(self):
+        for i in (1001,1002,1003): self.request(i)
+        profile=ContentProfile(levels=frozenset((1,2,4)))
+        client=CommunityClient(self.backend,self.verifier,lambda:'fixture:2',lambda _:profile)
+        self.assertEqual(3,len(client.request('gallery',{})['items']))
+        profile=ContentProfile(levels=frozenset((1,)),images=frozenset((1001,)))
+        result=client.request('gallery',{})
+        self.assertEqual([],result['items']); self.assertNotIn('thumbnail',json.dumps(result))
+        self.assertCode('CONTENT_FILTERED',client.request,'verify',{'artwork':1001})
+        for profile in (ContentProfile(creators=frozenset((101,))),
+                        ContentProfile(usernames=frozenset(('demoartist1',))),
+                        ContentProfile(tags=frozenset(('landscape','portrait'))),
+                        ContentProfile(tag_ids=frozenset((11,12)))):
+            self.assertEqual([],client.request('gallery',{})['items'])
+        profile=ContentProfile(levels=frozenset((1,2,4)))
+        del self.verifier.artworks[1001]
+        self.assertEqual(2,len(client.request('gallery',{})['items']))
+
+    def test_ratings_all_supported(self):
+        for level in (1,2,4,8,16):
+            art=self.verifier.artworks[1001+([1,2,4,8,16].index(level))]
+            self.assertTrue(ContentProfile(levels=frozenset((level,))).allows(art))
+
+    def test_upstream_compact_implicit_and_bidirectional_blocks(self):
+        hidden={'__v':2,'hiddenUsers':[], 'hiddenTags':[], 'hiddenImages':[],
+                'hiddenImagesImplicit':[{'id':1001,'tagId':11,'hidden':True}],
+                'blockedUsers':[{'id':102,'username':'DemoArtist2','hidden':True}],
+                'blockedByUsers':[{'id':103,'username':'DemoArtist3','hidden':True}]}
+        profile=content_profile(hidden,(1,2,4,8,16))
+        for image in (1001,1006,1011): self.assertFalse(profile.allows(self.verifier.artworks[image]))
+        self.assertTrue(profile.allows(self.verifier.artworks[1016]))
+        hidden['hiddenImages']=[1002]
+        self.assertFalse(content_profile(hidden,(1,2)).allows(self.verifier.artworks[1002]))
+        hidden['blockedUsers']=None
+        self.assertCode('UNAVAILABLE',content_profile,hidden,(1,2))
+
+    def test_network_expiration_and_rate_limit(self):
+        for failure in ('UNAVAILABLE','AUTH_EXPIRED','RATE_LIMITED'):
+            self.verifier.failure=failure
+            self.assertCode(failure,self.request,1001)
+        self.verifier.failure=None; self.assertEqual(0,self.used())
+        limiter=RateLimiter(1); limiter.check('one'); self.assertCode('RATE_LIMITED',limiter.check,'one')
+        with patch('urllib.request.OpenerDirector.open',side_effect=TimeoutError()):
+            self.assertCode('UNAVAILABLE',bounded_json,'https://civitai.red/api/v1/images')
+
+    def test_fixture_guard_and_production_url(self):
+        with self.assertRaises(RuntimeError): FixtureVerifier()
+        with patch.dict(os.environ,{'CAD_COMMUNITY_MODE':'fixture','CAD_DEVELOPMENT':'0'}):
+            with self.assertRaises(RuntimeError): build_community(Path(self.temp.name),lambda _:None,lambda:None)
+        for url in ('http://localhost','https://evil.test/functions/v1/community-v1'):
+            with self.assertRaises(ValueError): SupabaseCommunityBackend(url)
+
+    def test_pagination_no_duplicate_rows(self):
+        for i,member in ((1001,1),(1002,2),(1003,3),(1006,4),(1007,5)):
+            self.request(i,member)
+        cursor=None; ids=[]
+        for _ in range(3):
+            page=self.backend.request('gallery','fixture:1',{'limit':2,'cursor':cursor})
+            ids += [r['imageId'] for r in page['items']]; cursor=page['nextCursor']
+        self.assertEqual(5,len(set(ids))); self.assertIsNone(cursor)
+
+
+class RealVerificationTests(unittest.TestCase):
+    def setUp(self):
+        self.item={'id':123,'type':'image','username':'Artist','browsingLevel':8,
+                   'url':'https://image.civitai.com/test/width=640/art.jpeg'}
+        self.detail={'id':123,'user':{'id':42,'username':'Artist','deletedAt':None},
+                     'availability':'Public','ingestion':'Scanned','needsReview':None,
+                     'publishedAt':'2026-01-01T00:00:00Z','nsfwLevel':8}
+        def fetch(url,token=None):
+            if '/userinfo' in url: return {'sub':'7','id':7,'username':'Member'}
+            if '/api/v1/' in url: return {'items':[self.item]}
+            return {'result':{'data':{'json':[] if 'tag.get' in url else self.detail}}}
+        self.verifier=CivitaiVerifier(fetch)
+
+    def test_authoritative_owner_and_member(self):
+        self.assertEqual(42,self.verifier.artwork(123).creator_id)
+        self.assertEqual(7,self.verifier.member('test-only').id)
+
+    def test_mismatch_missing_owner_and_unavailable(self):
+        for mutate,code in ((lambda:self.item.update(id=124),'INVALID_ARTWORK'),
+            (lambda:self.detail.update(user={}), 'UNVERIFIED_OWNER'),
+            (lambda:self.detail.update(availability='Unsearchable'),'INVALID_ARTWORK'),
+            (lambda:self.detail.update(ingestion='Blocked'),'INVALID_ARTWORK'),
+            (lambda:self.detail.update(nsfwLevel=2),'INVALID_ARTWORK'),
+            (lambda:self.item.update(url='https://evil.test/art.jpeg'),'INVALID_ARTWORK')):
+            self.setUp(); mutate()
+            with self.assertRaises(CommunityError) as caught:self.verifier.artwork(123)
+            self.assertEqual(code,caught.exception.code)
+
+
+if __name__=='__main__': unittest.main()

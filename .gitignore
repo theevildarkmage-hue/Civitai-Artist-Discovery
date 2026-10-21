@@ -9,6 +9,7 @@
 # Repository entry points
 !.gitignore
 !README.md
+!AGENTS.md
 !CONTRIBUTING.md
 !LICENSE
 !THIRD_PARTY_NOTICES.md
@@ -41,6 +42,7 @@ scripts/*
 !tests/
 tests/*
 !tests/*.py
+!tests/*.mjs
 
 # Current behavioral documentation and the active release notes only. Historical audits
 # and superseded release plans remain local.
@@ -75,3 +77,13 @@ release-assets/
 
 # Local server logs from development runs; CONTRIBUTING forbids committing logs.
 logs/
+
+# Discovery 3.0 source artifacts only; runtime and secrets remain excluded.
+.data-directory-3.0.json
+!docs/3.0-*.md
+!supabase/
+!supabase/**/
+!supabase/**/*.sql
+!supabase/**/*.ts
+!supabase/config.toml
+!supabase/.env.example

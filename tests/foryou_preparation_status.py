@@ -1,5 +1,7 @@
 """For You must say when its tag-backed ranking is still preliminary."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

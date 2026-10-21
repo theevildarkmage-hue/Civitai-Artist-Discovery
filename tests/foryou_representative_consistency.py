@@ -11,6 +11,8 @@ This reproduces it directly: give a creator two images, hide the more-reacted im
 archive picks as the representative, and put a real taste match on the other.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

@@ -1,5 +1,7 @@
 """Disconnecting revokes the authorization at Civitai, not just the local copy."""
 
+import test_safety  # Fail closed before any test network request.
+
 import importlib
 import json
 import os

@@ -1,5 +1,7 @@
 """Discovery dashboard analysis: reconciliation, rounding, isolation, and reset."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import tempfile

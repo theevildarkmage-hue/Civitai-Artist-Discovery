@@ -1,5 +1,7 @@
 """Reaction selections survive carousel navigation and remain image-specific."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

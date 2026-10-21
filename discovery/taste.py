@@ -266,8 +266,16 @@ class TasteStore:
     def _require_account(self, db) -> int:
         """Drop stored rows if a different account connected since the last sync."""
         account = int(auth_status().get("id") or 0)
+        if account<=0:
+            raise RuntimeError('A verified account is required; cached profile was preserved')
         stored = self._state(db, "account_id")
         if stored is not None and str(stored) != str(account):
+            # Keep the previous 3.0 account snapshot before isolating a new login.
+            # This never reads or copies an installed 2.x database.
+            snapshots=self.root/'accounts';snapshots.mkdir(exist_ok=True)
+            with sqlite3.connect(self.db_path) as source, sqlite3.connect(
+                    snapshots/f'{int(stored)}-{time.time_ns()}.sqlite3') as destination:
+                source.backup(destination)
             for table in ACCOUNT_SCOPED_TABLES:
                 db.execute(f"DELETE FROM {table}")
             # Timestamps, sample totals, and sync cursors describe the old account too.
@@ -308,6 +316,10 @@ class TasteStore:
         with self.connect() as db:
             job["lastSyncAt"] = self._state(db, "last_sync_at")
             job["hasData"] = bool(db.execute("SELECT 1 FROM reacted_images LIMIT 1").fetchone())
+            job['lastAttemptAt']=self._state(db,'last_attempt_at')
+            job['lastError']=self._state(db,'last_sync_error')
+            job['resumable']=bool(self._state(db,'sync_checkpoint'))
+            job['freshnessSeconds']=86400
         return job
 
     def start_sync(self) -> dict:
@@ -371,8 +383,11 @@ class TasteStore:
             # first page while both observe the old account id.
             with self.lock, self.connect() as db:
                 account = self._require_account(db)
-                sync_id = int(self._state(db, "sync_id", 0) or 0) + 1
+                checkpoint=json.loads(self._state(db,'sync_checkpoint','null'))
+                if checkpoint and time.time()-checkpoint.get('savedAt',0)>86400:checkpoint=None
+                sync_id = checkpoint['syncId'] if checkpoint else int(self._state(db, "sync_id", 0) or 0) + 1
                 self._set_state(db, "sync_id", sync_id)
+                self._set_state(db,'last_attempt_at',_now())
 
             # Tags are by far the heaviest part of a page and never change for an image
             # already stored, so a refresh asks for the listing only and fetches tags for
@@ -381,8 +396,11 @@ class TasteStore:
                 known = {row["image_id"] for row in db.execute("SELECT image_id FROM reacted_tags")}
             incremental = bool(known)
 
-            cursor, pages, total, fresh, observed = None, 0, 0, [], set()
-            while True:
+            cursor = checkpoint['cursor'] if checkpoint else None
+            pages = checkpoint['pages'] if checkpoint else 0
+            total = checkpoint['total'] if checkpoint else 0
+            fresh, observed = [], set()
+            while not checkpoint or cursor is not None:
                 page = self._page(client, cursor=cursor, limit=PAGE_SIZE,
                                   reactions=ALL_REACTIONS, with_tags=not incremental)
                 items = page["items"]
@@ -397,6 +415,9 @@ class TasteStore:
                 self._progress(images=total, pages=pages,
                                message=f"Read {total:,} reacted images from Civitai…")
                 cursor = page["nextCursor"]
+                with self.connect() as db:
+                    self._set_state(db,'sync_checkpoint',json.dumps({'syncId':sync_id,'cursor':cursor,
+                        'pages':pages,'total':total,'savedAt':time.time()}))
                 if cursor is None:
                     break
                 self._pause()
@@ -419,6 +440,11 @@ class TasteStore:
                            "(SELECT image_id FROM reacted_images WHERE last_sync<>?)", (sync_id,))
                 db.execute("DELETE FROM reacted_images WHERE last_sync<>?", (sync_id,))
 
+            if incremental:
+                with self.connect() as db:
+                    fresh = [row['image_id'] for row in db.execute(
+                        'SELECT image_id FROM reacted_images WHERE last_sync=?', (sync_id,))
+                        if row['image_id'] not in known]
             if incremental and fresh:
                 self._progress(message=f"Reading tags for {len(fresh):,} new images…")
                 self._fetch_reacted_tags(client, fresh)
@@ -445,6 +471,7 @@ class TasteStore:
 
             with self.connect() as db:
                 self._set_state(db, "last_sync_at", _now())
+                db.execute("DELETE FROM sync_state WHERE key IN ('sync_checkpoint','last_sync_error')")
             self._progress(running=False, phase="complete", error=None,
                            message=f"Updated {total:,} reacted images in "
                                    f"{int(time.monotonic() - started)} seconds.")
@@ -452,6 +479,7 @@ class TasteStore:
             self._progress(running=False, phase="stopped",
                            message="Stopped. Everything already read was kept.")
         except Exception as error:  # noqa: BLE001
+            with self.connect() as db:self._set_state(db,'last_sync_error','Synchronization could not finish; cached profile was kept.')
             self._progress(running=False, phase="error", error=str(error)[:300],
                            message="Could not finish reading your reactions from Civitai.")
 
@@ -649,12 +677,14 @@ class TasteStore:
                     for reason, rows in (("hidden", payload.get("hiddenUsers")),
                                          # Someone who blocked this account should not be
                                          # surfaced to them either.
-                                         ("blocked", payload.get("blockedByUsers")))
+                                         ("blocked", payload.get("blockedByUsers")),
+                                         ("blocked", payload.get("blockedUsers")))
                     for row in named(rows) if row.get("id")]
         tags = [(int(row["id"]), str(row.get("name") or "").casefold())
                 for row in named(payload.get("hiddenTags")) if row.get("id") and row.get("name")]
         images = []
-        for row in payload.get("hiddenImages") or []:
+        for row in (payload.get("hiddenImages") or []) + (payload.get("hiddenImagesImplicit") or []):
+            if isinstance(row,dict) and row.get('hidden') is False:continue
             value = row.get("id") if isinstance(row, dict) else row
             try:
                 images.append((int(value),))
@@ -670,6 +700,15 @@ class TasteStore:
             db.executemany("INSERT OR REPLACE INTO hidden_tags(tag_id, tag_name) VALUES(?,?)", tags)
             db.executemany("INSERT OR REPLACE INTO hidden_images(image_id) VALUES(?)", images)
             self._set_state(db, "hidden_imported_at", _now())
+        # Update the same account-scoped snapshot used by Community after a local
+        # content-control action, so a fresh 24-hour cache never masks that action.
+        try:
+            from .community import content_profile,CommunityError
+            from .cache import MetadataCache
+            content_profile(payload,(1,2,4,8,16))
+            account=auth_status().get('id')
+            if account:MetadataCache(self.root.parent/'cache'/'community-metadata.sqlite3').put(f'controls:{account}',payload)
+        except (CommunityError,ValueError,RuntimeError,sqlite3.Error,OSError):pass
         return {"creators": len(creators), "tags": len(tags), "images": len(images)}
 
     def hidden_creator_keys(self) -> set[str]:

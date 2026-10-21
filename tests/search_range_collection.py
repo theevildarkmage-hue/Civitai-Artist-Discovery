@@ -4,6 +4,8 @@ The search collector is opt-in and off by default (Civitai ToS 11.4 -- see
 ``discovery.history.active_backend``), so this test enables it explicitly.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path

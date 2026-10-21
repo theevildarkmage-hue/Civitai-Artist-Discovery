@@ -1,5 +1,7 @@
 """Safe day rebuilds and connected-creator ordering."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import tempfile

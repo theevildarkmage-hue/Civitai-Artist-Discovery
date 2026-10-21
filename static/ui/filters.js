@@ -17,6 +17,16 @@ export function mountFilters(actions) {
   chips.setAttribute('aria-label', 'Active filters');
   chips.append(content);
   toolbar.append(chips);
+  const restrictions = document.createElement('span');
+  restrictions.id = 'sharedControlsStatus'; restrictions.className = 'filter-button';
+  restrictions.setAttribute('role', 'status'); restrictions.hidden = true; chips.append(restrictions);
+  window.addEventListener('shared-controls-summary', ({detail}) => {
+    const parts = [[detail.hiddenCreators,'hidden creators'],[detail.blockedUsers,'blocked users'],
+      [detail.hiddenTags,'hidden tags'],[detail.hiddenArtworks,'hidden artworks']].filter(([n]) => n > 0);
+    restrictions.textContent = parts.map(([n,label]) => `${n} ${label}`).join(' ? ');
+    restrictions.hidden = !parts.length;
+    restrictions.title = 'Shared Civitai content controls apply alongside the rating selection.';
+  });
   const panel = document.createElement('section');
   panel.id = 'filterPanel';
   panel.className = 'filter-panel hidden';
@@ -64,7 +74,7 @@ export function mountFilters(actions) {
     button.setAttribute('aria-expanded', 'true');
     content.setAttribute('aria-expanded', 'true');
     search.disabled = true;
-    await actions.refreshModels();
+    if (!document.body.classList.contains('community-view')) await actions.refreshModels();
     search.disabled = false;
     applyModelSearch();
   };

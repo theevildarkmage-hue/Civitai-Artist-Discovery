@@ -1,5 +1,7 @@
 """Daily gallery views order and filter the whole day, not just the loaded cards."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

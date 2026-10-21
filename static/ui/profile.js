@@ -43,7 +43,7 @@ function donut(mix, totalRecords) {
   const total = safeCount(data.reactedImages);
   $("summaryRow").innerHTML = [
     metricCard("Creators you follow", data.followedCreators, "Exact count from your Civitai account", true),
-    metricCard("Images you reacted to", total, "Your complete reaction history"),
+    metricCard("Images you reacted to", total, data.lastSyncAt ? "Cached reaction history" : "Partial history · refresh can resume"),
     metricCard("Creators you reacted to", data.creatorsReactedTo, "Distinct artists in that history"),
     metricCard("Not yet followed", data.creatorsNotFollowed, `Reacted to ${data.worthFollowingThreshold || 10}+ images, but you do not follow them`),
     donut(data.reactionMix || [], data.reactionRecords),
@@ -89,6 +89,6 @@ function donut(mix, totalRecords) {
   // Suggestions moved into the For You feed, where browsing happens.
   const age = data.lastSyncAt ? (Date.now() - new Date(data.lastSyncAt).getTime()) / 1000 : 0;
   const when = age < 120 ? "moments ago" : ago(data.lastSyncAt);
-  $("discoverySubtitle").textContent = `Updated ${when} · ${displayCount(total)} reactions · ${displayCount(data.distinctTags)} tags`;
+  $("discoverySubtitle").textContent = `${data.lastSyncAt ? `Cached profile · updated ${when}` : 'Partial cached profile · synchronization incomplete'} · ${displayCount(total)} reactions · ${displayCount(data.distinctTags)} tags`;
 
 }

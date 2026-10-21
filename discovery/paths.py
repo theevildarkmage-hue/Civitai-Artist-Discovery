@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import sys
 
@@ -24,25 +25,16 @@ def _base() -> Path:
 
 
 def data_root() -> Path:
-    """Use portable ``data/`` storage, preserving an existing install on upgrade.
-
-    The environment override is retained for development and isolated tests. Normal
-    launches always use a folder beside the executable (or source checkout). An older
-    LocalAppData installation is moved there once. If permissions block that move, the
-    old folder remains active so archives and credentials never appear to be lost.
-    """
+    """Use isolated 3.0 data; never migrate an installed application's data."""
     override = os.environ.get(DATA_DIR_ENV)
     if override:
         return Path(override)
-    portable = application_root() / "data"
-    if portable.exists():
-        return portable
-    current, legacy = _base() / APP_FOLDER, _base() / LEGACY_APP_FOLDER
-    existing = current if current.exists() else legacy if legacy.exists() else None
-    if existing is None:
-        return portable
-    try:
-        os.rename(existing, portable)
-        return portable
-    except OSError:
-        return existing
+    selection=application_root()/'.data-directory-3.0.json'
+    if selection.exists():
+        value=json.loads(selection.read_text(encoding='utf-8'))['directory']
+        chosen=(application_root()/value).resolve()
+        if application_root().resolve() not in chosen.parents:
+            raise ValueError('3.0 data directory must remain inside this workspace')
+        return chosen
+    # 3.0 development must never migrate the user's installed 2.x data or tokens.
+    return application_root() / "data-dev-3.0"

@@ -1,5 +1,7 @@
 """The date locator jumps by offset without skipping the target boundary."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys

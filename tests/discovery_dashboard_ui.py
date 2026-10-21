@@ -1,5 +1,7 @@
 """The discovery tab renders real numbers, stays responsive, and shows no artwork."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -112,6 +114,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             page.on("pageerror", lambda error: errors.append(str(error)))
             # Signed in, but Civitai withheld write access: the dashboard must render its
             # analysis in full and still offer no way to write.
+            page.route("**/api/community/config", lambda route: route.fulfill(content_type="application/json", body='{"development":false}'))
             page.route("**/api/auth-status", lambda route: route.fulfill(status=200,
                 content_type="application/json",
                 body='{"connected":true,"socialWrite":false,"scopeGrantsWrite":false,'
@@ -229,6 +232,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             writer_errors = []
             writer.on("console", lambda m: writer_errors.append(m.text) if m.type == "error" else None)
             writer.on("pageerror", lambda error: writer_errors.append(str(error)))
+            writer.route("**/api/community/config", lambda route: route.fulfill(content_type="application/json", body='{"development":false}'))
             writer.route("**/api/auth-status", lambda route: route.fulfill(status=200,
                 content_type="application/json",
                 body='{"connected":true,"username":"Tester","socialWrite":true}'))

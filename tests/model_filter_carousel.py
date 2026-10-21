@@ -1,5 +1,7 @@
 """A generation-model filter applies to both card covers and their carousels."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

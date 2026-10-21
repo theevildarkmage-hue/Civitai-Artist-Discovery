@@ -1,5 +1,7 @@
 """OAuth credentials use protected platform storage and never a Linux plaintext file."""
 
+import test_safety  # Fail closed before any test network request.
+
 import importlib
 import json
 import os

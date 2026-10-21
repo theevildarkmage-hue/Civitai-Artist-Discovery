@@ -1,5 +1,7 @@
 """A build records API pacing and failure causes separately from response time."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import tempfile

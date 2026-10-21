@@ -1,5 +1,7 @@
 """Both halves complete publishes an all-day archive, locally and without network."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime
 from pathlib import Path
 import sys

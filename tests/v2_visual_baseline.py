@@ -4,6 +4,8 @@ Run: py tests/v2_visual_baseline.py --label baseline
 Only static assets are served; API and artwork responses are synthetic. No app server,
 account, archive, credentials, or external connection is used.
 """
+
+import test_safety  # Fail closed before any test network request.
 import argparse
 from datetime import datetime, timedelta, timezone
 from functools import partial

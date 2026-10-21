@@ -1,5 +1,38 @@
 # Civitai Artist Discovery
 
+## 3.0.0-dev — isolated Community Gallery development
+
+This clone's `3.0` branch adds an optional Community Gallery with a local SQLite
+simulator. No Supabase project is deployed. Existing 2.x installations and personal
+data are not migrated or modified.
+
+```powershell
+.\scripts\dev-3.0.ps1
+```
+
+Open `http://127.0.0.1:8907` and sign in normally to Civitai. Saved protected sessions
+are reused after restart. Community requires that session at the backend as well as
+in navigation. Runtime data stays in this clone;
+the ignored `.data-directory-3.0.json` keeps launcher and Python starts on the same
+existing 3.0 profile (otherwise the initial directory is `data-dev-3.0`).
+Use `-RealVerification` for the existing Civitai login and real artwork verification
+with community records still stored locally. The explicitly enabled development
+ledger uses simulated members in My Profile?s collapsed development diagnostics; personal galleries
+use real cached metadata and the signed-in profile. Synthetic artwork is test-only.
+
+Recommendations now use one modal and one submission action. See [submission, live API and PostgreSQL validation](docs/3.0-submission-validation.md).
+
+See [artwork restoration, count reconciliation and validation](docs/3.0-artwork-restoration.md).
+
+See [launching and testing](docs/3.0-development.md), [architecture and source
+verification](docs/3.0-architecture.md), [API contract](docs/3.0-api.md), and
+[undeployed Supabase readiness](docs/3.0-supabase.md). Known local-only 2.x
+improvements are listed in the architecture document and were not imported.
+
+See [the ten-member integration and stress workflow](docs/3.0-community-testing.md) for metadata sampling, shared-control regression tests, and the private validation report.
+
+The documentation below describes the existing Discovery features and release line.
+
 Civitai Artist Discovery is a local, artist-first browser for finding creators on
 [Civitai](https://civitai.red). Instead of presenting another image-first popularity
 feed, it groups a calendar day's artwork by creator and can order those creators using

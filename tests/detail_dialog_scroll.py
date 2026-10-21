@@ -6,6 +6,8 @@ overflow could never engage, and the last tags, the prompt and the links were si
 unreachable. Nothing about it looked broken, which is what made it worth pinning.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

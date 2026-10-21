@@ -1,4 +1,6 @@
 """Shared shell keyboard behavior, module transport, and image fallback contract."""
+
+import test_safety  # Fail closed before any test network request.
 from functools import partial
 from http.server import ThreadingHTTPServer
 import json

@@ -1,0 +1,4 @@
+[functions.community-v1]
+# Civitai bearer tokens are opaque OAuth tokens, not Supabase JWTs.
+# The function independently validates every token at Civitai UserInfo.
+verify_jwt = false
