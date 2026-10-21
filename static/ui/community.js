@@ -48,7 +48,7 @@ export function mountCommunity() {
         seenObserver:{observe:()=>{},unobserve:()=>{}}, loadMore:async()=>{},
         onArtworkChange(image) {
           const recommendation = recommendations.get(String(image.id));
-          credit.textContent = recommendation ? `Recommended by ${recommendation.recommender} ? ${new Date(recommendation.submittedAt).toLocaleDateString()}` : '';
+          credit.textContent = recommendation ? `Recommended by ${recommendation.recommender} \u00b7 ${new Date(recommendation.submittedAt).toLocaleDateString()}` : '';
         },
       });
       card.classList.add('community-card');
