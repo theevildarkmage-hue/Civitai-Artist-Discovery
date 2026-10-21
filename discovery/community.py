@@ -5,7 +5,7 @@ serializes simulator writes; production has its own PostgreSQL implementation.
 """
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -541,6 +541,35 @@ class CommunityClient:
         self.backend, self.verifier = backend, verifier
         self.token_provider, self.profile_provider = token_provider, profile_provider
         self.rate = RateLimiter(60)
+        # Bounded process-local admission list, scoped to the authenticated viewer.
+        # Shared personal actions cannot turn arbitrary browser IDs into lookups.
+        self.presented = OrderedDict()
+        self.presented_lock = threading.Lock()
+
+    def remember_presented(self, rows, viewer):
+        with self.presented_lock:
+            for row in rows:
+                key = (viewer, int(row['artwork']['id']))
+                self.presented[key] = row['artwork']['username']
+                self.presented.move_to_end(key)
+            while len(self.presented) > 2000:
+                self.presented.popitem(last=False)
+
+    def presented_artwork(self, image_id, viewer, token=None):
+        with self.presented_lock:
+            if (viewer, image_id) not in self.presented:
+                return None
+        try:
+            art, _ = self.browse_artwork(image_id, self.profile_provider(token))
+            return art
+        except CommunityError:
+            return None
+
+    def presented_creator(self, username, viewer, token=None):
+        with self.presented_lock:
+            ids = [image for (owner, image), name in self.presented.items()
+                   if owner == viewer and name.casefold() == username.casefold()]
+        return next((art for image in ids if (art := self.presented_artwork(image, viewer, token))), None)
 
     def _identity(self,token):
         if isinstance(self.verifier,FixtureVerifier) and token in self.verifier.members:
@@ -579,6 +608,7 @@ class CommunityClient:
     @staticmethod
     def browser_artwork(art):
         value=art.browser()
+        value['tagState']={'known':art.tags_known,'tags':[{'name':name,'hidden':False} for name in art.tags]}
         if urllib.parse.urlsplit(art.preview).hostname == 'image.civitai.com':
             value['thumbnailUrl']=value['url']=f'/api/community/thumbnail/{art.id}'
         return value

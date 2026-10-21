@@ -17,7 +17,7 @@ def inventory():
     for path in sorted(ROOT.iterdir()):
         if not path.is_dir() or path.name in ('.git','discovery','static','tests','docs','scripts','supabase','.githooks'):continue
         category=('persistent development data — preserve' if path.resolve() in (selected,ROOT/'data-dev-3.0') else
-                  'existing test sandbox — approval required before deletion' if path.name.startswith(('data-test-','cad3-')) else
+                  'disposable test sandbox — verify contents/processes before removal' if path.name.startswith(('data-test-','cad3-')) else
                   'private Python environment — preserve' if path.name.startswith('.venv') else
                   'generated reports/logs — review retention' if path.name in ('reports','logs','__pycache__') else
                   'unclassified local directory — preserve pending review')

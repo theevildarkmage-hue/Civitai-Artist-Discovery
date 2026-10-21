@@ -6,6 +6,7 @@ import subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
 APPROVED_BINARY={'tests/fixtures/recovery.mp4'}
+PERSONAL_PATH_PATTERN=r'(?i)\b[A-Z]:[\\/]+Users[\\/]+[A-Za-z0-9_.-]+[\\/]'
 PATTERNS=[r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
           r'\b(?:ghp_|github_pat_|sb_secret_|sbp_|sk-proj-)[A-Za-z0-9_-]{20,}',
           r'\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}']
@@ -32,8 +33,8 @@ def audit(staged=False):
         elif (ROOT/name).is_file():value=(ROOT/name).read_bytes()
         else:continue
         for number,line in enumerate(value.decode('utf-8','replace').splitlines(),1):
-            if any(re.search(pattern,line) for pattern in PATTERNS):
-                failures.append(f'{name}:{number}: credential pattern (value withheld)')
+            if any(re.search(pattern,line) for pattern in [*PATTERNS, PERSONAL_PATH_PATTERN]):
+                failures.append(f'{name}:{number}: sensitive content pattern (value withheld)')
     return names,failures
 
 

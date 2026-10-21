@@ -37,7 +37,7 @@ document.addEventListener('click', event => {
 export function createCreatorCard(a, context) {
   const { api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore } = context;
   const selectedDate = context.date, selectedSegment = context.segment;
-  let images = [a.representative], index = 0, current = images[0], imagesLoaded = a.imageCount <= 1;
+  let images = context.images ? [...context.images] : [a.representative], index = 0, current = images[0], imagesLoaded = !!context.images || a.imageCount <= 1;
   // The listing can include a cached decision. Unknown artwork still passes through
   // checkImageTags before any preview URL is attached, including in Time Machine.
   if (current.tagState?.known) imageTagState.set(String(current.id), current.tagState);
@@ -93,6 +93,7 @@ export function createCreatorCard(a, context) {
   el.append(actionMenu);
   const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"), navStatus = el.querySelector(".card-nav-status"), navMessage = navStatus.lastElementChild, showVideo = attachCardVideo(el, main); wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
   function renderReactions() {
+    context.onArtworkChange?.(current);
     reaction.innerHTML = reactionBar(current);
     wireReactions();
     if (navigating) reaction.querySelectorAll("[data-reaction]").forEach(button => { button.disabled = true; });
@@ -280,6 +281,15 @@ export function createCreatorCard(a, context) {
   // fetches immediately — so a whole page of cards requested every preview at once and
   // saturated the connection. Artwork is attached only as a card nears the viewport.
   el.paintImages = paint;
+  el.appendImages = additions => {
+    const ids = new Set(images.map(image => String(image.id)));
+    for (const image of additions) if (!ids.has(String(image.id))) {
+      images.push(image); ids.add(String(image.id));
+      if (image.tagState?.known) imageTagState.set(String(image.id), image.tagState);
+    }
+    a.imageCount = images.length; imagesLoaded = true; paint();
+    hydrateReactionStates(images).catch(error => console.warn('Reaction history could not be loaded', error));
+  };
   el.prepareArtwork = prepareArtwork;
   el.removeHiddenImage = async imageId => {
     imageTagState.delete(String(imageId));

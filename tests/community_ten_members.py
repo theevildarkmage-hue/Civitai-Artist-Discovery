@@ -44,8 +44,10 @@ try:
                 page.locator('#communitySubmit').click();page.locator('#communityDialogTitle').wait_for(state='hidden')
                 assert len(h.snapshot()['recommendations'])==(member-1)*3+index+1
             page.locator('#communityQuota').filter(has_text='0 left').wait_for()
-        page.locator('#communityRefresh').click();page.locator('#communityGrid .creator-card').nth(23).wait_for()
-        page.locator('#communityMore').click();page.locator('#communityGrid .creator-card').nth(29).wait_for()
+        page.locator('#communityRefresh').click();page.wait_for_function("()=>document.querySelectorAll('#communityGrid .image-progress button').length===24")
+        page.locator('#communityMore').click();page.wait_for_function("()=>document.querySelectorAll('#communityGrid .image-progress button').length===30")
+        names=page.locator('#communityGrid .creator-card').evaluate_all('(xs)=>xs.map(x=>x.dataset.username)')
+        assert len(names)==len(set(names))<30
         baseline=h.snapshot();assert len(baseline['recommendations'])==len(baseline['audit'])==30
         h.stop();h.start();page.reload(wait_until='networkidle');page.locator('#tabCommunity').click()
         page.locator('#communityQuota').filter(has_text='0 left').wait_for()

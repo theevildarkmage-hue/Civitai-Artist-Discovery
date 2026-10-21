@@ -114,6 +114,10 @@ def main():
             page.wait_for_function('()=>[...document.querySelectorAll("#gallery .image-button img")].some(x=>x.naturalWidth>0)',timeout=30000)
             result['liveChecks']['daily']={'realArtworkDecoded':True,'summary':page.locator('#summary').inner_text()}
             page.screenshot(path=str(output/'daily-desktop.png'))
+            page.set_viewport_size({'width':390,'height':844});page.wait_for_timeout(200)
+            assert not page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
+            page.screenshot(path=str(output/'daily-mobile.png'))
+            page.set_viewport_size({'width':1440,'height':1000})
             page.locator('#tabCommunity').click()
             page.wait_for_function('()=>document.querySelector("#communityQuota").textContent.includes("left")')
             page.wait_for_function('()=>[...document.querySelectorAll("#communityGrid img")].some(x=>x.naturalWidth>0)',timeout=30000)
@@ -122,7 +126,13 @@ def main():
                 with page.expect_response(lambda response:'/api/community/gallery?' in response.url):page.locator('#communityMore').click()
                 page.wait_for_timeout(200);pages+=1
             page.screenshot(path=str(output/'community-desktop.png'))
+            names=page.locator('#communityGrid .creator-card').evaluate_all('(xs)=>xs.map(x=>x.dataset.username)')
+            assert len(names)==len(set(names)), 'Community displayed duplicate artist cards'
+            assert page.locator('#communityGrid .follow-button').count()==len(names)
+            assert page.locator('#communityGrid .reaction-bar').count()==len(names)
             result['liveChecks']['community']={'cards':page.locator('#communityGrid > *').count(),'pages':pages,
+                'uniqueArtistCards':True,'sharedFollowAndReactionsPresent':True,
+                'recommendedArtworks':page.locator('#communityGrid .image-progress button').count(),
                 'decodedImages':page.locator('#communityGrid img').evaluate_all('(xs)=>xs.filter(x=>x.naturalWidth>0).length')}
             page.locator('#contentFilter').click()
             levels=page.locator('#contentPanel [aria-pressed="true"]').evaluate_all('(xs)=>xs.map(x=>Number(x.dataset.level)).sort((a,b)=>a-b)')
