@@ -1,3 +1,4 @@
 // Production entry point: opaque Civitai OAuth is verified inside the handler.
 import { createCommunityHandler } from './handler.ts';
-Deno.serve(createCommunityHandler());
+// Temporary staging boundary: environment/body/header flags cannot turn this off.
+Deno.serve(createCommunityHandler({ownerOnly:true}));

@@ -1,6 +1,6 @@
 // Undeployed Edge Function. No SDK dependency and no browser OAuth transport.
 export function createCommunityHandler({fetch:transport=globalThis.fetch, ipLimit=120,
-  ipWindowMs=60000, maxConcurrent=16} = {}) {
+  ipWindowMs=60000, maxConcurrent=16, ownerOnly=false} = {}) {
 const fetch=transport;
 const ingress=new Map<string,{started:number,count:number}>();
 let active=0;
@@ -176,6 +176,14 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     if(typeof username!=='string' || username.length<1 || username.length>200) fail('AUTH_EXPIRED');
     await rpc('community_take_rate',{p_key:`member:${memberId}`});
 
+    // The staging entry point fixes this option in code, never in a request.
+    // Compare only fresh UserInfo identity, before any content/quota/write RPC.
+    if(ownerOnly) {
+      const owner=Deno.env.get('COMMUNITY_TEST_OWNER_ID');
+      if(!owner || !/^[1-9][0-9]{0,14}$/.test(owner)) fail('BETA_DISABLED');
+      if(String(memberId)!==owner) fail('FORBIDDEN');
+    }
+
     const keys=Object.keys(body);
     const fields=body.operation==='recommend'?['artwork','idempotencyKey']:
       ['verify','withdraw'].includes(body.operation)?['artwork']:body.operation==='gallery'?['cursor','limit']:[];
@@ -184,7 +192,14 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     // or malformed state is disabled; clients cannot override it. Secret changes
     // disable submissions without an application release (propagation tested in staging).
     const state=Deno.env.get('COMMUNITY_BETA_STATE');
-    const policy={available:state==='enabled'||state==='read_only',submissions:state==='enabled'};
+    const until=Deno.env.get('COMMUNITY_OWNER_TEST_EXPIRES_AT')??'';
+    const remaining=Date.parse(until)-Date.now();
+    const ownerWindow=ownerOnly && state==='owner_test'
+      && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(until)
+      && Number.isFinite(remaining) && remaining>0 && remaining<=30*60*1000;
+    // In the deployed owner-only entry point, even "enabled" fails closed.
+    const submissions=ownerWindow || (!ownerOnly && state==='enabled');
+    const policy={available:submissions||state==='read_only',submissions};
     if(body.operation!=='status' && !policy.available) fail('BETA_DISABLED');
     if(['recommend','verify','withdraw'].includes(body.operation) && !policy.submissions) fail('READ_ONLY');
     let result:any;
