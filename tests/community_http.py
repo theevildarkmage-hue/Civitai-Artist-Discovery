@@ -123,7 +123,7 @@ else:
             'PGRST_DB_POOL':'4','PGRST_DB_POOL_ACQUISITION_TIMEOUT':'1','PGRST_LOG_LEVEL':'crit'})
     def start_edge(live=False,state='enabled'):
         return launch('deno',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
-            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS',
             '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
             'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2,4,8,16',
             'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(edge_port),
@@ -186,6 +186,35 @@ else:
             status,_=request(rest+'/rpc/community_submit',{'p_member':seed,'p_name':'Spoof','p_image':seed+20000,'p_creator':seed+20001},auth=('Bearer '+jwt) if jwt else None)
             assert status in (401,403)
             status,_=request(rest+'/community_recommendations',auth=('Bearer '+jwt) if jwt else None,method='GET');assert status in (401,403)
+        denied_requests=0
+        public_jwt=token({'role':'anon','exp':int(time.time())+3600},secret)
+        for jwt in (None,public_jwt,anon_key):
+            headers={'apikey':'synthetic-public-api-key'}
+            auth='Bearer '+jwt if jwt else None
+            for table in ('community_members','community_recommendations','community_audit','community_rate_buckets','community_submission_requests'):
+                for method,body in (('GET',None),('POST',{}),('PATCH',{}),('DELETE',None)):
+                    status,_=request(rest+'/'+table,body,auth=auth,headers=headers,method=method)
+                    assert status in (401,403),(table,method,status)
+                    denied_requests+=1
+            for name,body in (
+                ('community_quota',{'p_member':seed}),('community_gallery',{}),
+                ('community_take_rate',{'p_key':'forged-client'}),
+                ('community_submit',{'p_member':seed,'p_name':'Spoof','p_image':seed+20000,'p_creator':seed+20001}),
+                ('community_submit_once',{'p_member':seed,'p_name':'Spoof','p_image':seed+20000,'p_creator':seed+20001,'p_key':'forged-client-key'}),
+                ('community_withdraw',{'p_member':seed,'p_image':seed+20000}),
+                ('community_moderate',{'p_image':seed+20000,'p_status':'hidden'})):
+                status,_=request(rest+'/rpc/'+name,body,auth=auth,headers=headers)
+                assert status in (401,403,404),(name,status)
+                denied_requests+=1
+        scenarios.append({'scenario':'public-client-all-table-and-rpc-denials','requests':denied_requests,'persisted':0})
+        lost={'apiVersion':1,'operation':'recommend','artwork':seed+29000,'idempotencyKey':f'http-lost-reply-{seed}'}
+        before_lost=counts()
+        status,_=request(edge,lost,auth='Bearer '+member(990),headers={'X-CAD-Test-Lost-Reply':'1'})
+        assert status==503
+        committed=counts();assert committed['recommendations']==before_lost['recommendations']+1
+        status,retry=request(edge,lost,auth='Bearer '+member(990))
+        assert status==200 and retry.get('replayed') is True and counts()==committed
+        scenarios.append({'scenario':'committed-but-response-lost-retry','persisted':1,'retryAddedRecords':0})
         # Actual PostgREST role switch + RLS, rather than only SQL ACL rejection.
         sql('grant select,insert on community_recommendations to authenticated; grant usage on sequence community_recommendations_seq_seq to authenticated;')
         try:

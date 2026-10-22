@@ -30,4 +30,5 @@ class BetaControls(unittest.TestCase):
             self.assertTrue(beta.production());self.assertFalse(fixture_enabled());self.assertIsNone(test_identity(Path.cwd()))
 
 subprocess.run(['node','--experimental-transform-types',str(test_safety.ROOT/'tests/community_beta_edge.mjs')],check=True)
+subprocess.run(['node','--experimental-transform-types',str(test_safety.ROOT/'tests/community_credentials_edge.mjs')],check=True)
 if __name__=='__main__':unittest.main()

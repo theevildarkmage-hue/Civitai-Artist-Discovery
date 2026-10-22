@@ -24,5 +24,10 @@ Deno.serve({hostname:'127.0.0.1',port,onListen:()=>{}},async(request,info)=>{
     const body=await request.clone().json().catch(()=>null);
     if(!body || !['status','verify'].includes(body.operation)) return new Response('{}',{status:403});
   }
-  return handler(request,info);
+  const response=await handler(request,info);
+  // Owned local fault injection: SQL commits, then the client gets no success
+  // representation. Never deployed; proves explicit same-key recovery over HTTP.
+  if(request.headers.get('X-CAD-Test-Lost-Reply')==='1' && response.ok)
+    return Response.json({code:'UNAVAILABLE'},{status:503});
+  return response;
 });

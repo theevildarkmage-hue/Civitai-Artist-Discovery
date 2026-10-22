@@ -19,6 +19,21 @@ HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
 
 
+def protect_capability(value):
+    from base64 import b64encode
+    from discovery.oauth import _crypt
+    return b64encode(_crypt(value.encode(),True)).decode()
+
+
+def unprotect_capability(config):
+    from base64 import b64decode
+    from discovery.oauth import _crypt
+    if 'capabilityProtected' in config:
+        return _crypt(b64decode(config['capabilityProtected'],validate=True),False).decode()
+    # Read existing registrations without rewriting the running manual Lab.
+    return config['capability']
+
+
 def fixtures():
     value=json.loads((HERE/'public-fixtures.json').read_text(encoding='utf-8'))
     assert len(value['members'])==10 and value['developmentOnly']
@@ -70,7 +85,7 @@ class Lab:
         profile=self.scratch/f'data-test-lab-member-{index}';profile.mkdir(exist_ok=True)
         if (profile/'session-url.json').exists():(profile/'session-url.json').unlink()
         config=profile/'lab-session.json'
-        config.write_text(json.dumps({'manager':self.base,'capability':self.key,'index':index,'edge':self.edge,
+        config.write_text(json.dumps({'manager':self.base,'capabilityProtected':protect_capability(self.key),'index':index,'edge':self.edge,
             'creator':self.members[index]['creator']}),encoding='utf-8')
         log=(profile/'desktop.log').open('w',encoding='utf-8');self.logs.append(log)
         actor_env={k:v for k,v in os.environ.items() if not k.startswith(('PG','SUPABASE_','CAD_TEST_','CAD_ALLOW_'))}
@@ -110,7 +125,8 @@ class Lab:
         self.http=ThreadingHTTPServer(('127.0.0.1',0),Handler);self.base=f'http://127.0.0.1:{self.http.server_port}'
         threading.Thread(target=self.http.serve_forever,daemon=True).start()
         self.state=self.scratch/'manual-lab-connection.json'
-        self.state.write_text(json.dumps({'manager':self.base,'capability':self.key}),encoding='utf-8')
+        self.state.write_text(json.dumps({'manager':self.base,'capabilityProtected':protect_capability(self.key)}),encoding='utf-8')
+        assert self.key not in self.state.read_text(), 'Lab capability must not be written as plaintext'
         (self.output/'lab-location.json').write_text(json.dumps({'connectionFile':str(self.state),'credentialsInThisReport':False}),encoding='utf-8')
         return self
     def close(self):
