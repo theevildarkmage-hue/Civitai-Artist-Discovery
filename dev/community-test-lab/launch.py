@@ -13,6 +13,8 @@ assert ROOT not in connection.parents
 state=json.loads(connection.read_text());url=urlsplit(state['manager'])
 assert url.scheme=='http' and url.hostname=='127.0.0.1' and url.port
 sys.path.insert(0,str(ROOT));import server
+from lab import unprotect_capability
+state['capability']=unprotect_capability(state)
 def proxy(path,body=None):
     req=urllib.request.Request(state['manager']+path,data=json.dumps(body).encode() if body is not None else None,
         headers={'Content-Type':'application/json','X-Lab-Capability':state['capability']})

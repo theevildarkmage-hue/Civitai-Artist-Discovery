@@ -23,7 +23,8 @@ sys.path.insert(0,str(ROOT))
 import server
 from discovery.community import CommunityClient,CivitaiVerifier,SupabaseCommunityBackend,ContentProfile,CommunityError
 from discovery.cache import MetadataCache,ArtworkCache,ThumbnailCache
-from lab import fixtures
+from lab import fixtures,unprotect_capability
+config['capability']=unprotect_capability(config)
 
 def manager():
     req=urllib.request.Request(config['manager']+'/session',data=json.dumps({'index':config['index']}).encode(),

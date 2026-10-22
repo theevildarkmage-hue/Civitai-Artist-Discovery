@@ -68,10 +68,20 @@ async function upstream(url: string, token?: string): Promise<any> {
   return await readJSON(response,1048576);
 }
 async function rpc(name: string, args: unknown) {
-  const url=Deno.env.get('SUPABASE_URL'), key=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  const url=Deno.env.get('SUPABASE_URL');
+  const configured=Deno.env.get('SUPABASE_SECRET_KEYS');
+  let key:string|undefined,modern=false;
+  if(configured!==undefined) {
+    // Prefer platform-injected modern keys. Invalid configuration must not
+    // silently fall back to a different privileged credential.
+    let keys:any; try {keys=JSON.parse(configured);} catch {return fail('UNAVAILABLE');}
+    if(!keys || typeof keys!=='object' || Array.isArray(keys)
+       || typeof keys.default!=='string' || !/^sb_secret_[A-Za-z0-9_-]+$/.test(keys.default)) fail('UNAVAILABLE');
+    key=keys.default;modern=true;
+  } else key=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   if(!url || !key) fail('UNAVAILABLE');
   const r=await fetch(`${url}/rest/v1/rpc/${name}`, {method:'POST',redirect:'error',
-    signal:AbortSignal.timeout(8000),headers:{apikey:key!,Authorization:`Bearer ${key}`,
+    signal:AbortSignal.timeout(8000),headers:{apikey:key!,...(!modern?{Authorization:`Bearer ${key}`}:{ }),
     'Content-Type':'application/json'},body:JSON.stringify(args)});
   // PostgREST returns no representation for RETURNS void. A mock JSON null is
   // not equivalent to the real HTTP 204 response from the throttle RPC.

@@ -42,8 +42,6 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     password = secrets.token_urlsafe(32)
     role_passwords = {name: secrets.token_urlsafe(32) for name in ('anon', 'authenticated', 'service_role')}
-    pwfile = cluster / 'init-password'
-    pwfile.write_text(password, encoding='utf-8')
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
     database = 'cad3_security_' + secrets.token_hex(6)
@@ -81,8 +79,10 @@ def main():
     try:
         summary['version'] = require(command('psql', '--version'), 'Version check')
         require(command('initdb', '-D', str(cluster/'data'), '--username=cad3_admin',
-                        '--auth=scram-sha-256', '--pwfile='+str(pwfile), '--encoding=UTF8', '--locale=C'), 'initdb')
-        pwfile.unlink()
+                        '--auth=scram-sha-256', '--pwprompt', '--encoding=UTF8', '--locale=C',
+                        input=password+'\n'+password+'\n',
+                        child_env={**env, **({'OSTYPE':'msys'} if os.name=='nt' else {})}), 'initdb')
+        summary['plaintextCredentialFilesCreated'] = False
         config = cluster/'data/postgresql.conf'
         with config.open('a', encoding='utf-8') as stream:
             stream.write("\nlisten_addresses='127.0.0.1'\nport="+str(port)+
@@ -105,6 +105,17 @@ def main():
         assert bad.returncode != 0 and 'password authentication failed' in bad.stderr
         summary['wrongPasswordRejected'] = True
         migrations = sorted((ROOT/'supabase/migrations').glob('*.sql'))
+        # Rehearse the proposed all-or-nothing bootstrap in a second empty DB
+        # inside this same owned cluster. No persistent profile or host is used.
+        atomic_database=database+'_atomic'
+        require(sql(f'create database {atomic_database}; revoke connect on database {atomic_database} from public;'),'Atomic bootstrap database')
+        atomic_env={**env,'PGDATABASE':atomic_database}
+        require(sql('begin;\n'+'\n'.join(m.read_text() for m in migrations)+'\ncommit;',child_env=atomic_env),'Ordered atomic bootstrap')
+        inventory_sql=(ROOT/'supabase/tests/security_inventory.sql').read_text()
+        atomic_inventory=json.loads(require(sql(inventory_sql,child_env=atomic_env),'Atomic inventory'))
+        assert len(atomic_inventory['relations'])==5 and len(atomic_inventory['rpcs'])==7
+        assert all(t['rlsEnabled'] for t in atomic_inventory['relations'])
+        summary['orderedAtomicBootstrapPassed']=True
         summary['migrations'] = []
         for migration in migrations:
             if migration.name == '202610210001_community_rpc_guards.sql':
@@ -137,6 +148,11 @@ def main():
         plans=command('psql','-X','-v','ON_ERROR_STOP=1','-f',str(ROOT/'supabase/tests/query_plans.sql'))
         (output/'query-plans.log').write_text(require(plans,'Rolled-back synthetic query plans'),encoding='utf-8')
         summary['syntheticQueryPlansPassed']=True
+        inventory=require(command('psql','-X','-A','-t','-v','ON_ERROR_STOP=1','-f',str(ROOT/'supabase/tests/security_inventory.sql')),'Security inventory')
+        (output/'privilege-matrix.json').write_text(json.dumps(json.loads(inventory),indent=2),encoding='utf-8')
+        guard=migrations[-1]
+        require(command('psql','-X','-v','ON_ERROR_STOP=1','--single-transaction','-f',str(guard)),'Replay guard reapplication')
+        summary['replayGuardReapplied']=True
         save()
         for index in range(args.repeats):
             start = time.monotonic()
@@ -183,7 +199,6 @@ def main():
         summary['extensions'] = require(sql('select extname from pg_extension order by extname;'), 'Extensions').splitlines()
         summary['passed'] = True
     finally:
-        if pwfile.exists(): pwfile.unlink()
         if started or (cluster/'data/postmaster.pid').exists():
             stop = command('pg_ctl','-D',str(cluster/'data'),'-m','fast','-w','stop')
             summary['stoppedOwnedCluster'] = stop.returncode == 0

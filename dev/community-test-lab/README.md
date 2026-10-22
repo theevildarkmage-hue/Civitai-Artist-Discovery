@@ -8,7 +8,9 @@ validation commands](../../docs/3.0-local-community-service.md).
 `launch.py` is the single opt-in registration point around the normal development
 server. `scripts/dev-launcher.py --test-lab-connection <external file>` selects it.
 The external file is created by the owned native runner's `--manual-test-lab` option;
-it contains a localhost manager capability and must never enter source control.
+new registrations contain a Windows DPAPI-encrypted localhost manager capability
+and must never enter source control. Existing registrations are read without being
+rewritten. A usable OS protector is required; there is no plaintext write fallback.
 No production server, bundled static file or deployed Edge source imports this
 directory. The normal development launch omits the extension entirely.
 

@@ -84,7 +84,45 @@ def run():
           assert (public.community_quota({member})->>'used')::int=1;
         end $$;""")
         denied(f"select public.community_submit_once({member},'IsolatedTest',{images[36]},{seed+601},'{key}');",'INVALID_REQUEST')
+        denied(f"select public.community_submit_once({member},'IsolatedTest',{images[35]},{seed+601},'{key}');",'INVALID_REQUEST')
+        denied(f"select public.community_submit_once({member},'IsolatedTest',{images[35]},{member},'{key}');",'SELF_RECOMMENDATION')
+        for invalid in ('null',"''"):
+            denied(f"select public.community_submit_once({member},{invalid},{images[35]},{seed+600},'{key}');",'INVALID_REQUEST')
+        denied(f"select public.community_submit_once({member},'IsolatedTest',null,{seed+600},'{key}');",'INVALID_REQUEST')
+        denied(f"select public.community_submit_once({member},'IsolatedTest',{images[35]},null,'{key}');",'INVALID_REQUEST')
+        require(f"select public.community_submit_once({member},'RenamedVerifiedMember',{images[35]},{seed+600},'{key}');")
         require(f"select public.community_submit_once({members[19]},'OtherIdentity',{images[37]},{seed+602},'{key}');")
+
+        # Complete object/role denial, including non-row TRUNCATE, sequences,
+        # private operational records and every privileged RPC overload.
+        rpc_calls=(
+            f"community_quota({member})", 'community_gallery(null,24)',
+            f"community_submit({member},'Forged',{images[38]},{seed+603},false)",
+            f"community_submit_once({member},'Forged',{images[38]},{seed+603},'isolated-denied-key')",
+            f"community_withdraw({member},{images[35]})",f"community_moderate({images[35]},'hidden')",
+            "community_take_rate('isolated-denied')")
+        for role in ('anon','authenticated','service_role'):
+            for table in tables:
+                for statement in (f'select * from public.{table}', f'delete from public.{table}',
+                                  f'truncate public.{table} cascade'):
+                    denied(statement,'permission denied',role)
+            for statement in (
+                f"insert into public.community_members values({members[41]},'Forged')",
+                f"insert into public.community_recommendations(image_id,creator_id,member_id,week) values({images[38]},{seed+603},{member},date_trunc('week',clock_timestamp() at time zone 'UTC')::date)",
+                f"insert into public.community_audit(image_id,action) values({images[35]},'accepted')",
+                "insert into public.community_rate_buckets values('isolated-forged',clock_timestamp(),0)",
+                f"insert into public.community_submission_requests values({member},'isolated-forged-key',{images[35]})",
+                "update public.community_members set username='Forged'",
+                "update public.community_recommendations set status='active'",
+                "update public.community_audit set action='removed'",
+                "update public.community_rate_buckets set requests=0",
+                "update public.community_submission_requests set request_key='altered-request-key'",
+                "select nextval('public.community_recommendations_seq_seq')",
+                "select setval('public.community_audit_seq_seq',1)"):
+                denied(statement,'permission denied',role)
+            if role!='service_role':
+                for rpc_call in rpc_calls:denied('select public.'+rpc_call,'permission denied',role)
+        print('PASS: complete direct-role table/sequence/RPC denials; altered uploader/self/null replay rejected; rename replay preserved',flush=True)
 
         # Actual role execution, not only has_*_privilege introspection.
         for role in ('anon','authenticated'):
@@ -122,6 +160,10 @@ def run():
         for zone in ('Pacific/Kiritimati','America/Los_Angeles','UTC'):
             output=require(f"set time zone '{zone}'; select 'UTC_WEEK='||(public.community_quota({member})->>'week');")
             assert 'UTC_WEEK='+expected_week in output
+        require("""do $$ begin
+          assert date_trunc('week','2026-10-18 23:59:59.999999+00'::timestamptz at time zone 'UTC')::date='2026-10-12'::date;
+          assert date_trunc('week','2026-10-19 00:00:00+00'::timestamptz at time zone 'UTC')::date='2026-10-19'::date;
+        end $$;""")
         require(f"""insert into public.community_recommendations(image_id,creator_id,member_id,submitted_at,week)
           select image,{seed+700},{member},(date_trunc('week',clock_timestamp() at time zone 'UTC')-interval '7 days') at time zone 'UTC',
             (date_trunc('week',clock_timestamp() at time zone 'UTC')-interval '7 days')::date
