@@ -9,7 +9,7 @@ globalThis.fetch = async (url, options={}) => {
   const response=(data,status=200)=>new Response(JSON.stringify(data),{status});
   if(url.includes('/rest/v1/rpc/')) {
     const name=url.split('/').at(-1), args=JSON.parse(options.body);
-    if(name==='community_take_rate') return fault==='rate-limited' ? response({message:'RATE_LIMITED'},400) : response(null);
+    if(name==='community_take_rate') return fault==='rate-limited' ? response({message:'RATE_LIMITED'},400) : new Response(null,{status:204});
     if(name==='community_quota') return response({used:0,remaining:3,limit:3});
     if(name==='community_submit' || name==='community_submit_once') {
       assert.equal(args.p_member,fault==='second-member'?8:7);assert.equal(args.p_creator,42);assert.equal(args.p_image,123);

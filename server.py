@@ -1274,7 +1274,8 @@ class Handler(BaseHTTPRequestHandler):
             operation = parsed.path.rsplit("/", 1)[-1]
             if operation not in ("status", "gallery",'detail'):
                 self.json_response({"error": "Unknown community operation"}, 404); return
-            payload = {"cursor": query.get("cursor", [None])[0], 'refresh':query.get('refresh',['0'])[0]=='1'}
+            payload = {'refresh':query.get('refresh',['0'])[0]=='1'}
+            if operation=='gallery':payload['cursor']=query.get('cursor',[None])[0]
             if operation=='detail':payload={'artwork':query.get('id',[None])[0]}
             self.community_response(operation, payload); return
         if parsed.path == "/community-fixture.svg":
