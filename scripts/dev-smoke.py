@@ -157,7 +157,7 @@ def main():
             page.screenshot(path=str(output/'community-mobile-card.png'))
             page.locator('#tabDiscovery').click();page.locator('#discoveryBody').wait_for(state='visible')
             result['liveChecks']['profile']={'cachedProfileVisible':True,'fullSynchronizationStarted':False}
-            panel=page.locator('#developmentDiagnostics');panel.locator('summary').click()
+            panel=page.locator('#developmentDiagnostics');panel.locator(':scope > summary').click()
             page.locator('#developmentDiagnosticsOutput').filter(has_text='gitCommit').wait_for()
             page.locator('#runDevelopmentDiagnostics').click()
             page.locator('#developmentDiagnosticsStatus').filter(has_text='Diagnostics complete').wait_for(timeout=15000)
