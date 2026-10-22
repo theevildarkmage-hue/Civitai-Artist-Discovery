@@ -37,6 +37,16 @@ def read_json(url):
     with urllib.request.build_opener(NoRedirect()).open(url,timeout=5) as response:return json.load(response)
 
 
+def development_environment(data):
+    """Direct Python and PowerShell starts select the same preserved local ledger."""
+    env={**os.environ,'CIVITAI_HISTORY_DATA_DIR':str(data),'CAD_DEVELOPMENT':'1',
+         'CAD_COMMUNITY_TESTING':'0','CAD_COMMUNITY_MODE':os.environ.get('CAD_COMMUNITY_MODE') or 'fixture'}
+    sample=Path(data)/'sample.json'
+    if env['CAD_COMMUNITY_MODE']=='fixture' and not env.get('CAD_COMMUNITY_SAMPLE') and sample.is_file():
+        env['CAD_COMMUNITY_SAMPLE']=str(sample)
+    return env
+
+
 def owned_instance(data,port,*,listeners=None):
     if listeners is None:
         listeners=powershell(f"@(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object LocalPort -eq {port} | Select-Object LocalAddress,OwningProcess) | ConvertTo-Json -Compress") or []
@@ -105,7 +115,7 @@ def main():
         if type(pid) is not int or pid<=0:raise RuntimeError('Invalid existing instance record; inspect it before starting another copy.')
         if powershell(f'Get-CimInstance Win32_Process -Filter "ProcessId={pid}" | Select-Object ProcessId | ConvertTo-Json -Compress'):
             raise RuntimeError('This profile records another active process/port. Inspect its instance record; no competing copy was started.')
-    env={**os.environ,'CIVITAI_HISTORY_DATA_DIR':str(data),'CAD_DEVELOPMENT':'1','CAD_COMMUNITY_TESTING':'0'}
+    env=development_environment(data)
     env['PYTHONPATH']=os.pathsep.join(filter(None,(str(private/'Lib/site-packages'),env.get('PYTHONPATH'))))
     logs=Path(tempfile.mkdtemp(prefix='cad3-development-'))
     with (logs/'startup.log').open('w',encoding='utf-8') as output:

@@ -2,6 +2,7 @@
 import test_safety
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +12,19 @@ launcher=importlib.util.module_from_spec(spec);spec.loader.exec_module(launcher)
 
 
 class DevelopmentLauncher(unittest.TestCase):
+    def test_direct_start_keeps_existing_community_mode_and_public_sample(self):
+        with tempfile.TemporaryDirectory(prefix='cad3-launcher-config-') as temporary:
+            data=Path(temporary);sample=data/'sample.json';sample.write_text('{}')
+            with patch.dict(os.environ,{},clear=True):
+                env=launcher.development_environment(data)
+                self.assertEqual(env['CAD_COMMUNITY_MODE'],'fixture')
+                self.assertEqual(env['CAD_COMMUNITY_SAMPLE'],str(sample))
+                self.assertEqual(env['CAD_COMMUNITY_TESTING'],'0')
+            with patch.dict(os.environ,{'CAD_COMMUNITY_MODE':'offline'},clear=True):
+                env=launcher.development_environment(data)
+                self.assertEqual(env['CAD_COMMUNITY_MODE'],'offline')
+                self.assertNotIn('CAD_COMMUNITY_SAMPLE',env)
+
     def test_exact_source_ownership(self):
         root=test_safety.ROOT
         self.assertTrue(launcher.owns_process({'ExecutablePath':'C:\\Python314\\python.exe','CommandLine':f'python "{root / "server.py"}" --port 8907'}))
