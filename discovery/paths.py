@@ -29,6 +29,8 @@ def data_root() -> Path:
     override = os.environ.get(DATA_DIR_ENV)
     if override:
         return Path(override)
+    if getattr(sys,'frozen',False):
+        return application_root() / 'data'
     selection=application_root()/'.data-directory-3.0.json'
     if selection.exists():
         value=json.loads(selection.read_text(encoding='utf-8'))['directory']

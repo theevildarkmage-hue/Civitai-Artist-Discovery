@@ -16,12 +16,15 @@ const messages: Record<string, string> = {
   UNAVAILABLE:"The community service is temporarily unavailable. Your personal galleries still work.",
   RATE_LIMITED:"Please wait a moment before trying again.",
   FORBIDDEN:"This community operation is not allowed.", INVALID_REQUEST:"Please check the request and try again.",
+  BETA_DISABLED:"Community Beta is temporarily disabled. Your personal galleries still work.",
+  CONTENT_FILTERED:"This artwork is outside the Community Beta content policy.",
+  READ_ONLY:"Community Beta is read-only. Please try submitting again later.",
 };
 class Failure extends Error { constructor(public code: string) { super(code); } }
 const fail = (code: string): never => { throw new Failure(code); };
 const status = (code: string) => ({AUTH_REQUIRED:401, AUTH_EXPIRED:401, FORBIDDEN:403,
   SELF_RECOMMENDATION:403, DUPLICATE:409, MEMBER_QUOTA:409, ARTIST_QUOTA:409,
-  UNAVAILABLE:503, RATE_LIMITED:429}[code] ?? 400);
+  UNAVAILABLE:503, RATE_LIMITED:429, BETA_DISABLED:503, READ_ONLY:403, CONTENT_FILTERED:403}[code] ?? 400);
 const reply = (body: unknown, code=200) => new Response(JSON.stringify(body), {
   status:code, headers:{'Content-Type':'application/json','Cache-Control':'no-store'},
 });
@@ -122,6 +125,9 @@ async function artwork(image: number, token: string): Promise<number> {
   if(![1,2,4,8,16].includes(item.browsingLevel) || detail.nsfwLevel!==item.browsingLevel) fail('INVALID_ARTWORK');
   let media: URL; try {media=new URL(item.url);} catch {return fail('INVALID_ARTWORK');}
   if(media.protocol!=='https:' || media.hostname!=='image.civitai.com' || media.port || media.username || media.password) fail('INVALID_ARTWORK');
+  const allowed=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??'1,2').split(',').map(Number);
+  if(!allowed.length || allowed.some(n=>![1,2,4,8,16].includes(n))) fail('UNAVAILABLE');
+  if(!allowed.includes(item.browsingLevel)) fail('CONTENT_FILTERED');
   return creator!;
 }
 
@@ -164,10 +170,17 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     const fields=body.operation==='recommend'?['artwork','idempotencyKey']:
       ['verify','withdraw'].includes(body.operation)?['artwork']:body.operation==='gallery'?['cursor','limit']:[];
     if(keys.some(k=>!['apiVersion','operation',...fields].includes(k))) fail('INVALID_REQUEST');
+    // Server-owned configuration, read for every authenticated operation. Missing
+    // or malformed state is disabled; clients cannot override it. Secret changes
+    // disable submissions without an application release (propagation tested in staging).
+    const state=Deno.env.get('COMMUNITY_BETA_STATE');
+    const policy={available:state==='enabled'||state==='read_only',submissions:state==='enabled'};
+    if(body.operation!=='status' && !policy.available) fail('BETA_DISABLED');
+    if(['recommend','verify','withdraw'].includes(body.operation) && !policy.submissions) fail('READ_ONLY');
     let result:any;
     switch(body.operation) {
       case 'status': result={apiVersion:1,member:{id:memberId,username},
-        quota:await rpc('community_quota',{p_member:memberId}),development:false}; break;
+        quota:await rpc('community_quota',{p_member:memberId}),development:false,beta:policy}; break;
       case 'gallery': result=await rpc('community_gallery',{p_cursor:body.cursor==null?null:id(body.cursor),p_limit:body.limit??24}); break;
       case 'verify': case 'recommend': {
         const image=artworkInput(body.artwork), creator=await artwork(image,token);

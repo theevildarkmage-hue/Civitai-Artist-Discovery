@@ -134,6 +134,9 @@ def main():
             CAD_TEST_DATABASE_URL=f'postgresql://cad3_admin@127.0.0.1:{port}/{database}',
             CAD_TEST_PG_SYSTEM_IDENTIFIER=summary['systemIdentifier'], CAD_TEST_PG_DATA_DIR=str(cluster/'data'),
             CAD_TEST_PG_ROLE_PASSWORDS=json.dumps(role_passwords))
+        plans=command('psql','-X','-v','ON_ERROR_STOP=1','-f',str(ROOT/'supabase/tests/query_plans.sql'))
+        (output/'query-plans.log').write_text(require(plans,'Rolled-back synthetic query plans'),encoding='utf-8')
+        summary['syntheticQueryPlansPassed']=True
         save()
         for index in range(args.repeats):
             start = time.monotonic()

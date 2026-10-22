@@ -22,6 +22,8 @@ import urllib.parse
 import urllib.request
 
 MESSAGES = {
+    "BETA_DISABLED": "Community Beta is temporarily disabled.",
+    "READ_ONLY": "Community Beta is read-only. Please try again later.",
     "INVALID_ARTWORK": "Artwork unavailable or ineligible. Use a public Civitai image URL or numeric image ID; check that it opens on Civitai.",
     "UNVERIFIED_OWNER": "We couldn't verify this artwork's creator with Civitai. Please try another link.",
     "SELF_RECOMMENDATION": "You can't recommend your own artwork. Let's spotlight someone else!",
@@ -301,69 +303,14 @@ class CivitaiVerifier:
                        tuple(t["name"].casefold() for t in tags), tuple(t["id"] for t in tags))
 
 
-class FixtureVerifier:
-    """Explicit synthetic universe. Never accepts real OAuth credentials."""
-    def __init__(self, *, development=False, manifest=None):
-        if not development:
-            raise RuntimeError("Fixture identity verification requires explicit development mode")
-        self.members = {f"fixture:{n}": Member(n, f"DemoMember{n:02d}") for n in range(1, 11)}
-        self.artworks = {n: Artwork(n, 101 + (n - 1001) // 5, f"DemoArtist{1 + (n - 1001) // 5}",
-                                   (1, 2, 4, 8, 16)[(n - 1001) % 5],
-                                   f"/community-fixture.svg?id={n}",
-                                   ("landscape",) if n % 2 else ("portrait",), (11,) if n % 2 else (12,))
-                         for n in range(1001, 1061)}
-        self.artworks[1099] = Artwork(1099, 1, "DemoMember1", 1, "/community-fixture.svg?id=1099")
-        self.failure = None
-        self.artwork_failures = {}
-        self.hidden = {}
-        self.removed = set()
-        self.expire_during_artwork = False
-        self.manifest = manifest
-        if manifest:
-            if manifest.get('developmentOnly') is not True or manifest.get('schemaVersion') != 1:
-                raise RuntimeError('Invalid development metadata manifest')
-            for row in manifest['artworks']:
-                image = positive_id(row['id'])
-                source = row.get('sourcePreview')
-                preview = ''
-                if source:
-                    try:
-                        from .cache import thumbnail_source
-                        preview = thumbnail_source(source)
-                    except ValueError:pass
-                self.artworks[image] = Artwork(image, positive_id(row['creatorId']), row['username'],
-                    row['browsingLevel'], preview,
-                    tuple(t['name'].casefold() for t in row.get('tags', [])),
-                    tuple(t['id'] for t in row.get('tags', []) if t.get('id')),
-                    row.get('tagsComplete') is True or (row.get('source')=='reaction-metadata' and len(row.get('tags',[]))<30),
-                    row.get('ownerEvidence')!='explicit-simulated-owner')
-            for row in manifest.get('negativeCases', []):
-                self.artwork_failures[row['id']] = ('UNVERIFIED_OWNER' if row['state'] in
-                    ('missing_creator', 'unverified_owner') else 'INVALID_ARTWORK')
-        self.initial_artworks = dict(self.artworks)
-        self.initial_failures = dict(self.artwork_failures)
-
-    def _check(self):
-        if self.failure:
-            raise CommunityError(self.failure, {"AUTH_EXPIRED": 401, "RATE_LIMITED": 429}.get(self.failure, 503))
-
-    def member(self, token):
-        self._check()
-        if token not in self.members:
-            raise CommunityError("AUTH_EXPIRED", 401)
-        return self.members[token]
-
-    def artwork(self, image_id):
-        self._check()
-        if hasattr(self, 'live_verifier'):
-            return self.live_verifier.artwork(image_id)
-        if self.expire_during_artwork:
-            raise CommunityError('AUTH_EXPIRED', 401)
-        if image_id in self.artwork_failures:
-            raise CommunityError(self.artwork_failures[image_id], 400)
-        if image_id not in self.artworks:
-            raise CommunityError("INVALID_ARTWORK", 404)
-        return self.artworks[image_id]
+# Frozen packages exclude the development implementation and its member fixtures.
+import sys
+if not getattr(sys,'frozen',False):
+    from .community_fixtures import FixtureVerifier
+else:
+    class FixtureVerifier:
+        def __init__(self,*args,**kwargs):
+            raise RuntimeError('Fixture identities are excluded from production')
 
 
 class RateLimiter:
@@ -693,6 +640,10 @@ class CommunityClient:
 
 def build_community(data_root, profile_provider, token_provider):
     mode = os.environ.get("CAD_COMMUNITY_MODE", "local")
+    if getattr(sys,'frozen',False):
+        if mode=='fixture':raise RuntimeError('Fixture community is excluded from production')
+        from .community_beta import BETA_ENDPOINT
+        mode='supabase' if BETA_ENDPOINT else 'offline'
     fixture = mode == "fixture"
     if fixture and (os.environ.get("CAD_DEVELOPMENT") != "1" or getattr(__import__('sys'),'frozen',False)):
         raise RuntimeError("Fixture community requires CAD_DEVELOPMENT=1")
@@ -710,7 +661,8 @@ def build_community(data_root, profile_provider, token_provider):
         verifier.artworks={image:art for image,art in verifier.artworks.items() if image in real_ids}
         verifier.live_verifier=CivitaiVerifier(token_provider=token_provider)
     if mode == "supabase":
-        backend = SupabaseCommunityBackend(os.environ.get("CAD_COMMUNITY_URL"))
+        from .community_beta import BETA_ENDPOINT
+        backend = SupabaseCommunityBackend(BETA_ENDPOINT if getattr(sys,'frozen',False) else os.environ.get("CAD_COMMUNITY_URL"))
     else:
         backend = LocalCommunityBackend(Path(data_root) / "community" / ("fixtures.sqlite3" if fixture else "local.sqlite3"), verifier)
         if fixture:

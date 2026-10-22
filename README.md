@@ -1,5 +1,10 @@
 # Civitai Artist Discovery
 
+Community Beta release preparation is local and default-off. See the
+[readiness matrix, update channels and operating model](docs/3.0-beta-readiness.md)
+and the [unexecuted staging/rollback runbook](docs/3.0-staging-runbook.md).
+No shared Community service or public beta rollout is deployed.
+
 ## 3.0.0-dev — isolated Community Gallery development
 
 This clone's `3.0` branch adds an optional Community Gallery with a local SQLite

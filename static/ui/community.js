@@ -8,6 +8,7 @@ const post = (artwork, idempotencyKey) => api('/api/community/recommend', {metho
 export function mountCommunity() {
   const tab = document.createElement('button');
   tab.id = 'tabCommunity'; tab.textContent = 'Community Gallery'; tab.setAttribute('aria-pressed', 'false');
+  tab.hidden = true;tab.classList.add('hidden');
   document.getElementById('tabDiscovery').after(tab);
   const section = document.createElement('section'); section.id = 'community'; section.className = 'discovery hidden';
   section.innerHTML = `<div class="community-heading"><h2>Community Gallery</h2><div class="community-tools"><button id="communityRecommend" type="button" class="primary-button" aria-haspopup="dialog">Recommend Art</button><button id="communityRefresh" type="button">Refresh</button><span id="communityQuota" role="status"></span></div></div><p id="communityMessage" class="discovery-message" role="status" aria-live="polite"></p><div id="communityGrid" class="gallery"></div><div id="communitySentinel" class="load-sentinel"></div><details id="communityDiagnostics" class="community-diagnostics hidden"><summary>Development diagnostics</summary><p id="communityMode"></p><div id="communityMemberHost"></div><p id="communityCounts"></p></details>`;
@@ -18,6 +19,25 @@ export function mountCommunity() {
   document.body.append(dialog);
   bindDialog(dialog, {labelledBy:'communityDialogTitle', closeButtons:[dialog.querySelector('#communityCancel')]});
   const el = id => document.getElementById(id);
+  let productionBeta=false, submissions=true;
+  function applyPolicy(status) {
+    if(!productionBeta)return;
+    submissions=status?.beta?.submissions===true && status?.cache?.state!=='stale';
+    el('communityRecommend').disabled=!submissions;
+    if(!submissions)message('Community Beta is read-only. Your personal galleries still work.');
+  }
+  async function configureBeta() {
+    const beta=await api('/api/community/beta');productionBeta=beta.production===true;
+    tab.hidden=productionBeta&&!beta.enabled;tab.classList.toggle('hidden',tab.hidden);
+    if(!productionBeta)return;
+    tab.textContent='Community Beta';submissions=false;el('communityRecommend').disabled=true;
+    const label=document.createElement('label');label.className='community-rules';
+    const check=document.createElement('input');check.type='checkbox';check.checked=beta.optedIn;check.disabled=!beta.available;
+    label.append(check,document.createTextNode(beta.available?' Opt in to Community Beta':' Community Beta is not available yet.'));
+    document.getElementById('discovery').append(label);
+    check.onchange=async()=>{check.disabled=true;try{const result=await api('/api/community/beta',{method:'POST',body:JSON.stringify({optedIn:check.checked})});tab.hidden=!result.enabled;tab.classList.toggle('hidden',tab.hidden);if(!result.enabled){invalidate();document.getElementById('tabGallery').click();}}catch(error){check.checked=!check.checked;}finally{check.disabled=false;}};
+  }
+  configureBeta().catch(()=>{tab.hidden=true;tab.classList.add('hidden');});
   const message = value => { el('communityMessage').setAttribute('role','status'); el('communityMessage').textContent = value; };
   let cursor = null, generation = 0, busy = false, draftVersion = 0, requestKey = null, requestValue = null;
   const quota = value => { if (value) {
@@ -84,6 +104,7 @@ export function mountCommunity() {
         const status = await api(`/api/community/status${refreshPage ? '?refresh=1' : ''}`, {signal});
         if (id !== generation || signal.aborted) return;
         quota(status.quota);
+        applyPolicy(status);
         viewSession = status.viewSession || null;
         if (el('communityMember')) el('communityMember').value = String(status.member.id);
         el('communityMode').textContent = status.development
@@ -117,10 +138,11 @@ export function mountCommunity() {
       const status = await api('/api/community/status');
       if (id !== generation || section.classList.contains('hidden')) return;
       quota(status.quota);
+      applyPolicy(status);
       // A restarted server has a new volatile artwork admission list. Refresh the
       // projection then; ordinary tab switches still keep their pages and scroll.
       if (viewSession && status.viewSession && viewSession !== status.viewSession) return load();
-    } catch (error) { if (id === generation) message(error.message); }
+    } catch (error) { applyPolicy(null);if (id === generation) message(error.message); }
   }
   function deactivate() {
     ++generation; clearTimeout(metadataTimer); pages.pause();
@@ -130,7 +152,7 @@ export function mountCommunity() {
     ++draftVersion; clearCards(); dialog.close();
   }
   function recommend(value = '') {
-    if (busy || !authorized) return;
+    if (busy || !authorized || (productionBeta&&!submissions)) return;
     ++draftVersion;
     el('communityLink').value = String(value);
     el('communityDialogMessage').textContent = '';
@@ -206,4 +228,5 @@ export function mountCommunity() {
   });
   window.addEventListener('content-controls-changing', invalidate);
   window.CivitaiCommunity = Object.freeze({load, recommend, activate, deactivate});
+  setInterval(()=>{if(productionBeta&&authorized&&!section.classList.contains('hidden'))activate();},60000);
 }
