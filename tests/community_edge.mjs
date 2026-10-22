@@ -2,7 +2,7 @@
 // Executes the real Edge handler with isolated upstream/DB transport fixtures.
 import assert from 'node:assert/strict';
 let handler, fault = '', calls = [], commits = [];
-globalThis.Deno = {env:{get:n=>({SUPABASE_URL:'https://test.supabase.co',SUPABASE_SERVICE_ROLE_KEY:'synthetic-server-only'}[n])},
+globalThis.Deno = {env:{get:n=>({SUPABASE_URL:'https://test.supabase.co',COMMUNITY_BETA_STATE:'enabled',COMMUNITY_ALLOWED_RATINGS:'1,2,4,8,16',SUPABASE_SERVICE_ROLE_KEY:'synthetic-server-only'}[n])},
   serve:fn=>{handler=fn;}};
 globalThis.fetch = async (url, options={}) => {
   calls.push({url, options});

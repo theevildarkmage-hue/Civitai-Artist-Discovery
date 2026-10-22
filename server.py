@@ -153,7 +153,7 @@ def community_detail_metadata(client, artwork):
     if store:
         detail = store.detail(image_id)
     else:
-        from discovery.community_dev import test_identity
+        from discovery.community_security import test_identity
         if test_identity(DATA_ROOT):
             return {}  # No outbound request or fabricated generation metadata in fixtures.
         key = f'{client.mode}:detail:{image_id}'
@@ -1187,10 +1187,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(403); return
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
+        if getattr(sys,'frozen',False) and (parsed.path.startswith(('/__dev/','/api/community/development/')) or parsed.path in ('/api/test-isolation','/community-fixture.svg')):
+            self.send_error(404);return
+        if parsed.path=='/api/community/beta':
+            from discovery.community_beta import configuration
+            self.json_response(configuration(DATA_ROOT));return
         if parsed.path == '/api/development/diagnostics':
             if not development_diagnostics_enabled() or self.client_address[0] not in ('127.0.0.1','::1'):
                 self.send_error(404);return
-            from discovery.community_dev import authorize_test
+            from discovery.community_security import authorize_test
             from discovery.dev_diagnostics import snapshot
             try:
                 authorize_test(self.headers,DATA_ROOT)
@@ -1259,13 +1264,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:self.send_error(503)
             return
         if parsed.path == '/api/test-isolation':
-            from discovery.community_dev import test_identity
+            from discovery.community_security import test_identity
             identity = test_identity(DATA_ROOT)
             if identity: self.json_response(identity)
             else: self.send_error(404)
             return
         if parsed.path == "/api/community/config":
-            from discovery.community_dev import fixture_enabled
+            from discovery.community_beta import configuration
+            beta=configuration(DATA_ROOT)
+            if beta['production']:
+                self.json_response({'apiVersion':1,'development':False,'members':[],'beta':beta});return
+            from discovery.community_security import fixture_enabled
             development = fixture_enabled()
             members = community_client().verifier.members.values() if development else []
             self.json_response({"apiVersion": 1, "development": development,
@@ -1744,6 +1753,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def community_response(self, operation, payload):
         try:
+            from discovery.community_beta import require_enabled
+            require_enabled(DATA_ROOT)
             self.require_community_session()
             # Isolated development is loopback-only, even if a forged setting enables LAN.
             if self.client_address[0] not in ("127.0.0.1", "::1"):
@@ -1751,7 +1762,7 @@ class Handler(BaseHTTPRequestHandler):
             if os.environ.get("CAD_COMMUNITY_MODE") == "offline":
                 raise CommunityError("UNAVAILABLE", 503)
             client = community_client()
-            from discovery.community_dev import fixture_enabled
+            from discovery.community_security import fixture_enabled
             token = None
             if fixture_enabled():
                 cookie = SimpleCookie(); cookie.load(self.headers.get('Cookie', ''))
@@ -1778,7 +1789,7 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response(CommunityError("UNAVAILABLE", 503).response(), 503)
 
     def community_viewer(self, token):
-        from discovery.community_dev import test_identity
+        from discovery.community_security import test_identity
         # Callers have already required the nonce or real OAuth session.
         if test_identity(DATA_ROOT):
             return ('isolated', token)
@@ -1807,7 +1818,7 @@ class Handler(BaseHTTPRequestHandler):
         return collected_image(image_id) or self.community_artwork(image_id) is not None
 
     def request_json(self) -> dict:
-        from discovery.community_dev import authorize_test
+        from discovery.community_security import authorize_test
         authorize_test(self.headers, DATA_ROOT)
         origin = self.headers.get("Origin")
         if origin:
@@ -1829,7 +1840,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def require_community_session(self):
         """Normal OAuth, or an explicitly challenged isolated automation process."""
-        from discovery.community_dev import test_identity,authorize_test
+        from discovery.community_security import test_identity,authorize_test
         if test_identity(DATA_ROOT):
             try:authorize_test(self.headers,DATA_ROOT)
             except PermissionError:raise CommunityError('AUTH_REQUIRED',401) from None
@@ -1849,9 +1860,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         try:
             body = self.request_json()
+            if getattr(sys,'frozen',False) and parsed.path.startswith(('/__dev/','/api/community/development/')):
+                self.send_error(404);return
+            if parsed.path=='/api/community/beta':
+                from discovery.community_beta import opt_in
+                self.json_response(opt_in(DATA_ROOT,body.get('optedIn')));return
             if parsed.path.startswith('/api/community/'):self.require_community_session()
             if parsed.path == '/api/community/development/member':
-                from discovery.community_dev import fixture_enabled
+                from discovery.community_security import fixture_enabled
                 if not fixture_enabled() or self.client_address[0] != '127.0.0.1':
                     self.json_response(CommunityError('FORBIDDEN', 403).response(), 403); return
                 value = body.get('member')
@@ -1861,7 +1877,7 @@ class Handler(BaseHTTPRequestHandler):
                     'Set-Cookie': f'cad_fixture_member={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000'})
                 return
             if parsed.path == '/api/community/development/control':
-                from discovery.community_dev import control, test_identity
+                from discovery.community_security import control, test_identity
                 if not test_identity(DATA_ROOT) or self.client_address[0] != '127.0.0.1':
                     self.json_response(CommunityError('FORBIDDEN', 403).response(), 403); return
                 try: self.json_response(control(community_client(), body))
@@ -2298,7 +2314,7 @@ def main() -> None:
     parser.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--replacing", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    from discovery.community_dev import disable_test_outbound
+    from discovery.community_security import disable_test_outbound
     disable_test_outbound(DATA_ROOT)
     allow_lan_access = SETTINGS.load()["allowLanAccess"]
     bind_host = args.host or "127.0.0.1"

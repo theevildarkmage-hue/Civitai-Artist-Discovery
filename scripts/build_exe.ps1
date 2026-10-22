@@ -1,8 +1,9 @@
 # Builds the portable folder application. A self-extracting one-file build would write its
 # runtime to the system temporary folder, contrary to the portable-only storage model.
-param([switch]$OneFile, [string]$OutputRoot)
+param([switch]$OneFile, [string]$OutputRoot, [string]$PythonExecutable = 'python')
 
 $ErrorActionPreference = 'Stop'
+Set-Alias -Name python -Value $PythonExecutable -Scope Script
 if ($OneFile) { throw 'Portable releases use the folder build; -OneFile is no longer supported.' }
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
@@ -29,6 +30,7 @@ try {
   python (Join-Path $root 'scripts/check-test-lab-exclusion.py')
   if ($LASTEXITCODE) { throw 'Development Test Lab must be excluded from release inputs' }
   python -m PyInstaller --noconfirm --clean --onedir --windowed --noupx `
+    --exclude-module discovery.community_dev --exclude-module discovery.community_fixtures `
     --name CivitaiArtistDiscovery `
     --icon (Join-Path $root 'static/app.ico') `
     --version-file (Join-Path $root 'build/version_info.txt') `
@@ -47,8 +49,8 @@ try {
   Copy-Item (Join-Path $pillowInfo.FullName 'licenses\LICENSE') (Join-Path $licenses 'Pillow-LICENSE.txt')
   $pythonLicense = python -c "import pathlib, sys; print(pathlib.Path(sys.base_prefix) / 'LICENSE.txt')"
   Copy-Item -LiteralPath $pythonLicense -Destination (Join-Path $licenses 'Python-LICENSE.txt')
-  $installerInfo = Get-ChildItem $pillowSite -Directory -Filter 'pyinstaller-*.dist-info' | Select-Object -First 1
-  Copy-Item -LiteralPath (Join-Path $installerInfo.FullName 'licenses\COPYING.txt') -Destination (Join-Path $licenses 'PyInstaller-COPYING.txt')
+  $installerInfo = python -c "from importlib.metadata import distribution; print(distribution('pyinstaller')._path)"
+  Copy-Item -LiteralPath (Join-Path $installerInfo 'licenses\COPYING.txt') -Destination (Join-Path $licenses 'PyInstaller-COPYING.txt')
   Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $package 'LICENSE.txt')
   Copy-Item (Join-Path $root 'THIRD_PARTY_NOTICES.md') $package
   Write-Host "Built: $package\CivitaiArtistDiscovery.exe"

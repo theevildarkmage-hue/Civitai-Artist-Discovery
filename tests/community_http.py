@@ -121,11 +121,11 @@ else:
             'PGPASSWORD':rest_password,'PGRST_DB_SCHEMAS':'public','PGRST_DB_ANON_ROLE':'anon',
             'PGRST_JWT_SECRET':secret,'PGRST_SERVER_HOST':'127.0.0.1','PGRST_SERVER_PORT':str(rest_port),
             'PGRST_DB_POOL':'4','PGRST_DB_POOL_ACQUISITION_TIMEOUT':'1','PGRST_LOG_LEVEL':'crit'})
-    def start_edge(live=False):
+    def start_edge(live=False,state='enabled'):
         return launch('deno',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
-            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS',
             '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
-            'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,
+            'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2,4,8,16',
             'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(edge_port),
             'CAD_TEST_LIVE_READONLY':'1' if live else '0',
             'DENO_NO_UPDATE_CHECK':'1','DENO_DIR':str(scratch/'deno-cache')})
@@ -162,6 +162,15 @@ else:
             with urllib.request.urlopen(req,timeout=10) as response:
                 print(json.dumps({'rateRpcStatus':response.status,'rateRpcBodyBytes':len(response.read()),'handlerStatus':initial[0]}),flush=True)
         assert initial[0]==200,initial
+        before_policy=counts()
+        for state in ('read_only','disabled'):
+            edge_process.terminate();edge_process.wait(timeout=10);edge_process=start_edge(state=state);wait(edge,edge_process)
+            status,value=call(n=950);assert status==200 and value['beta']['submissions'] is False
+            assert call('gallery',n=950)[0]==(200 if state=='read_only' else 503)
+            assert call('recommend',n=950,artwork=seed+10000)[1]['code']==('READ_ONLY' if state=='read_only' else 'BETA_DISABLED')
+            assert counts()==before_policy
+        edge_process.terminate();edge_process.wait(timeout=10);edge_process=start_edge();wait(edge,edge_process)
+        scenarios.append({'scenario':'real-http-policy-changes','states':['read_only','disabled','enabled'],'persisted':0})
         # No Civitai credential or identity assertion is accepted from the caller.
         for auth in (None,'Basic invalid','Bearer invalid','Bearer '+member(0,expired=True)):
             status,value=request(edge,{'apiVersion':1,'operation':'status'},auth=auth)

@@ -21,7 +21,7 @@ const signatures={community_take_rate:['p_key'],community_quota:['p_member'],
   community_submit_once:['p_member','p_name','p_image','p_creator','p_key']};
 let handler, mode='', rpcCalls=0;
 globalThis.Deno={env:{get:name=>({SUPABASE_URL:'https://isolated.invalid',
-  SUPABASE_SERVICE_ROLE_KEY:'synthetic-adapter-key'}[name])},serve:fn=>{handler=fn;}};
+  COMMUNITY_BETA_STATE:'enabled',COMMUNITY_ALLOWED_RATINGS:'1,2,4,8,16',SUPABASE_SERVICE_ROLE_KEY:'synthetic-adapter-key'}[name])},serve:fn=>{handler=fn;}};
 globalThis.fetch=async(url,options={})=>{
   const reply=(data,status=200)=>new Response(JSON.stringify(data),{status});
   if(url.startsWith('https://isolated.invalid/rest/v1/rpc/')) {
