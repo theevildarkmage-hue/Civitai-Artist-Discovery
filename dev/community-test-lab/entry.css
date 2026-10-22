@@ -1,0 +1,9 @@
+/* Served only by the optional development wrapper; production CSP stays intact. */
+#communityTestLab button, #communityTestLab input, #communityTestLab select {
+  font:inherit; min-height:32px; padding:6px 10px; border:1px solid var(--line);
+  border-radius:var(--radius-sm,8px); background:var(--surface-raised); color:var(--text);
+}
+#communityTestLab button { cursor:pointer; }
+#communityTestLab form { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:12px 0; }
+#communityTestLab form pre { flex:1 0 100%; margin:0; overflow-wrap:anywhere; }
+#communityTestLab > button { margin-right:8px; }

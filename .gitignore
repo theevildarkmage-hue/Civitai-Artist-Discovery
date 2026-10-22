@@ -114,3 +114,14 @@ data_*/
 # Local commit gate; install explicitly with the documented local Git configuration.
 !.githooks/
 !.githooks/pre-commit
+
+# Removable, unpackaged Community Test Lab. Public metadata only; no keys/state.
+!dev/
+dev/*
+!dev/community-test-lab/
+dev/community-test-lab/*
+!dev/community-test-lab/*.py
+!dev/community-test-lab/*.js
+!dev/community-test-lab/*.css
+!dev/community-test-lab/README.md
+!dev/community-test-lab/public-fixtures.json

@@ -36,6 +36,11 @@ checklist, see [local development readiness](docs/3.0-local-readiness.md).
 
 See [the ten-member integration and stress workflow](docs/3.0-community-testing.md) for metadata sampling, shared-control regression tests, and the private validation report.
 
+The [local Community service and removable Test Lab](docs/3.0-local-community-service.md)
+add actual Deno/PostgREST/native PostgreSQL acceptance and ten isolated simulated
+members backed by 40 verified public Civitai artworks. The normal saved profile and
+SQLite ledger remain separate; no cloud service is deployed.
+
 The documentation below describes the existing Discovery features and release line.
 
 Civitai Artist Discovery is a local, artist-first browser for finding creators on

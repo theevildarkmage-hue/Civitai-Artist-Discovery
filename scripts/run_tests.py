@@ -86,7 +86,7 @@ def main():
         child(args.child)
         return
     names = args.only or [path.stem for path in sorted((ROOT / "tests").glob("*.py"))
-                         if path.stem not in ('test_safety', 'community_harness')]
+                         if path.stem not in ('test_safety', 'community_harness','community_http_gallery')]
     output = args.output or Path(tempfile.mkdtemp(prefix='cad3-validation-'))
     output.mkdir(parents=True, exist_ok=True)
     print(f'Validation artifacts: {output.resolve()}',flush=True)

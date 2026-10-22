@@ -71,10 +71,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-tag-retry-", ignore_cleanup_err
             attempts = []
 
             def tags(route):
-                attempts.append(time.monotonic())
+                # Independent visible cards need not enter the same 20ms batch.
+                # Count Ana's checks, rather than treating Bo's read as a retry.
+                checks_ana = 1 in json.loads(route.request.post_data)['imageIds']
+                if checks_ana:
+                    attempts.append(time.monotonic())
                 # The token refresh behind this endpoint failing is what the server
                 # reports as a 500, exactly as it did against the live Civitai API.
-                if len(attempts) == 1:
+                if checks_ana and len(attempts) == 1:
                     route.fulfill(status=500, content_type="application/json",
                                   body='{"error": "HTTP Error 400: Bad Request"}')
                     return
@@ -91,8 +95,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-tag-retry-", ignore_cleanup_err
             # The server owns automatic read retries. The browser offers an explicit
             # retry without multiplying the server's budget.
             card = page.locator(".tm-card").first
-            page.evaluate("() => prepareCardArtwork(document.querySelector('.tm-card'))")
-            page.wait_for_timeout(500)
+            # The viewport observer starts the first check. Calling the helper here
+            # could itself retry a failure that had already completed.
+            card.locator('.tag-check-retry').wait_for()
             assert len(attempts) == 1, f"the first attempt should stand alone: {len(attempts)}"
             assert "tag-check-failed" in (card.get_attribute("class") or ""), \
                 "a failed check must be reported"
@@ -131,7 +136,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-tag-retry-", ignore_cleanup_err
             page.locator("#tabTimeMachine").click()
             page.wait_for_selector("#timeMachine:not(.hidden)")
             page.locator(".tm-card", has_text="Ana").wait_for(timeout=10000)
-            page.evaluate("() => prepareCardArtwork(document.querySelector('.tm-card'))")
+            page.locator('.tm-card .tag-check-retry').wait_for()
             page.wait_for_timeout(3500)
             assert len(down) == 1, f"a persistent failure must not automatically retry: {len(down)}"
             assert "tag-check-failed" in (page.locator(".tm-card").first.get_attribute("class") or ""), \

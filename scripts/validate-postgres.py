@@ -19,7 +19,15 @@ def main():
     parser.add_argument('--bin', required=True, type=Path, help='Verified PostgreSQL bin directory')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--repeats', type=int, default=5)
+    parser.add_argument('--http-deno', type=Path, help='Verified native Deno for real HTTP integration')
+    parser.add_argument('--http-postgrest', type=Path, help='Verified native PostgREST for real HTTP integration')
+    parser.add_argument('--http-live-readonly', action='store_true', help='Bounded live UserInfo/artwork preview using the selected protected session')
+    parser.add_argument('--manual-test-lab',action='store_true',help='Keep the owned local service and removable Test Lab running after validation')
     args = parser.parse_args()
+    if bool(args.http_deno) != bool(args.http_postgrest):
+        parser.error('Supply both HTTP runtime paths')
+    if (args.manual_test_lab or args.http_live_readonly) and not args.http_deno:
+        parser.error('Manual Lab and live preview require both HTTP runtime paths')
     if not 1 <= args.repeats <= 20:
         parser.error('Use 1..20 repetitions')
     binary = args.bin.resolve()
@@ -159,6 +167,16 @@ def main():
                 "'replayKeys',(select count(*) from public.community_submission_requests));"), 'Handler persisted state')
             summary['handlerPersistedState']=json.loads(counts)
             assert summary['handlerPersistedState']=={'recommendations':12,'audits':12,'replayKeys':12}
+        if args.http_deno:
+            env.update(CAD_ALLOW_LOCAL_HTTP_TESTS='1',CAD_TEST_DENO=str(args.http_deno.resolve()),
+                       CAD_TEST_POSTGREST=str(args.http_postgrest.resolve()),CAD_TEST_HTTP_OUTPUT=str(output/'http'))
+            if args.http_live_readonly:env['CAD_TEST_LIVE_READONLY']='1'
+            if args.manual_test_lab:env['CAD_TEST_MANUAL_LAB']='1'
+            result=subprocess.run([sys.executable,'-u','-B',str(ROOT/'tests/community_http.py')],cwd=ROOT,env=env,
+                capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=None if args.manual_test_lab else 360,creationflags=creationflags)
+            (output/'http.log').write_text(result.stdout+result.stderr,encoding='utf-8')
+            summary['runs'].append({'suite':'community_http','passed':result.returncode==0})
+            if result.returncode:raise RuntimeError('Real HTTP integration failed; inspect private log')
         summary['extensions'] = require(sql('select extname from pg_extension order by extname;'), 'Extensions').splitlines()
         summary['passed'] = True
     finally:

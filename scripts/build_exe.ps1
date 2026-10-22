@@ -26,6 +26,8 @@ try {
 
   # --noupx is explicit rather than assumed: a machine with UPX installed would otherwise
   # pack the binary, and packed executables are a well-known heuristic trigger.
+  python (Join-Path $root 'scripts/check-test-lab-exclusion.py')
+  if ($LASTEXITCODE) { throw 'Development Test Lab must be excluded from release inputs' }
   python -m PyInstaller --noconfirm --clean --onedir --windowed --noupx `
     --name CivitaiArtistDiscovery `
     --icon (Join-Path $root 'static/app.ico') `
