@@ -189,12 +189,12 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     // Application registry is independent of Community invitations and policy.
     // Identity always comes from the fresh UserInfo response above.
     if(body.operation==='register') {
-      if(Object.keys(body).some(k=>!['apiVersion','operation','appVersion','platform','disclosure'].includes(k))
+      if(Object.keys(body).some(k=>!['apiVersion','operation','appVersion','platform'].includes(k))
          || typeof body.appVersion!=='string' || body.appVersion.length<1 || body.appVersion.length>64
-         || !['Windows','Linux','macOS','Other'].includes(body.platform) || body.disclosure!=='2026-10-23') fail('INVALID_REQUEST');
+         || !['Windows','Linux','macOS','Other'].includes(body.platform)) fail('INVALID_REQUEST');
       if(Deno.env.get('DISCOVERY_REGISTRY_STATE')!=='enabled') return reply({apiVersion:1,registered:false,retryAfterSeconds:43200});
       return reply(await rpc('community_registry_upsert',{p_member:memberId,p_name:username,
-        p_version:body.appVersion,p_platform:body.platform,p_disclosure:body.disclosure}));
+        p_version:body.appVersion,p_platform:body.platform}));
     }
 
     // The staging entry point fixes this option in code, never in a request.

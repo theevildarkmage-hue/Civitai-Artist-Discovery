@@ -28,8 +28,8 @@ def snapshot_query():
     return 'select jsonb_build_object('+','.join(parts)+') snapshot;'
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--bin',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--schema-model',choices=['baseline','release'],default='baseline');p.add_argument('--manifest',type=Path);p.add_argument('--expected-function-version',type=int);a=p.parse_args()
-    if a.schema_model=='release':
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--bin',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--schema-model',choices=['baseline','release','automatic'],default='baseline');p.add_argument('--manifest',type=Path);p.add_argument('--expected-function-version',type=int);a=p.parse_args()
+    if a.schema_model!='baseline':
         if not a.manifest or a.expected_function_version is None:p.error('Release export requires pinned manifest and expected function revision')
         TABLES.extend('community_private.'+n for n in ('configuration','operators','invitations','blocks','reports','moderator_audit','artwork_reviews','discovery_users'))
         SEQUENCES.extend(('community_private.reports_seq_seq','community_private.moderator_audit_seq_seq'))
@@ -51,13 +51,13 @@ def main():
     matrix=next(iter(api('/database/query/read-only',inventory)[0].values()))
     snapshot=api('/database/query/read-only',snapshot_query())[0]['snapshot']
     assert validate_catalog(matrix,a.schema_model,migrations=snapshot['migrations'])['passed'],'Hosted baseline drift'
-    assert len(snapshot['migrations'])==(7 if a.schema_model=='release' else 4),'Unexpected migration history'
+    assert len(snapshot['migrations'])==(8 if a.schema_model=='automatic' else 7 if a.schema_model=='release' else 4),'Unexpected migration history'
     functions=api('/functions');function=next(f for f in functions if f['slug']=='community-v1')
     assert function['version']==(a.expected_function_version or 10) and function['status']=='ACTIVE'
     files=sorted((ROOT/'supabase/migrations').glob('*.sql'))
     pinned=json.loads((ROOT/'supabase/deployment-baseline.json').read_text())
-    if a.schema_model=='release':
-        pinned=json.loads(a.manifest.read_text());assert pinned['projectRef']==REF and pinned['schemaModel']=='release'
+    if a.schema_model!='baseline':
+        pinned=json.loads(a.manifest.read_text());assert pinned['projectRef']==REF and pinned['schemaModel']==a.schema_model
         files=[ROOT/item['path'] for item in pinned['files']];pinned={'migrations':pinned['files']}
     sources=[]
     for path,pin in zip(files,pinned['migrations'],strict=True):
@@ -89,7 +89,7 @@ def main():
         env=old
         with (cluster/'data/postgresql.conf').open('a') as f:f.write(f"\nlisten_addresses='127.0.0.1'\nport={port}\n")
         command('pg_ctl','-D',str(cluster/'data'),'-w','start',log=cluster/'startup.log');started=True
-        sql('create role anon;create role authenticated;create role service_role bypassrls;'+('create role community_operator nologin noinherit;' if a.schema_model=='release' else ''))
+        sql('create role anon;create role authenticated;create role service_role bypassrls;'+('create role community_operator nologin noinherit;' if a.schema_model!='baseline' else ''))
         sql('begin;'+''.join(restored['sourceMigrations'])+'commit;')
         local_schema=json.loads(sql(schema_query()));assert local_schema==snapshot['schema'],'Exported schema differs from pinned recreation'
         local_matrix=json.loads(sql(inventory))
@@ -121,9 +121,9 @@ def main():
         assert not mismatch,'Independent restore mismatch in sections: '+','.join(mismatch)
         checks+=['all scoped table records match','migration history and statements match','sequence state matches','foreign keys and checks enforced on restore']
         for member in snapshot['public.community_members']:
-            quota=json.loads(sql('select '+('community_quota_legacy' if a.schema_model=='release' else 'community_quota')+'('+str(member['civitai_id'])+');'));assert 0<=quota['used']<=3
+            quota=json.loads(sql('select '+('community_quota_legacy' if a.schema_model!='baseline' else 'community_quota')+'('+str(member['civitai_id'])+');'));assert 0<=quota['used']<=3
         checks+=['restored quota RPC executes']
-        if a.schema_model=='release':
+        if a.schema_model!='baseline':
             stats=json.loads(sql("begin;select community_private.owner_admin('registry_stats',null,'Independent restore verification');rollback;"));assert stats['users']==len(snapshot['community_private.discovery_users'])
             checks+=['restored owner administration executes with rollback']
         for role in ('anon','authenticated','service_role'):

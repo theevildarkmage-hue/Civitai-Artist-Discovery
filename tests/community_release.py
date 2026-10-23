@@ -38,7 +38,7 @@ def rehearse_atomic(sql,env,output):
     execute('begin;'+history+baseline+"select community_submit_once(8800000001,'SyntheticHistorical',8800000002,8800000003,'synthetic_atomic_replay');commit;")
     before=data_snapshot(execute)
     spec=importlib.util.spec_from_file_location('release_builder',ROOT/'scripts/prepare-community-candidate.py');builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
-    bundle=builder.build_release_bundle(expected_owner='cad3_admin',expected_database=name)
+    bundle=builder.build_automatic_bundle(expected_owner='cad3_admin',expected_database=name)
     (output/'rehearsed-release-bundle.sql').write_text(bundle)
     app='cad3-release-interruption-'+secrets.token_hex(5)
     proc=subprocess.Popen(['psql','-X','-qAt','-v','ON_ERROR_STOP=1'],env={**child,'PGAPPNAME':app},stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
@@ -59,8 +59,34 @@ def rehearse_atomic(sql,env,output):
     after=data_snapshot(execute);assert after==before
     history=json.loads(execute('select jsonb_agg(jsonb_build_object(\'version\',version) order by version) from supabase_migrations.schema_migrations;'))
     matrix=json.loads(execute((ROOT/'supabase/tests/security_inventory_v2.sql').read_text()))
-    verdict=validate_catalog(matrix,'release',owner='cad3_admin',migrations=history);assert verdict['passed'],verdict['errors']
+    verdict=validate_catalog(matrix,'automatic',owner='cad3_admin',migrations=history);assert verdict['passed'],verdict['errors']
     (output/'release-atomic.json').write_text(json.dumps({'passed':True,'interruptionRolledBack':True,'retryPassed':True,'before':before,'after':after,'migrations':history,'catalog':verdict},indent=2))
+
+def rehearse_registry_upgrade(sql,env,output):
+    from community_deployment_rehearsal import command
+    name='cad3_registry_upgrade_'+secrets.token_hex(5);sql('create database '+name+';')
+    child={**env,'PGDATABASE':name}
+    execute=lambda stmt:command(child,stmt).stdout.strip()
+    setup='create schema supabase_migrations;create table supabase_migrations.schema_migrations(version text primary key,name text,statements text[]);'
+    paths=list(sorted((ROOT/'supabase/migrations').glob('*.sql')))+list(sorted((ROOT/'supabase/beta-migrations').glob('20261023000[123]_*.sql')))
+    for path in paths:
+        source=path.read_text();version,label=path.stem.split('_',1)
+        setup+=source+"\ninsert into supabase_migrations.schema_migrations values('"+version+"','"+label+"',array[$source$"+source+"$source$]);"
+    execute('begin;'+setup+"select community_registry_upsert(8890000001,'PreservedRegistryFixture','3.0.0-beta.1','Linux','2026-10-23');commit;")
+    before=execute("select (to_jsonb(u)-'disclosure_version')::text from community_private.discovery_users u;")
+    spec=importlib.util.spec_from_file_location('upgrade_builder',ROOT/'scripts/prepare-community-candidate.py');builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
+    upgrade=builder.build_registry_upgrade(expected_owner='cad3_admin',expected_database=name)
+    failed=command(child,upgrade.rsplit('commit;',1)[0]+"do $$begin raise exception 'INTERRUPTED_UPGRADE';end$$;commit;",check=False)
+    assert failed.returncode!=0
+    assert execute("select count(*)=1 from information_schema.columns where table_schema='community_private' and table_name='discovery_users' and column_name='disclosure_version';")=='t'
+    assert before==execute("select (to_jsonb(u)-'disclosure_version')::text from community_private.discovery_users u;")
+    execute(upgrade)
+    assert before==execute('select to_jsonb(u)::text from community_private.discovery_users u;')
+    assert execute("select count(*)=8 from supabase_migrations.schema_migrations;")=='t'
+    assert command(child,upgrade,check=False).returncode!=0
+    assert before==execute('select to_jsonb(u)::text from community_private.discovery_users u;')
+    (output/'registry-upgrade.json').write_text(json.dumps({'passed':True,'rollbackPreservesSevenMigrationSchema':True,'retryPreservesAllSixFields':True,'duplicateMigrationRejected':True,'seededRegistryRows':1,'hostedMutation':False},indent=2))
+
 
 def run(*,sql,env,output,api,register):
     checks=[]
@@ -68,15 +94,16 @@ def run(*,sql,env,output,api,register):
         checks.append({'name':name,'passed':bool(value)})
         (output/'release-checks.json').write_text(json.dumps({'checks':checks,'passed':False},indent=2))
         assert value,name
-    rehearse_atomic(sql,env,output);check('atomic seven-version interruption retry and preservation',True)
-    for filename in ('202610230002_application_registry.sql','202610230003_owner_administration.sql'):
+    rehearse_registry_upgrade(sql,env,output);check('incremental seven-to-eight migration preservation rollback and retry',True)
+    rehearse_atomic(sql,env,output);check('atomic eight-version interruption retry and preservation',True)
+    for filename in ('202610230002_application_registry.sql','202610230003_owner_administration.sql','202610230004_automatic_registry.sql'):
         path=ROOT/'supabase/beta-migrations'/filename;source=path.read_text();version,name=path.stem.split('_',1)
         sql('begin;'+source+"insert into supabase_migrations.schema_migrations values('"+version+"','"+name+"',array[$release$"+source+"$release$]);commit;")
     sql("notify pgrst,'reload schema';");time.sleep(.5)
     matrix=json.loads(sql((ROOT/'supabase/tests/security_inventory_v2.sql').read_text()))
     history=json.loads(sql("select jsonb_agg(jsonb_build_object('version',version) order by version) from supabase_migrations.schema_migrations;"))
-    verdict=validate_catalog(matrix,'release',owner='cad3_admin',migrations=history)
-    check('seven-migration release catalog',verdict['passed'])
+    verdict=validate_catalog(matrix,'automatic',owner='cad3_admin',migrations=history)
+    check('eight-migration automatic registry catalog',verdict['passed'])
     (output/'release-catalog.json').write_text(json.dumps({'matrix':matrix,'migrations':history,'verdict':verdict},indent=2))
     ledger=sql("select jsonb_object_agg(n,h) from ("+' union all '.join("select '"+n+"' n,md5(coalesce(jsonb_agg(to_jsonb(t) order by to_jsonb(t)::text)::text,'[]')) h from public."+n+" t" for n in ('community_members','community_recommendations','community_audit','community_submission_requests'))+") q;")
     first=register();check('uninvited authenticated user registers',first.get('registered') is True and first.get('updated') is True)
@@ -103,10 +130,10 @@ def run(*,sql,env,output,api,register):
         for table in ('community_private.discovery_users','community_private.invitations','community_private.moderator_audit'):
             check('private enumeration denied '+role+' '+table,api(role,table,None)[0]>=400)
         for method in ('POST','PATCH','DELETE'):
-            response=api(role,'community_private.discovery_users',{'__method':method,'civitai_id':999,'username':'Forged','app_version':'x','platform':'Linux','disclosure_version':'2026-10-23'})
+            response=api(role,'community_private.discovery_users',{'__method':method,'civitai_id':999,'username':'Forged','app_version':'x','platform':'Linux'})
             check('registry direct '+method+' denied '+role,response[0]>=400 and response[1].get('code') in ('PGRST106','42501','PGRST205'))
-    check('operator cannot invoke runtime registry RPC',api('operator','community_registry_upsert',{'p_member':999,'p_name':'Forged','p_version':'x','p_platform':'Linux','p_disclosure':'2026-10-23'})[0]>=400)
-    check('ordinary user cannot invoke runtime registry RPC',api('ordinary','community_registry_upsert',{'p_member':999,'p_name':'Forged','p_version':'x','p_platform':'Linux','p_disclosure':'2026-10-23'})[0]>=400)
+    check('operator cannot invoke runtime registry RPC',api('operator','community_registry_upsert',{'p_member':999,'p_name':'Forged','p_version':'x','p_platform':'Linux'})[0]>=400)
+    check('ordinary user cannot invoke runtime registry RPC',api('ordinary','community_registry_upsert',{'p_member':999,'p_name':'Forged','p_version':'x','p_platform':'Linux'})[0]>=400)
     check('moderator identity spoof rejected',api('operator','community_admin',{'p_action':'registry_stats','p_actor':999})[0]>=400)
     check('owner registry deletion',owner('registry_delete',8800000000)['completed'])
     check('registry deleted without Community deletion',sql('select count(*)=0 from community_private.discovery_users;')=='t')
@@ -139,6 +166,11 @@ def run(*,sql,env,output,api,register):
     before=sql('select count(*) from community_private.moderator_audit;')
     sql("begin;select community_private.owner_admin('registry_stats',null,'Rollback validation');rollback;")
     check('rolled-back owner action has no persistent audit',before==sql('select count(*) from community_private.moderator_audit;'))
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results=list(pool.map(lambda _:json.loads(sql("select community_registry_upsert(8890000010,'ConcurrentFixture','3.0.0-beta.1','Linux');")),range(12)))
+    check('twelve concurrent registrations make one row and one activity write',sum(item['updated'] for item in results)==1 and sql('select count(*)=1 from community_private.discovery_users where civitai_id=8890000010;')=='t')
+    sql('delete from community_private.discovery_users where civitai_id=8890000010;')
     result={'passed':True,'checks':checks,'realPostgREST':True,'ownerAdministration':True,'hostedVerified':False}
     (output/'release-checks.json').write_text(json.dumps(result,indent=2));return {'passed':True,'checks':len(checks),'ownerAdministration':True}
 

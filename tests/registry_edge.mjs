@@ -11,10 +11,10 @@ const handler=createCommunityHandler({invitationOnly:true,fetch:async(url,option
  throw Error('Unexpected Community RPC');
 }});
 async function call(extra={},operation='register'){
- const response=await handler(new Request('https://fixture.invalid',{method:'POST',headers:{Authorization:'Bearer synthetic','Content-Type':'application/json'},body:JSON.stringify({apiVersion:1,operation,...(operation==='register'?{appVersion:'3.0.0-beta.1',platform:'Linux',disclosure:'2026-10-23'}:{}),...extra})}));return response.json();
+ const response=await handler(new Request('https://fixture.invalid',{method:'POST',headers:{Authorization:'Bearer synthetic','Content-Type':'application/json'},body:JSON.stringify({apiVersion:1,operation,...(operation==='register'?{appVersion:'3.0.0-beta.1',platform:'Linux'}:{}),...extra})}));return response.json();
 }
 assert.equal((await call()).registered,true);
-assert.deepEqual(calls.find(x=>x.name==='community_registry_upsert').args,{p_member:7,p_name:'VerifiedName',p_version:'3.0.0-beta.1',p_platform:'Linux',p_disclosure:'2026-10-23'});
+assert.deepEqual(calls.find(x=>x.name==='community_registry_upsert').args,{p_member:7,p_name:'VerifiedName',p_version:'3.0.0-beta.1',p_platform:'Linux'});
 assert.equal(calls.some(x=>x.name==='community_access'),false);
 for(const extra of [{memberId:99},{username:'Forged'},{platform:'Windows; forged'},{disclosure:'old'}])assert.equal((await call(extra)).code,'INVALID_REQUEST');
 enabled=false;assert.equal((await call()).registered,false);
