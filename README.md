@@ -8,57 +8,28 @@ private Supabase registry after server-side identity verification. This supports
 beta usage and compatibility monitoring. Activity updates occur at most once every
 12 hours. The registry stores no OAuth tokens or browsing history, is not publicly
 searchable, and does not grant Community access. To request deletion, contact the
-beta owner through the private channel used for your invitation; do not post tokens
-or account details in public issues. Later authenticated use can recreate the entry.
+maintainer through [GitHub Issues](https://github.com/theevildarkmage-hue/Civitai-Artist-Discovery/issues)
+for general support. Do not post tokens, account details or sensitive deletion/security
+requests publicly. A private channel requires owner approval before tester distribution.
+Later authenticated use can recreate a deleted registry entry.
 
 
 Community Beta release preparation is local and default-off. See the
-[readiness matrix, update channels and operating model](docs/3.0-beta-readiness.md)
-and the [unexecuted staging/rollback runbook](docs/3.0-staging-runbook.md).
+[publication gates and update channels](docs/3.0-beta-publication-checklist.md)
+and the [owner operations and recovery guide](docs/3.0-beta-operations.md).
 Private staging is deployed with Community submissions and registry collection disabled; no public beta rollout is active.
 
-## 3.0.0-dev — isolated Community Gallery development
+## Discovery 3.0 Beta - disabled Windows candidate
 
-This clone's `3.0` branch adds an optional Community Gallery with a local SQLite
-simulator and private Supabase staging. Existing 2.x installations and personal
-data are not migrated or modified.
-
-```powershell
-.\scripts\dev-3.0.ps1
-```
-
-Open `http://127.0.0.1:8907` and sign in normally to Civitai. Saved protected sessions
-are reused after restart. Community requires that session at the backend as well as
-in navigation. Runtime data stays in this clone;
-the ignored `.data-directory-3.0.json` keeps launcher and Python starts on the same
-existing 3.0 profile (otherwise the initial directory is `data-dev-3.0`).
-Use `-RealVerification` for the existing Civitai login and real artwork verification
-with community records still stored locally. The explicitly enabled development
-ledger uses simulated members in My Profile?s collapsed development diagnostics; personal galleries
-use real cached metadata and the signed-in profile. Synthetic artwork is test-only.
-
-Recommendations now use one modal and one submission action. See [submission, live API and PostgreSQL validation](docs/3.0-submission-validation.md).
-
-See [artwork restoration, count reconciliation and validation](docs/3.0-artwork-restoration.md).
-
-See [launching and testing](docs/3.0-development.md), [architecture and source
-verification](docs/3.0-architecture.md), [API contract](docs/3.0-api.md), and
-[undeployed Supabase readiness](docs/3.0-supabase.md). The reviewed 2.2.1 security,
-capture, filtering, artwork and video improvements are incorporated selectively;
-see the [integration report](docs/3.0-integration-2026-10-21.md) for preservation,
-validation and remaining production limits.
-
-For the launcher, read-only diagnostics, smoke command, local CI and manual acceptance
-checklist, see [local development readiness](docs/3.0-local-readiness.md).
-
-See [the ten-member integration and stress workflow](docs/3.0-community-testing.md) for metadata sampling, shared-control regression tests, and the private validation report.
-
-The [local Community service and removable Test Lab](docs/3.0-local-community-service.md)
-add actual Deno/PostgREST/native PostgreSQL acceptance and ten isolated simulated
-members backed by 40 verified public Civitai artworks. The normal saved profile and
-SQLite ledger remain separate; no cloud service is deployed.
-
-The documentation below describes the existing Discovery features and release line.
+Use the [beta installation guide](docs/3.0-beta-README.md),
+[privacy and retention policy](docs/3.0-beta-privacy.md),
+[owner operations guide](docs/3.0-beta-operations.md), and
+[separate approval gates](docs/3.0-beta-publication-checklist.md).
+The candidate is unpublished. Hosted Community submissions and registry collection
+remain off. No tester invitation, distribution or activation is implied by source
+availability. Existing stable installations and personal profiles remain separate.
+Linux application testing is explicitly waived and Linux support remains experimental.
+The upstream feature documentation below remains available for existing users.
 
 Civitai Artist Discovery is a local, artist-first browser for finding creators on
 [Civitai](https://civitai.red). Instead of presenting another image-first popularity
