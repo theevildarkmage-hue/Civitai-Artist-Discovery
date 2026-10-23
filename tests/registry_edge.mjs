@@ -1,8 +1,8 @@
 // Real Edge handler with bounded synthetic upstream; native tests cover real SQL.
 import assert from 'node:assert/strict';
 import {createCommunityHandler} from '../supabase/functions/community-v1/handler.ts';
-let enabled=true,valid=true,ownerMode=false,owner='7',until=new Date(Date.now()+600000).toISOString();const calls=[];
-globalThis.Deno={env:{get:k=>({SUPABASE_URL:'https://fixture.invalid',SUPABASE_SERVICE_ROLE_KEY:'synthetic',DISCOVERY_REGISTRY_STATE:enabled?'enabled':'disabled',COMMUNITY_BETA_STATE:'disabled',COMMUNITY_TEST_OWNER_ID:owner,COMMUNITY_OWNER_TEST_EXPIRES_AT:until}[k])}};
+let enabled=true,valid=true,ownerMode=false,owner='7',until=new Date(Date.now()+600000).toISOString(),registryState;const calls=[];
+globalThis.Deno={env:{get:k=>({SUPABASE_URL:'https://fixture.invalid',SUPABASE_SERVICE_ROLE_KEY:'synthetic',DISCOVERY_REGISTRY_STATE:registryState??(enabled?'enabled':'disabled'),COMMUNITY_BETA_STATE:'disabled',COMMUNITY_TEST_OWNER_ID:owner,COMMUNITY_OWNER_TEST_EXPIRES_AT:until}[k])}};
 const transport=async(url,options)=>{
  if(url.endsWith('/userinfo'))return Response.json(valid?{sub:'7',id:7,username:'VerifiedName'}:{},{status:valid?200:401});
  const name=url.split('/').at(-1),args=JSON.parse(options.body);calls.push({name,args});
@@ -33,4 +33,14 @@ until=new Date(Date.now()+3600000).toISOString();assert.equal((await call()).cod
 assert.equal(calls.filter(c=>c.name==='community_registry_upsert').length,writes);
 until=new Date(Date.now()+600000).toISOString();assert.equal((await call()).registered,true);
 enabled=false;assert.equal((await call()).registered,false);
-console.log(JSON.stringify({passed:true,checks:19,realHandler:true,syntheticTransport:true}));
+registryState='owner_test';ownerMode=false;writes=calls.filter(c=>c.name==='community_registry_upsert').length;
+assert.equal((await call()).registered,false);
+assert.equal(calls.filter(c=>c.name==='community_registry_upsert').length,writes);
+ownerMode=true;assert.equal((await call()).registered,true);
+owner='8';writes=calls.filter(c=>c.name==='community_registry_upsert').length;
+assert.equal((await call()).code,'FORBIDDEN');
+assert.equal(calls.filter(c=>c.name==='community_registry_upsert').length,writes);
+owner='7';until='2000-01-01T00:00:00Z';assert.equal((await call()).code,'BETA_DISABLED');
+assert.equal(calls.filter(c=>c.name==='community_registry_upsert').length,writes);
+registryState='invalid';until=new Date(Date.now()+600000).toISOString();assert.equal((await call()).registered,false);
+console.log(JSON.stringify({passed:true,checks:27,realHandler:true,syntheticTransport:true}));
