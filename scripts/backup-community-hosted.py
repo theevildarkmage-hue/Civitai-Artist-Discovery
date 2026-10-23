@@ -9,26 +9,30 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from discovery.secure_backup import transform
 from discovery.community_catalog import validate_catalog
 REF='aibelmhucizupzvvhdvf'
-TABLES=['community_members','community_recommendations','community_audit','community_rate_buckets','community_submission_requests']
-SEQUENCES=['community_recommendations_seq_seq','community_audit_seq_seq']
+TABLES=['public.'+n for n in ('community_members','community_recommendations','community_audit','community_rate_buckets','community_submission_requests')]
+SEQUENCES=['public.community_recommendations_seq_seq','public.community_audit_seq_seq']
 
 def schema_query():
     return """select jsonb_build_object(
-    'columns',(select jsonb_agg(jsonb_build_object('table',c.relname,'column',a.attname,'position',a.attnum,'type',format_type(a.atttypid,a.atttypmod),'notnull',a.attnotnull,'identity',a.attidentity,'generated',a.attgenerated,'default',pg_get_expr(d.adbin,d.adrelid)) order by c.relname,a.attnum) from pg_class c join pg_namespace n on n.oid=c.relnamespace join pg_attribute a on a.attrelid=c.oid left join pg_attrdef d on d.adrelid=c.oid and d.adnum=a.attnum where n.nspname='public' and c.relkind='r' and c.relname like 'community_%' and a.attnum>0 and not a.attisdropped),
-    'constraints',(select jsonb_agg(jsonb_build_object('table',c.relname,'name',x.conname,'definition',pg_get_constraintdef(x.oid),'validated',x.convalidated) order by c.relname,x.conname) from pg_constraint x join pg_class c on c.oid=x.conrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname like 'community_%'),
-    'indexes',(select jsonb_agg(to_jsonb(q) order by tablename,indexname) from (select tablename,indexname,indexdef from pg_indexes where schemaname='public' and tablename like 'community_%') q),
-    'triggers',(select coalesce(jsonb_agg(pg_get_triggerdef(t.oid) order by t.tgname),'[]') from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname like 'community_%' and not t.tgisinternal)) snapshot;"""
+    'columns',(select jsonb_agg(jsonb_build_object('table',c.relname,'column',a.attname,'position',a.attnum,'type',format_type(a.atttypid,a.atttypmod),'notnull',a.attnotnull,'identity',a.attidentity,'generated',a.attgenerated,'default',pg_get_expr(d.adbin,d.adrelid)) order by c.relname,a.attnum) from pg_class c join pg_namespace n on n.oid=c.relnamespace join pg_attribute a on a.attrelid=c.oid left join pg_attrdef d on d.adrelid=c.oid and d.adnum=a.attnum where (n.nspname='community_private' or ((n.nspname='community_private' or (n.nspname='public' and c.relname like 'community_%')))) and c.relkind='r' and a.attnum>0 and not a.attisdropped),
+    'constraints',(select jsonb_agg(jsonb_build_object('table',c.relname,'name',x.conname,'definition',pg_get_constraintdef(x.oid),'validated',x.convalidated) order by c.relname,x.conname) from pg_constraint x join pg_class c on c.oid=x.conrelid join pg_namespace n on n.oid=c.relnamespace where (n.nspname='community_private' or (n.nspname='public' and c.relname like 'community_%'))),
+    'indexes',(select jsonb_agg(to_jsonb(q) order by tablename,indexname) from (select tablename,indexname,indexdef from pg_indexes where (schemaname='community_private' or (schemaname='public' and tablename like 'community_%'))) q),
+    'triggers',(select coalesce(jsonb_agg(pg_get_triggerdef(t.oid) order by t.tgname),'[]') from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace where (n.nspname='community_private' or (n.nspname='public' and c.relname like 'community_%')) and not t.tgisinternal)) snapshot;"""
 
 def snapshot_query():
     parts=["'schema',("+schema_query().replace('select jsonb_build_object(','select jsonb_build_object(',1).removesuffix(' snapshot;')+")"]
-    parts += ["'"+t+"',(select coalesce(jsonb_agg(to_jsonb(t) order by to_jsonb(t)::text),'[]') from public."+t+' t)' for t in TABLES]
+    parts += ["'"+t+"',(select coalesce(jsonb_agg(to_jsonb(t) order by to_jsonb(t)::text),'[]') from "+t+' t)' for t in TABLES]
     parts += ["'migrations',(select jsonb_agg(jsonb_build_object('version',version,'name',name,'statements',statements) order by version) from supabase_migrations.schema_migrations)"]
-    parts += ["'functionDefinitions',(select jsonb_agg(pg_get_functiondef(p.oid) order by p.proname) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'community_%')"]
-    parts += ["'"+s+"',(select jsonb_build_object('last_value',last_value,'is_called',is_called) from public."+s+')' for s in SEQUENCES]
+    parts += ["'functionDefinitions',(select jsonb_agg(pg_get_functiondef(p.oid) order by p.proname) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='community_private' or (n.nspname='public' and p.proname like 'community_%'))"]
+    parts += ["'"+s+"',(select jsonb_build_object('last_value',last_value,'is_called',is_called) from "+s+')' for s in SEQUENCES]
     return 'select jsonb_build_object('+','.join(parts)+') snapshot;'
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--bin',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--bin',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--schema-model',choices=['baseline','release'],default='baseline');p.add_argument('--manifest',type=Path);p.add_argument('--expected-function-version',type=int);a=p.parse_args()
+    if a.schema_model=='release':
+        if not a.manifest or a.expected_function_version is None:p.error('Release export requires pinned manifest and expected function revision')
+        TABLES.extend('community_private.'+n for n in ('configuration','operators','invitations','blocks','reports','moderator_audit','artwork_reviews','discovery_users'))
+        SEQUENCES.extend(('community_private.reports_seq_seq','community_private.moderator_audit_seq_seq'))
     token=os.environ.get('SUPABASE_ACCESS_TOKEN')
     if not token:p.error('Secure management process environment required')
     out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
@@ -46,12 +50,15 @@ def main():
     inventory=(ROOT/'supabase/tests/security_inventory_v2.sql').read_text()
     matrix=next(iter(api('/database/query/read-only',inventory)[0].values()))
     snapshot=api('/database/query/read-only',snapshot_query())[0]['snapshot']
-    assert validate_catalog(matrix,'baseline',migrations=snapshot['migrations'])['passed'],'Hosted baseline drift'
-    assert len(snapshot['migrations'])==4,'Unexpected migration history'
+    assert validate_catalog(matrix,a.schema_model,migrations=snapshot['migrations'])['passed'],'Hosted baseline drift'
+    assert len(snapshot['migrations'])==(7 if a.schema_model=='release' else 4),'Unexpected migration history'
     functions=api('/functions');function=next(f for f in functions if f['slug']=='community-v1')
-    assert function['version']==10 and function['status']=='ACTIVE'
+    assert function['version']==(a.expected_function_version or 10) and function['status']=='ACTIVE'
     files=sorted((ROOT/'supabase/migrations').glob('*.sql'))
     pinned=json.loads((ROOT/'supabase/deployment-baseline.json').read_text())
+    if a.schema_model=='release':
+        pinned=json.loads(a.manifest.read_text());assert pinned['projectRef']==REF and pinned['schemaModel']=='release'
+        files=[ROOT/item['path'] for item in pinned['files']];pinned={'migrations':pinned['files']}
     sources=[]
     for path,pin in zip(files,pinned['migrations'],strict=True):
         source=path.read_text(encoding='utf-8');assert hashlib.sha256(source.encode()).hexdigest()==pin['sqlLfSha256']
@@ -82,7 +89,7 @@ def main():
         env=old
         with (cluster/'data/postgresql.conf').open('a') as f:f.write(f"\nlisten_addresses='127.0.0.1'\nport={port}\n")
         command('pg_ctl','-D',str(cluster/'data'),'-w','start',log=cluster/'startup.log');started=True
-        sql('create role anon;create role authenticated;create role service_role bypassrls;')
+        sql('create role anon;create role authenticated;create role service_role bypassrls;'+('create role community_operator nologin noinherit;' if a.schema_model=='release' else ''))
         sql('begin;'+''.join(restored['sourceMigrations'])+'commit;')
         local_schema=json.loads(sql(schema_query()));assert local_schema==snapshot['schema'],'Exported schema differs from pinned recreation'
         local_matrix=json.loads(sql(inventory))
@@ -99,10 +106,11 @@ def main():
         sql('create schema supabase_migrations;create table supabase_migrations.schema_migrations(version text primary key,name text,statements text[]);')
         def literal(v):return "'"+json.dumps(v).replace("'","''")+"'::jsonb"
         statements='begin;'
-        for table in TABLES:statements+='insert into public.'+table+' overriding system value select * from jsonb_populate_recordset(null::public.'+table+','+literal(snapshot[table])+');'
+        statements+='truncate table '+','.join(TABLES)+';'
+        for table in TABLES:statements+='insert into '+table+' overriding system value select * from jsonb_populate_recordset(null::'+table+','+literal(snapshot[table])+');'
         statements+='insert into supabase_migrations.schema_migrations select * from jsonb_populate_recordset(null::supabase_migrations.schema_migrations,'+literal(snapshot['migrations'])+');'
         for seq in SEQUENCES:
-            value=snapshot[seq];statements+=f"select setval('public.{seq}',{int(value['last_value'])},{str(value['is_called']).lower()});"
+            value=snapshot[seq];statements+=f"select setval('{seq}',{int(value['last_value'])},{str(value['is_called']).lower()});"
         sql(statements+'commit;')
         after=json.loads(sql(snapshot_query()))
         def restored_form(value):
@@ -111,17 +119,20 @@ def main():
             return value
         mismatch=[k for k in snapshot if restored_form(after).get(k)!=restored_form(snapshot).get(k)]
         assert not mismatch,'Independent restore mismatch in sections: '+','.join(mismatch)
-        checks+=['all five table records match','migration history and statements match','sequence state matches','foreign keys and checks enforced on restore']
-        for member in snapshot['community_members']:
-            quota=json.loads(sql('select community_quota('+str(member['civitai_id'])+');'));assert 0<=quota['used']<=3
+        checks+=['all scoped table records match','migration history and statements match','sequence state matches','foreign keys and checks enforced on restore']
+        for member in snapshot['public.community_members']:
+            quota=json.loads(sql('select '+('community_quota_legacy' if a.schema_model=='release' else 'community_quota')+'('+str(member['civitai_id'])+');'));assert 0<=quota['used']<=3
         checks+=['restored quota RPC executes']
+        if a.schema_model=='release':
+            stats=json.loads(sql("begin;select community_private.owner_admin('registry_stats',null,'Independent restore verification');rollback;"));assert stats['users']==len(snapshot['community_private.discovery_users'])
+            checks+=['restored owner administration executes with rollback']
         for role in ('anon','authenticated','service_role'):
             assert sql(f"select not has_table_privilege('{role}','public.community_members','select') and not has_table_privilege('{role}','public.community_recommendations','insert');")=='t'
         checks+=['untrusted and runtime direct-table denials retained']
         def hashes(s):return {t:{'count':len(s[t]),'sha256':hashlib.sha256(json.dumps(s[t],sort_keys=True,separators=(',',':')).encode()).hexdigest()} for t in TABLES}
         evidence={'passed':True,'projectRef':REF,'hostedMutation':False,'archiveSha256':hashlib.sha256(archive).hexdigest(),
           'plaintextSha256':hashlib.sha256(plain).hexdigest(),'protection':'Windows account-bound DPAPI','independentCluster':True,
-          'source':'actual hosted read-only snapshot','checks':checks,'preservation':hashes(snapshot),'restoredPreservation':hashes(after),
+          'source':'actual hosted read-only snapshot','schemaModel':a.schema_model,'tableCount':len(TABLES),'checks':checks,'preservation':hashes(snapshot),'restoredPreservation':hashes(after),
           'limitations':['Scoped Community application backup, not complete Supabase/Auth/Storage recovery','DPAPI recovery requires this Windows account key; independent custody approval remains required','No hosted credential exported; database roles reconstructed without original passwords','Hosted Edge recovery remains pinned-source deployment; no function deployment performed']}
         # Confirm the source was untouched during the restore interval.
         assert api('/database/query/read-only',snapshot_query())[0]['snapshot']==snapshot,'Hosted state changed during backup verification'
