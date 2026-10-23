@@ -1,5 +1,6 @@
 """Automatic, best-effort authenticated activity; no local state or retry queue."""
 import platform
+import logging
 import threading
 import time
 
@@ -32,7 +33,12 @@ class RegistryClient:
                 # A disabled hosted registry also asks clients to wait twelve hours.
                 if result.get('apiVersion')==1 and (result.get('registered') is True or result.get('retryAfterSeconds')==43200):
                     with self.lock:self.due[key]=self.clock()+43200
-            except Exception:pass  # Never log tokens or block the personal gallery.
+            except Exception as error:
+                # Log only a fixed category, never exception text, request bodies,
+                # identities, or credentials. Failure remains nonblocking.
+                from .community import CommunityError, MESSAGES
+                code=error.code if isinstance(error,CommunityError) and error.code in MESSAGES else 'INTERNAL_OR_TRANSPORT'
+                logging.getLogger(__name__).warning('Registry heartbeat deferred: %s',code)
             finally:
                 with self.lock:self.active=False
         try:threading.Thread(target=run,name='registry-heartbeat',daemon=True).start()

@@ -56,6 +56,13 @@ class RegistryTests(unittest.TestCase):
             self.assertFalse(client.authenticated({'id':7},lambda:self.fail('Token read')))
         self.assertFalse(client.active)
 
+    def test_failure_diagnostic_never_logs_exception_or_credential(self):
+        def fail(*args):raise OSError('secret-credential-and-request-body')
+        client=RegistryClient('3.0.0-beta.1',send=fail)
+        with self.assertLogs('discovery.registry',level='WARNING') as logs:
+            client.authenticated({'id':7},lambda:'secret-token');self.idle(client)
+        self.assertEqual(logs.output,['WARNING:discovery.registry:Registry heartbeat deferred: INTERNAL_OR_TRANSPORT'])
+
     def test_inflight_calls_are_deduplicated(self):
         entered=threading.Event();release=threading.Event();calls=[]
         def send(*args):calls.append(True);entered.set();release.wait(2);return {'apiVersion':1,'registered':True}
