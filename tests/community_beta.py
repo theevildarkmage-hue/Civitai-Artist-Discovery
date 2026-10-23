@@ -11,6 +11,14 @@ from discovery import community_beta as beta
 from discovery.community import CommunityError
 
 class BetaControls(unittest.TestCase):
+    def test_development_supabase_still_requires_server_policy(self):
+        with tempfile.TemporaryDirectory() as folder,patch.object(beta,'production',return_value=False):
+            with patch.dict(os.environ,{'CAD_COMMUNITY_MODE':'supabase'}):
+                self.assertTrue(beta.configuration(folder)['serverPolicy'])
+            for mode in ('local','fixture'):
+                with patch.dict(os.environ,{'CAD_COMMUNITY_MODE':mode}):
+                    self.assertFalse(beta.configuration(folder)['serverPolicy'])
+
     def test_new_and_upgraded_profiles_are_off_and_preferences_survive(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(beta,'production',return_value=True):
             root=Path(folder);(root/'settings.json').write_text('{"browsingLevels":[1,2]}')

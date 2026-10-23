@@ -19,16 +19,23 @@ export function mountCommunity() {
   document.body.append(dialog);
   bindDialog(dialog, {labelledBy:'communityDialogTitle', closeButtons:[dialog.querySelector('#communityCancel')]});
   const el = id => document.getElementById(id);
-  let productionBeta=false, submissions=true;
+  let productionBeta=false, policyControlled=true, submissions=false;
+  el('communityRecommend').disabled=true;
+  el('communitySubmit').disabled=true;
   function applyPolicy(status) {
-    if(!productionBeta)return;
+    if(status?.beta)policyControlled=true;
+    if(!policyControlled)return;
     submissions=status?.beta?.submissions===true && status?.cache?.state!=='stale';
     el('communityRecommend').disabled=!submissions;
+    el('communitySubmit').disabled=busy||!submissions;
+    if(!submissions&&dialog.open)dialog.close();
     if(!submissions)message('Community Beta is read-only. Your personal galleries still work.');
   }
   async function configureBeta() {
     const beta=await api('/api/community/beta');productionBeta=beta.production===true;
+    policyControlled=productionBeta||beta.serverPolicy===true;
     tab.hidden=productionBeta&&!beta.enabled;tab.classList.toggle('hidden',tab.hidden);
+    if(!policyControlled){submissions=true;el('communityRecommend').disabled=false;el('communitySubmit').disabled=false;}
     if(!productionBeta)return;
     tab.textContent='Community Beta';submissions=false;el('communityRecommend').disabled=true;
     const label=document.createElement('label');label.className='community-rules';
@@ -51,7 +58,7 @@ export function mountCommunity() {
     visible:()=>authorized && !section.classList.contains('hidden'),
     hasMore:()=>!initialized || firstPage || !!cursor,
     load:fetchPage,
-    onError:()=>message(''),
+    onError:error=>{applyPolicy(null);message(error.message);},
   });
   const artists = new Map(), recommendations = new Map();
   function clearCards() {
@@ -98,6 +105,7 @@ export function mountCommunity() {
   async function fetchPage({signal}) {
     const id = generation, first = firstPage, pageCursor = cursor;
     const clearSkeleton = first ? showGallerySkeleton(el('communityGrid')) : ()=>{};
+    if(first)applyPolicy(null);
     if (first) message('Loading community recommendations\u2026');
     try {
       if (first) {
@@ -152,7 +160,7 @@ export function mountCommunity() {
     ++draftVersion; clearCards(); dialog.close();
   }
   function recommend(value = '') {
-    if (busy || !authorized || (productionBeta&&!submissions)) return;
+    if (busy || !authorized || !submissions) return;
     ++draftVersion;
     el('communityLink').value = String(value);
     el('communityDialogMessage').textContent = '';
@@ -162,7 +170,7 @@ export function mountCommunity() {
   }
   el('communityForm').onsubmit = async event => {
     event.preventDefault();
-    if (busy) return;
+    if (busy || !authorized || !submissions) return;
     const value = el('communityLink').value.trim(), version = draftVersion;
     if (requestValue !== value || !requestKey) { requestKey = crypto.randomUUID(); requestValue = value; }
     busy = true;
@@ -182,7 +190,7 @@ export function mountCommunity() {
       el('communityDialogMessage').textContent = error.message;
       api('/api/community/status').then(result => quota(result.quota)).catch(() => {});
     } finally {
-      busy = false; el('communitySubmit').disabled = false; el('communityLink').readOnly = false;
+      busy = false; el('communitySubmit').disabled = !submissions; el('communityLink').readOnly = false;
       el('communitySubmit').textContent = 'Submit Recommendation'; el('communityForm').removeAttribute('aria-busy');
     }
   };
@@ -228,5 +236,5 @@ export function mountCommunity() {
   });
   window.addEventListener('content-controls-changing', invalidate);
   window.CivitaiCommunity = Object.freeze({load, recommend, activate, deactivate});
-  setInterval(()=>{if(productionBeta&&authorized&&!section.classList.contains('hidden'))activate();},60000);
+  setInterval(()=>{if(policyControlled&&authorized&&!section.classList.contains('hidden'))activate();},60000);
 }
