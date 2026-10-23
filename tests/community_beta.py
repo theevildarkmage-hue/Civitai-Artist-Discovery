@@ -24,7 +24,8 @@ class BetaControls(unittest.TestCase):
             root=Path(folder);(root/'settings.json').write_text('{"browsingLevels":[1,2]}')
             original=(root/'settings.json').read_bytes()
             self.assertFalse(beta.configuration(root)['enabled'])
-            with self.assertRaises(ValueError):beta.opt_in(root,True)
+            with patch.object(beta,'BETA_ENDPOINT',None):
+                with self.assertRaises(ValueError):beta.opt_in(root,True)
             with patch.object(beta,'BETA_ENDPOINT','https://reviewed.supabase.co/functions/v1/community-v1'):
                 self.assertTrue(beta.opt_in(root,True)['enabled'])
                 self.assertTrue(beta.configuration(root)['optedIn'])
