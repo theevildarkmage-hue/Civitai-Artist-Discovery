@@ -15,7 +15,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-CANDIDATE = sys.argv[1] if len(sys.argv) > 1 else "spark"
+CANDIDATE = sys.argv[1] if len(sys.argv) > 1 else "beta"
 OUT = ROOT / "static" / "app.ico"
 
 BACKDROP = (23, 24, 27)
@@ -81,7 +81,14 @@ def fan(size):
     return image
 
 
-BUILDERS = {"compass": compass, "spark": spark, "fan": fan}
+def beta(size):
+    image=spark(size)
+    draw=ImageDraw.Draw(image);unit=size*SCALE/32
+    draw.rounded_rectangle([unit*17,unit*20,unit*31,unit*31],radius=unit*2,fill=(156,102,255))
+    draw.text((unit*20,unit*20),'B',fill=LIGHT,font=__import__('PIL.ImageFont',fromlist=['truetype']).load_default(size=int(unit*10)))
+    return image
+
+BUILDERS = {"compass": compass, "spark": spark, "fan": fan,"beta":beta}
 
 
 def render(name, size):

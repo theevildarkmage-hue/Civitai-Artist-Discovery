@@ -1,6 +1,6 @@
 // Undeployed Edge Function. No SDK dependency and no browser OAuth transport.
 export function createCommunityHandler({fetch:transport=globalThis.fetch, ipLimit=120,
-  ipWindowMs=60000, maxConcurrent=16, ownerOnly=false, invitationOnly=false} = {}) {
+  ipWindowMs=60000, maxConcurrent=16, ownerOnly=false, invitationOnly=false, distributedLimit=false} = {}) {
 const fetch=transport;
 const ingress=new Map<string,{started:number,count:number}>();
 let active=0;
@@ -21,12 +21,16 @@ const messages: Record<string, string> = {
   READ_ONLY:"Community Beta is read-only. Please try submitting again later.",
   SUBMITTER_BLOCKED:"This account cannot submit Community recommendations.",
   INVITE_LIMIT:"The invitation limit has been reached.",
+  INVITE_ONLY:"Community Beta is Invite Only",
+  INVITE_REVOKED:"Your Community Beta invitation has been revoked.",
+  INVITE_EXPIRED:"Your Community Beta invitation has expired.",
 };
 class Failure extends Error { constructor(public code: string) { super(code); } }
 const fail = (code: string): never => { throw new Failure(code); };
 const status = (code: string) => ({AUTH_REQUIRED:401, AUTH_EXPIRED:401, FORBIDDEN:403,
   SELF_RECOMMENDATION:403, DUPLICATE:409, MEMBER_QUOTA:409, ARTIST_QUOTA:409,
-  UNAVAILABLE:503, RATE_LIMITED:429, BETA_DISABLED:503, READ_ONLY:403, CONTENT_FILTERED:403, SUBMITTER_BLOCKED:403}[code] ?? 400);
+  UNAVAILABLE:503, RATE_LIMITED:429, BETA_DISABLED:503, READ_ONLY:403, CONTENT_FILTERED:403, SUBMITTER_BLOCKED:403,
+  INVITE_ONLY:403,INVITE_REVOKED:403,INVITE_EXPIRED:403}[code] ?? 400);
 const reply = (body: unknown, code=200) => new Response(JSON.stringify(body), {
   status:code, headers:{'Content-Type':'application/json','Cache-Control':'no-store'},
 });
@@ -62,7 +66,7 @@ async function readJSON(response: Response, max: number): Promise<any> {
 }
 async function upstream(url: string, token?: string): Promise<any> {
   const response=await fetch(url, {redirect:'manual',signal:AbortSignal.timeout(8000),
-    headers:{Accept:'application/json','User-Agent':'CivitaiArtistDiscovery/3.0.0-dev',...(token?{Authorization:`Bearer ${token}`}:{})}});
+    headers:{Accept:'application/json','User-Agent':'CivitaiDiscoveryBeta/3.0.0-beta.1',...(token?{Authorization:`Bearer ${token}`}:{})}});
   if(response.status===401) fail('AUTH_EXPIRED');
   if(response.status===403) fail(url==='https://auth.civitai.com/api/auth/oauth/userinfo'?'AUTH_EXPIRED':'INVALID_ARTWORK');
   if(response.status===429) fail('RATE_LIMITED');
@@ -167,6 +171,9 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     if(length && (!/^\d+$/.test(length) || Number(length)>8192)) fail('INVALID_REQUEST');
     const body=await readJSON(new Response(request.body),8192);
     if(!body || typeof body!=='object' || Array.isArray(body) || body.apiVersion!==1 || typeof body.operation!=='string') fail('INVALID_REQUEST');
+    // Shared PostgreSQL bucket bounds upstream amplification across instances.
+    // It does not cap billed Edge invocations or replace provider usage alerts.
+    if(distributedLimit) await rpc('community_take_rate',{p_key:'project:community'});
     const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token));
     const digest=Array.from(new Uint8Array(hash),n=>n.toString(16).padStart(2,'0')).join('');
     await rpc('community_take_rate',{p_key:`token:${digest}`});
@@ -178,6 +185,17 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     const username=member.preferred_username||member.username;
     if(typeof username!=='string' || username.length<1 || username.length>200) fail('AUTH_EXPIRED');
     await rpc('community_take_rate',{p_key:`member:${memberId}`});
+
+    // Application registry is independent of Community invitations and policy.
+    // Identity always comes from the fresh UserInfo response above.
+    if(body.operation==='register') {
+      if(Object.keys(body).some(k=>!['apiVersion','operation','appVersion','platform','disclosure'].includes(k))
+         || typeof body.appVersion!=='string' || body.appVersion.length<1 || body.appVersion.length>64
+         || !['Windows','Linux','macOS','Other'].includes(body.platform) || body.disclosure!=='2026-10-23') fail('INVALID_REQUEST');
+      if(Deno.env.get('DISCOVERY_REGISTRY_STATE')!=='enabled') return reply({apiVersion:1,registered:false,retryAfterSeconds:43200});
+      return reply(await rpc('community_registry_upsert',{p_member:memberId,p_name:username,
+        p_version:body.appVersion,p_platform:body.platform,p_disclosure:body.disclosure}));
+    }
 
     // The staging entry point fixes this option in code, never in a request.
     // Compare only fresh UserInfo identity, before any content/quota/write RPC.
@@ -193,7 +211,6 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     if(keys.some(k=>!['apiVersion','operation',...fields].includes(k))) fail('INVALID_REQUEST');
     // Only fresh Civitai UserInfo supplies this ID. No JWT/body/header identity.
     // Database invitation checks are deliberately uncached across instances.
-    if(invitationOnly) await rpc('community_access',{p_member:memberId});
     // Server-owned configuration, read for every authenticated operation. Missing
     // or malformed state is disabled; clients cannot override it. Secret changes
     // disable submissions without an application release (propagation tested in staging).
@@ -207,6 +224,12 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     const submissions=ownerWindow || (!ownerOnly && state==='enabled');
     const policy={available:submissions||state==='read_only',submissions,
       ...(invitationOnly?{reporting:submissions||state==='read_only'}:{})};
+    // Global disable takes precedence over invitation status and roster lookup.
+    if(invitationOnly && !policy.available) {
+      if(body.operation==='status') return reply({apiVersion:1,member:{id:memberId,username},quota:null,development:false,beta:policy});
+      fail('BETA_DISABLED');
+    }
+    if(invitationOnly) await rpc('community_access',{p_member:memberId});
     if(body.operation!=='status' && !policy.available) fail('BETA_DISABLED');
     if(['recommend','verify','withdraw'].includes(body.operation) && !policy.submissions) fail('READ_ONLY');
     let result:any;

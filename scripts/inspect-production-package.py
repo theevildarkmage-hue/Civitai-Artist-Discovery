@@ -32,7 +32,7 @@ def snapshot(root):
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--package',required=True,type=Path);parser.add_argument('--output',required=True,type=Path);parser.add_argument('--upgrade-profile',type=Path)
     args=parser.parse_args();package=args.package.resolve();output=args.output.resolve();output.mkdir(parents=True,exist_ok=True)
-    executable=package/'CivitaiArtistDiscovery.exe';archive=CArchiveReader(str(executable));pyz=archive.open_embedded_archive('PYZ.pyz')
+    executable=package/'CivitaiDiscoveryBeta.exe';archive=CArchiveReader(str(executable));pyz=archive.open_embedded_archive('PYZ.pyz')
     forbidden=[name for name in pyz.toc if name.startswith(('dev.','tests.')) or name in ('discovery.community_dev','discovery.community_fixtures','lab','actor')]
     assert not forbidden,forbidden
     # Inspect our actual frozen code constants/filenames, not just archive names.
@@ -98,14 +98,14 @@ def main():
                 page.route('**/api/auth-status',lambda route:route.fulfill(json={'connected':True,'id':700,'username':'UI simulation only','socialWrite':False}))
                 page.route('**/api/discovery/summary',lambda route:route.fulfill(json={'hasData':False,'lastSyncAt':'2099-01-01T00:00:00Z'}))
                 page.reload(wait_until='networkidle');assert page.locator('#tabGallery').is_visible()
-                assert page.locator('#tabCommunity').is_hidden()
+                assert page.locator('#tabCommunity').is_visible()
                 assert request('/api/community/recommend',{'artwork':123})[0] in (401,403)
                 page.screenshot(path=str(output/(scenario+'-ui-simulated-auth.png')))
                 page.screenshot(path=str(output/(scenario+'.png')));browser.close()
             assert request('/api/app/close',{})[1]['closing'];process.wait(timeout=15)
             after=snapshot(profile)
             assert all(after.get(k)==v for k,v in before.items()),'Upgrade record changes'
-            result['profiles'].append({'scenario':scenario,'passed':True,'preservedCriticalTables':len(before),'noOAuthCredentialsCopied':True,'developerRoutes404':True,'betaDefaultOff':True,'localOptInDeniedUntilRollout':True,'oauthWelcomeRendered':True,'browserOnlyFakeIdentityCannotSubmit':True})
+            result['profiles'].append({'scenario':scenario,'passed':True,'preservedCriticalTables':len(before),'noOAuthCredentialsCopied':True,'developerRoutes404':True,'betaDefaultOff':True,'localOptInDeniedUntilRollout':True,'communityTabVisible':True,'oauthWelcomeRendered':True,'browserOnlyFakeIdentityCannotSubmit':True})
         finally:
             if process.poll() is None:process.terminate();process.wait(timeout=10)
     result['passed']=True;result['scratch']=str(scratch)

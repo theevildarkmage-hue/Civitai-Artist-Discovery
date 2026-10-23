@@ -22,6 +22,9 @@ import urllib.parse
 import urllib.request
 
 MESSAGES = {
+    "INVITE_ONLY": "Community Beta is Invite Only",
+    "INVITE_REVOKED": "Your Community Beta invitation has been revoked.",
+    "INVITE_EXPIRED": "Your Community Beta invitation has expired.",
     "BETA_DISABLED": "Community Beta is temporarily disabled.",
     "READ_ONLY": "Community Beta is read-only. Please try again later.",
     "INVALID_ARTWORK": "Artwork unavailable or ineligible. Use a public Civitai image URL or numeric image ID; check that it opens on Civitai.",
@@ -170,7 +173,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def bounded_json(url, token=None, body=None):
-    headers = {"Accept": "application/json", "User-Agent": "CivitaiArtistDiscovery/3.0.0-dev"}
+    headers = {"Accept": "application/json", "User-Agent": "CivitaiDiscoveryBeta/3.0.0-beta.1"}
     if token:
         if not isinstance(token, str) or len(token) > 8192 or any(c.isspace() for c in token):
             raise CommunityError("AUTH_EXPIRED", 401)

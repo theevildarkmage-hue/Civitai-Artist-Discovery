@@ -100,17 +100,22 @@ def select_release(releases: object, current_version: str) -> dict | None:
     """Choose the newest published release containing this app's verified ZIP."""
     choices = []
     current_is_prerelease = is_prerelease(current_version)
+    beta_channel = bool(re.fullmatch(r'3\.\d+\.\d+-beta\.[1-9]\d*',current_version))
     for release in releases if isinstance(releases, list) else []:
         if not isinstance(release, dict) or release.get("draft"):
             continue
         tag = str(release.get("tag_name") or "").removeprefix("v")
+        if beta_channel and (not re.fullmatch(r'v3\.\d+\.\d+-beta\.[1-9]\d*',str(release.get('tag_name')))
+                or release.get('prerelease') is not True
+                or not re.fullmatch(r'[0-9a-f]{40}',str(release.get('target_commitish')))):
+            continue
         # Stable installs stay on the stable channel. Prerelease installs may see both
         # prereleases and the eventual stable build so beta users can graduate normally.
         if not current_is_prerelease and (release.get("prerelease") or is_prerelease(tag)):
             continue
         if not is_newer(tag, current_version):
             continue
-        expected = f"CivitaiArtistDiscovery-{tag}.zip"
+        expected = f"{'CivitaiDiscoveryBeta' if beta_channel else 'CivitaiArtistDiscovery'}-{tag}.zip"
         assets = [asset for asset in release.get("assets") or []
                   if isinstance(asset, dict) and asset.get("state") == "uploaded"]
         archive = next((asset for asset in assets if asset.get("name") == expected), None)
@@ -132,6 +137,7 @@ def select_release(releases: object, current_version: str) -> dict | None:
             "assetSize": int(archive.get("size") or 0),
             "sha256": digest.split(":", 1)[1].lower(),
             "prerelease": bool(release.get("prerelease")),
+            **({'channel':'beta','sourceCommit':release['target_commitish'],'applicationId':'CivitaiDiscoveryBeta'} if beta_channel else {}),
         }))
     return max(choices, key=lambda item: item[0])[1] if choices else None
 
@@ -146,6 +152,23 @@ def _open_json(url: str, timeout: int = 15):
         if int(response.headers.get("Content-Length") or 0) > 5 * 1024 * 1024:
             raise RuntimeError("GitHub returned an unexpectedly large update response")
         return json.loads(response.read(5 * 1024 * 1024 + 1))
+
+
+def verify_beta_ref(release: dict) -> None:
+    """Resolve lightweight/annotated GitHub tags to the approved immutable commit."""
+    if release.get('channel')!='beta':return
+    tag=release.get('tag','');commit=release.get('sourceCommit','')
+    if not re.fullmatch(r'v3\.\d+\.\d+-beta\.[1-9]\d*',tag) or not re.fullmatch(r'[0-9a-f]{40}',commit):
+        raise RuntimeError('Invalid beta tag or source commit')
+    value=_open_json(f'https://api.github.com/repos/{REPOSITORY}/git/ref/tags/{tag}')
+    obj=value.get('object',{})
+    for _ in range(4):
+        if obj.get('type')=='commit':break
+        if obj.get('type')!='tag' or not re.fullmatch(r'[0-9a-f]{40}',str(obj.get('sha'))):
+            raise RuntimeError('Unexpected beta tag reference')
+        obj=_open_json(f'https://api.github.com/repos/{REPOSITORY}/git/tags/'+obj['sha']).get('object',{})
+    if obj.get('type')!='commit' or obj.get('sha')!=commit:
+        raise RuntimeError('Beta release tag does not match its approved commit')
 
 
 def _download(url: str, target: Path, expected_size: int, progress) -> str:
@@ -197,7 +220,7 @@ def _extract_verified(archive: Path, destination: Path, executable_name: str) ->
                 raise RuntimeError("The update package contains an unsupported symbolic link")
         package.extractall(destination)
     executables = [path for path in destination.rglob(executable_name)
-                   if path.is_file() and path.parent.name == "CivitaiArtistDiscovery"]
+                   if path.is_file() and path.parent.name in ("CivitaiArtistDiscovery","CivitaiDiscoveryBeta")]
     if len(executables) != 1:
         raise RuntimeError("The update package does not contain the expected application")
     return executables[0].parent
@@ -279,8 +302,8 @@ def apply_staged_update(config_path: Path, *, launch: bool = True,
     if not staged_executable.is_file():
         raise RuntimeError("The staged executable is missing")
     wait_for_process(int(config.get("parentPid") or 0))
-    targets = [entry for entry in staged_root.iterdir()
-               if entry.name.casefold() != "data"]
+    targets = sorted((entry for entry in staged_root.iterdir()
+               if entry.name.casefold() != "data"),key=lambda entry:entry.name)
     if not targets:
         raise RuntimeError("The staged package is empty")
     if backup_root.exists():
@@ -292,22 +315,27 @@ def apply_staged_update(config_path: Path, *, launch: bool = True,
             target = install_root / source.name
             backup = backup_root / source.name
             if target.exists():
-                _copy_entry(target, backup)
-            _remove_entry(target)
+                # Same-volume rename either preserves the whole old entry or
+                # fails. Recursive deletion could remove half a locked runtime
+                # before raising, leaving it absent from the rollback journal.
+                target.replace(backup)
             changed.append(source.name)
             _copy_entry(source, target)
         result = {"state": "installed", "version": config.get("version"),
                   "installedAt": _now(), "rolledBack": False}
         _write_json(result_path, result)
     except Exception as error:
+        recovery_errors=[]
         for name in reversed(changed):
             target = install_root / name
-            _remove_entry(target)
             backup = backup_root / name
-            if backup.exists():
-                _copy_entry(backup, target)
+            try:
+                _remove_entry(target)
+                if backup.exists():backup.replace(target)
+            except OSError:recovery_errors.append(name)
         result = {"state": "failed", "version": config.get("version"),
-                  "failedAt": _now(), "rolledBack": True, "error": str(error)[:500]}
+                  "failedAt": _now(), "rolledBack": not recovery_errors, "error": str(error)[:500],
+                  "recoveryRequired":recovery_errors}
         _write_json(result_path, result)
         raise
     if launch:
@@ -339,6 +367,13 @@ class UpdateManager:
         release = cached.get("release") if isinstance(cached, dict) else None
         self.release = release if isinstance(release, dict) \
             and is_newer(release.get("version"), self.current_version) else None
+        if re.fullmatch(r'3\.\d+\.\d+-beta\.[1-9]\d*',self.current_version):
+            # Cached metadata must never reintroduce a stable/wrong-app release.
+            if not self.release or self.release.get('channel')!='beta' or self.release.get('applicationId')!='CivitaiDiscoveryBeta' \
+                or self.release.get('tag')!='v'+str(self.release.get('version')) \
+                or not re.fullmatch(r'3\.\d+\.\d+-beta\.[1-9]\d*',str(self.release.get('version'))) \
+                or not re.fullmatch(r'[0-9a-f]{40}',str(self.release.get('sourceCommit'))):
+                self.release=None
 
     def _cache_fresh(self) -> bool:
         value = _read_json(self.cache_path).get("checkedAt")
@@ -370,6 +405,7 @@ class UpdateManager:
     def _check_worker(self) -> None:
         try:
             release = select_release(_open_json(RELEASES_URL), self.current_version)
+            if release:verify_beta_ref(release)
             _write_json(self.cache_path, {"checkedAt": _now(), "release": release})
             with self.lock:
                 self.release = release
@@ -404,6 +440,7 @@ class UpdateManager:
             def progress(received, total):
                 with self.lock:
                     self.job.update({"downloaded": received, "total": total})
+            verify_beta_ref(release)
             digest = _download(release["assetUrl"], part, release["assetSize"], progress)
             if digest != release["sha256"]:
                 raise RuntimeError("The downloaded update failed SHA-256 verification")
@@ -411,6 +448,12 @@ class UpdateManager:
             with self.lock:
                 self.job["phase"] = "preparing"
             staged_root = _extract_verified(archive, extract, self.executable.name)
+            if release.get('channel')=='beta':
+                identity=_read_json(staged_root/'release-identity.json')
+                expected={'applicationId':'CivitaiDiscoveryBeta','channel':'beta','version':version,
+                          'tag':release['tag'],'sourceCommit':release['sourceCommit']}
+                if any(identity.get(k)!=v for k,v in expected.items()) or identity.get('sourceDirty') is not False or identity.get('preview') is not False:
+                    raise RuntimeError('The beta package identity does not match the approved release')
             with self.lock:
                 self.job = {"phase": "ready", "downloaded": release["assetSize"],
                             "total": release["assetSize"], "error": None,

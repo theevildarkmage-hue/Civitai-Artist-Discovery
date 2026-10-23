@@ -116,24 +116,73 @@ else:
             try:request(url,{},method='POST');return
             except OSError:time.sleep(.1)
         raise RuntimeError('Owned service did not become ready')
-    def start_rest(database_override=None,port_override=None):
+    def start_rest(database_override=None,port_override=None,role='cad3_rest',password=None):
         return launch('postgrest',[env['CAD_TEST_POSTGREST']],{
-            'PGRST_DB_URI':f"postgresql://cad3_rest@127.0.0.1:{env['PGPORT']}/{database_override or env['PGDATABASE']}",
-            'PGPASSWORD':rest_password,'PGRST_DB_SCHEMAS':'public','PGRST_DB_ANON_ROLE':'anon',
+            'PGRST_DB_URI':f"postgresql://{role}@127.0.0.1:{env['PGPORT']}/{database_override or env['PGDATABASE']}",
+            'PGPASSWORD':password or rest_password,'PGRST_DB_SCHEMAS':'public','PGRST_DB_ANON_ROLE':'anon',
             'PGRST_JWT_SECRET':secret,'PGRST_SERVER_HOST':'127.0.0.1','PGRST_SERVER_PORT':str(port_override or rest_port),
             'PGRST_DB_POOL':'4','PGRST_DB_POOL_ACQUISITION_TIMEOUT':'1','PGRST_LOG_LEVEL':'crit'})
-    def start_edge(live=False,state='enabled',private_beta=False,port_override=None,rest_override=None):
+    def start_edge(live=False,state='enabled',private_beta=False,port_override=None,rest_override=None,registry_state='disabled',distributed_limit=False):
         return launch('deno',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
-            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_PRIVATE_BETA',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_PRIVATE_BETA,DISCOVERY_REGISTRY_STATE,CAD_TEST_DISTRIBUTED_LIMIT',
             '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
             'SUPABASE_URL':rest_override or rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2' if private_beta else '1,2,4,8,16',
             # The shared handler reads this even outside owner-only mode. Pin an
             # expired synthetic value; never inherit an interactive write window.
             'COMMUNITY_OWNER_TEST_EXPIRES_AT':'2000-01-01T00:00:00Z',
             'CAD_TEST_PRIVATE_BETA':'1' if private_beta else '0',
+            'DISCOVERY_REGISTRY_STATE':registry_state,
+            'CAD_TEST_DISTRIBUTED_LIMIT':'1' if distributed_limit else '0',
             'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(port_override or edge_port),
             'CAD_TEST_LIVE_READONLY':'1' if live else '0',
             'DENO_NO_UPDATE_CHECK':'1','DENO_DIR':str(scratch/'deno-cache')})
+    def release_probe():
+        from community_release import run as release_run,backup_release
+        auth_url=None;registry_url=None
+        def api(role,name,body):
+            nonlocal auth_url
+            if auth_url is None:
+                password=secrets.token_urlsafe(40)
+                sql("create role authenticator login noinherit password '"+password+"';grant anon,authenticated,service_role to authenticator;grant connect on database "+env['PGDATABASE']+" to authenticator;")
+                hba=Path(env['CAD_TEST_PG_DATA_DIR'])/'pg_hba.conf';hba.write_text(f"host {env['PGDATABASE']} authenticator 127.0.0.1/32 scram-sha-256\n"+hba.read_text());sql('select pg_reload_conf();')
+                sql("insert into auth.users values('00000000-0000-0000-0000-000000000001');insert into community_private.auth_operators values('00000000-0000-0000-0000-000000000001',9900,clock_timestamp()+interval '1 hour',false);")
+                rest_test_port=port();auth_url=f'http://127.0.0.1:{rest_test_port}'
+                wait(auth_url,start_rest(port_override=rest_test_port,role='authenticator',password=password))
+            claims={'role':'service_role' if role=='service' else 'anon' if role=='anon' else 'authenticated','exp':int(time.time())+3600,
+                    'sub':'00000000-0000-0000-0000-000000000001' if role.startswith('operator') or role=='forged' else '00000000-0000-0000-0000-000000000002',
+                    'aal':'aal1' if role=='operator_aal1' else 'aal2'}
+            bearer='Bearer '+token(claims,'invalid-signature-key-not-authorized' if role=='forged' else secret)
+            if name.startswith('community_private.'):
+                payload=dict(body or {});method=payload.pop('__method','GET')
+                return request(auth_url+'/'+name.split('.')[1]+'?select=*&limit=1',payload if method!='GET' else None,
+                    method=method,auth=bearer,headers={'Accept-Profile':'community_private','Content-Profile':'community_private'})
+            return request(auth_url+'/rpc/'+name,body,auth=bearer)
+        def register(extra=None):
+            nonlocal registry_url
+            if registry_url is None:
+                registry_port=port();registry_url=f'http://127.0.0.1:{registry_port}'
+                wait(registry_url,start_edge(state='disabled',private_beta=True,port_override=registry_port,registry_state='enabled'))
+            bearer=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
+            return request(registry_url,{'apiVersion':1,'operation':'register','appVersion':'3.0.0-beta.1','platform':'Linux','disclosure':'2026-10-23',**(extra or {})},auth='Bearer '+bearer)[1]
+        result=release_run(sql=sql,env=env,output=output,api=api,register=register)
+        assert register().get('registered') is True
+        restore_token=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
+        result['releaseRestore']=backup_release(sql=sql,env=env,output=output,restore_http=lambda db:restored_probe(db,restore_token))
+        urls=[]
+        for _ in range(2):
+            endpoint_port=port();url=f'http://127.0.0.1:{endpoint_port}';urls.append(url)
+            wait(url,start_edge(state='disabled',private_beta=True,port_override=endpoint_port,distributed_limit=True))
+        statuses=[]
+        for n in range(35):
+            bearer=token({'sub':str(8900000000+n),'exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
+            statuses.append(request(urls[n%2],{'apiVersion':1,'operation':'status'},auth='Bearer '+bearer)[0])
+        assert statuses==[200]*30+[429]*5,statuses
+        # Rejected RPCs roll back their attempted increment. The bucket records
+        # admitted calls, while the HTTP evidence records all 35 attempts.
+        assert sql("select requests=30 from community_rate_buckets where key='project:community';")=='t'
+        evidence={'passed':True,'instances':2,'requests':35,'accepted':30,'rateLimited':5,'billedInvocationCap':False,'newCommunityRecords':0}
+        (output/'distributed-limit.json').write_text(json.dumps(evidence,indent=2));result['distributedLimit']=evidence
+        return result
     def legacy_probe(owner,owner_token):
         legacy_dir=scratch/'legacy-v10';legacy_dir.mkdir(exist_ok=True)
         old=subprocess.run(['git','show','1256bcac5b9fa0b8c1eb350bb49baa0a77c6eea3:supabase/functions/community-v1/handler.ts'],cwd=ROOT,capture_output=True,check=True).stdout
@@ -146,7 +195,7 @@ else:
         (legacy_dir/'serve.ts').write_text(launcher)
         legacy_port=port();url=f'http://127.0.0.1:{legacy_port}'
         proc=launch('legacy-v10',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
-            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_TEST_OWNER_ID,COMMUNITY_OWNER_TEST_EXPIRES_AT',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_TEST_OWNER_ID,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_DISTRIBUTED_LIMIT',
             '--allow-net=127.0.0.1',str(legacy_dir/'serve.ts')],{
             'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}',
             'CAD_TEST_EDGE_PORT':str(legacy_port),'CAD_TEST_LIVE_READONLY':'0','COMMUNITY_BETA_STATE':'read_only',
@@ -210,7 +259,7 @@ else:
             def second_instance():
                 second_port=port();process=start_edge(private_beta=True,port_override=second_port)
                 url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
-            beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,sql=sql,call=call,request=request,edge=edge,member=member,
+            beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,release_probe=release_probe,sql=sql,call=call,request=request,edge=edge,member=member,
                 restart=beta_restart_fast,set_fault=beta_fault_fast,env=env,output=output,seed=seed)
             (output/'summary.json').write_text(json.dumps({'passed':True,'privateBeta':beta_result,'baselineHttpSkipped':True},indent=2))
             raise SystemExit(0)
@@ -444,7 +493,7 @@ else:
             def second_instance():
                 second_port=port();process=start_edge(private_beta=True,port_override=second_port)
                 url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
-            beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,sql=sql,call=call,request=request,edge=edge,member=member,
+            beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,release_probe=release_probe,sql=sql,call=call,request=request,edge=edge,member=member,
                 restart=beta_restart,set_fault=beta_fault,env=env,output=output,seed=seed)
         summary={'passed':True,'runtime':'Deno','realPostgREST':True,'realPostgreSQL':True,
             'syntheticSignedUserInfo':True,'syntheticArtworkMetadata':True,'scenarios':scenarios,'counts':http_counts,
