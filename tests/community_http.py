@@ -162,7 +162,7 @@ else:
                 registry_port=port();registry_url=f'http://127.0.0.1:{registry_port}'
                 wait(registry_url,start_edge(state='disabled',private_beta=True,port_override=registry_port,registry_state='enabled'))
             bearer=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
-            return request(registry_url,{'apiVersion':1,'operation':'register','appVersion':'3.0.0-beta.1','platform':'Linux','disclosure':'2026-10-23',**(extra or {})},auth='Bearer '+bearer)[1]
+            return request(registry_url,{'apiVersion':1,'operation':'register','appVersion':'3.0.0-beta.1','platform':'Linux',**(extra or {})},auth='Bearer '+bearer)[1]
         result=release_run(sql=sql,env=env,output=output,api=api,register=register)
         assert register().get('registered') is True
         restore_token=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)

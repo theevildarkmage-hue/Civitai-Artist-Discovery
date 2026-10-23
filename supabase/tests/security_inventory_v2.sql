@@ -20,6 +20,7 @@ select jsonb_build_object(
    from pg_namespace n where n.nspname in ('public','community_private')),
  'relations',(select jsonb_agg(jsonb_build_object('schema',n.nspname,'name',c.relname,'kind',c.relkind,'owner',pg_get_userbyid(c.relowner),
    'rlsEnabled',c.relrowsecurity,'rlsForced',c.relforcerowsecurity,
+     'columns',(select jsonb_agg(a.attname order by a.attnum) from pg_attribute a where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped),
    'access',(select jsonb_agg(jsonb_build_object('role',r.rolname,
      'select',has_table_privilege(r.oid,c.oid,'SELECT'),'insert',has_table_privilege(r.oid,c.oid,'INSERT'),
      'update',has_table_privilege(r.oid,c.oid,'UPDATE'),'delete',has_table_privilege(r.oid,c.oid,'DELETE'),

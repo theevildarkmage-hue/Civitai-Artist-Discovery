@@ -57,7 +57,7 @@ DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 from discovery.registry import RegistryClient
-REGISTRY = RegistryClient(DATA_ROOT,APP_VERSION)
+REGISTRY = RegistryClient(APP_VERSION)
 PERSONAL_THUMBNAILS=ThumbnailCache(DATA_ROOT/'cache'/'artwork-thumbnails',allow_downscale=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
 FOLLOW_CACHE = DATA_ROOT / "following.json"
@@ -1348,8 +1348,6 @@ class Handler(BaseHTTPRequestHandler):
                                     "collectionsRead": False, "collectionsWrite": False,
                                     "readOnly": True, "oauthJob": job})
             return
-        if parsed.path == '/api/registry/consent':
-            self.json_response(REGISTRY.consent());return
         if parsed.path == "/api/oauth/client":
             try:
                 self.json_response(client_info())
@@ -1867,8 +1865,6 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         try:
             body = self.request_json()
-            if parsed.path=='/api/registry/consent':
-                self.json_response(REGISTRY.set_consent(body.get('consented')));return
             if getattr(sys,'frozen',False) and parsed.path.startswith(('/__dev/','/api/community/development/')):
                 self.send_error(404);return
             if parsed.path=='/api/community/beta':

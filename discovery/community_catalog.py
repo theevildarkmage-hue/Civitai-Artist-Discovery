@@ -20,8 +20,8 @@ BASE_VERSIONS={'202610140001','202610150001','202610210001','202610220001'}
 
 def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_definitions=None):
     """No inference/auto-detection: requesting candidate always requires its objects."""
-    if model not in ('baseline','candidate','release'):raise ValueError('Explicit catalog model required')
-    candidate=model!='baseline';release=model=='release';checks=[]
+    if model not in ('baseline','candidate','release','automatic'):raise ValueError('Explicit catalog model required')
+    candidate=model!='baseline';release=model in ('release','automatic');automatic=model=='automatic';checks=[]
     def check(name,value):checks.append({'name':name,'passed':bool(value)})
     def objects(kind):return matrix.get(kind) or []
     def key(row):return row.get('schema','public')+'.'+str(row.get('name'))
@@ -53,6 +53,8 @@ def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_de
     check('exact table inventory',{key(t) for t in objects('relations')}==expected_tables and len(objects('relations'))==len(expected_tables))
     for row in objects('relations'):
         check('table ownership/RLS '+key(row),row.get('kind')=='r' and row.get('owner')==owner and row.get('rlsEnabled') is True)
+        if automatic and key(row)=='community_private.discovery_users':
+            check('registry stores only six approved fields',row.get('columns')==['civitai_id','username','first_seen','last_seen','app_version','platform'])
         access(row,('select','insert','update','delete','truncate','references','trigger','maintain',
                     'columnSelect','columnInsert','columnUpdate','columnReferences'))
     expected_sequences={'public.community_recommendations_seq_seq','public.community_audit_seq_seq'}
@@ -65,7 +67,7 @@ def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_de
     if candidate:
         expected.update({'public.'+name:types for name,types in (NEW_RPC|LEGACY_RPC).items()})
         expected['community_private.assert_member']='bigint, boolean'
-    if release:expected.update({'public.community_registry_upsert':'bigint, text, text, text, text',
+    if release:expected.update({'public.community_registry_upsert':'bigint, text, text, text' if automatic else 'bigint, text, text, text, text',
                                'community_private.owner_admin':'text, bigint, text, timestamp with time zone'})
     check('exact routine inventory',{key(r) for r in objects('rpcs')}==set(expected) and len(objects('rpcs'))==len(expected))
     for row in objects('rpcs'):
@@ -93,6 +95,7 @@ def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_de
         versions=[m.get('version') for m in migrations]
         needed=BASE_VERSIONS|({'202610230001'} if candidate else set())
         if release:needed|={'202610230002','202610230003'}
+        if automatic:needed.add('202610230004')
         check('required migration history',needed<=set(versions) and len(versions)==len(set(versions)))
         if not candidate:check('candidate history absent','202610230001' not in versions)
     if expected_definitions is not None:

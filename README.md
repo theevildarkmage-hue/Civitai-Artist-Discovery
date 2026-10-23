@@ -1,14 +1,26 @@
 # Civitai Artist Discovery
 
+## Beta authenticated activity notice
+
+Discovery 3.0 Beta automatically records your verified Civitai account ID, public
+username, first-seen and last-seen timestamps, app version, and platform in its
+private Supabase registry after server-side identity verification. This supports
+beta usage and compatibility monitoring. Activity updates occur at most once every
+12 hours. The registry stores no OAuth tokens or browsing history, is not publicly
+searchable, and does not grant Community access. To request deletion, contact the
+beta owner through the private channel used for your invitation; do not post tokens
+or account details in public issues. Later authenticated use can recreate the entry.
+
+
 Community Beta release preparation is local and default-off. See the
 [readiness matrix, update channels and operating model](docs/3.0-beta-readiness.md)
 and the [unexecuted staging/rollback runbook](docs/3.0-staging-runbook.md).
-No shared Community service or public beta rollout is deployed.
+Private staging is deployed with Community submissions and registry collection disabled; no public beta rollout is active.
 
 ## 3.0.0-dev — isolated Community Gallery development
 
 This clone's `3.0` branch adds an optional Community Gallery with a local SQLite
-simulator. No Supabase project is deployed. Existing 2.x installations and personal
+simulator and private Supabase staging. Existing 2.x installations and personal
 data are not migrated or modified.
 
 ```powershell
