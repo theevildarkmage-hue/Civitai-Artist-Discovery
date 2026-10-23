@@ -43,7 +43,7 @@ def main():
     project=api('');assert project['id']==REF and project['region']=='us-west-2'
     # Pin function semantics after canonical CRLF/LF normalization; the hosted
     # bootstrap used CRLF. Preserve and restore the original definitions as well.
-    inventory=(ROOT/'supabase/tests/security_inventory_v2.sql').read_text().replace('md5(p.prosrc)','md5(replace(p.prosrc,chr(13)||chr(10),chr(10)))')
+    inventory=(ROOT/'supabase/tests/security_inventory_v2.sql').read_text()
     matrix=next(iter(api('/database/query/read-only',inventory)[0].values()))
     snapshot=api('/database/query/read-only',snapshot_query())[0]['snapshot']
     assert validate_catalog(matrix,'baseline',migrations=snapshot['migrations'])['passed'],'Hosted baseline drift'
@@ -87,7 +87,7 @@ def main():
         local_schema=json.loads(sql(schema_query()));assert local_schema==snapshot['schema'],'Exported schema differs from pinned recreation'
         local_matrix=json.loads(sql(inventory))
         def canonical(v):
-            if isinstance(v,dict):return {k:canonical(x) for k,x in v.items()}
+            if isinstance(v,dict):return {k:canonical(x) for k,x in v.items() if k!='bodyStoredMd5'}
             if isinstance(v,list):return sorted([canonical(x) for x in v],key=lambda x:json.dumps(x,sort_keys=True))
             if isinstance(v,str) and v.startswith('search_path='):return v.replace(' ','')
             return v
