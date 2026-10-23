@@ -14,13 +14,20 @@ def run():
     if not token:raise RuntimeError('Provide a test-account access token through the environment')
     status=backend.request('status',token,{})
     assert status['apiVersion']==1 and status['member']['id']>0 and not status['development']
-    assert status['quota']['limit']==3
+    quota=status.get('quota')
+    if quota is not None:assert quota['limit']==3
+    policy=status.get('beta') or {}
+    # Disabled invitation-mode status validates identity without invoking quota
+    # or invitation RPCs. Policy denial precedes artwork validation by design.
+    expected='BETA_DISABLED' if policy.get('available') is False else 'READ_ONLY' if policy.get('submissions') is False else 'INVALID_ARTWORK'
     for artwork in ('https://127.0.0.1/images/1','https://evil.test/images/1'):
         try:backend.request('verify',token,{'artwork':artwork});raise AssertionError('Invalid artwork accepted')
-        except CommunityError as error:assert error.code=='INVALID_ARTWORK'
+        except CommunityError as error:assert error.code==expected
     try:backend.request('status','synthetic-invalid-token',{});raise AssertionError('Invalid token accepted')
     except CommunityError as error:assert error.code=='AUTH_EXPIRED'
-    assert backend.request('status',token,{})['quota']['used']==status['quota']['used']
-    print('PASS: verified Edge identity, errors, no quota spent; tokens never printed')
+    after=backend.request('status',token,{})
+    if quota is not None:assert after['quota']['used']==quota['used']
+    else:assert after.get('quota') is None
+    print('PASS: verified Edge identity and policy errors; no valid write inputs. Disabled quota preservation requires the separate SQL snapshot check; tokens never printed')
 
 if __name__=='__main__':run()
