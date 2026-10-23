@@ -59,7 +59,11 @@ globalThis.fetch=async(url,options={})=>{
   return reply({result:{data:{json:{id:image,user:{id:mode==='own'?seed:image+100000,username:`Artist${image}`},
     availability:'Public',ingestion:'Scanned',needsReview:null,publishedAt:'2026-01-01T00:00:00Z',nsfwLevel:1}}}});
 };
-await import('../supabase/functions/community-v1/index.ts');
+// Exercise multi-member database invariants through the shared handler. The
+// deployed entry point intentionally allows only the staging owner; its hardcoded
+// boundary is covered independently by community_owner_gate.mjs.
+const {createCommunityHandler}=await import('../supabase/functions/community-v1/handler.ts');
+handler=createCommunityHandler();
 async function request(operation,fields={},token='isolated-member-0') {
   const response=await handler(new Request('https://isolated.invalid/functions/v1/community-v1',{
     method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},

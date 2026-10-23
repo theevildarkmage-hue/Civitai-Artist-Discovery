@@ -24,7 +24,9 @@ def run(width):
         def response(number):
             items=[]
             # Filtered pages can be empty while still carrying an opaque next cursor.
-            for index in ([] if filtered and number<4 else range((number-1)*12,number*12)):
+            # A repeated boundary row must not produce another card or lose a cursor.
+            start=(number-1)*12-(1 if number>1 and not filtered else 0)
+            for index in ([] if filtered and number<4 else range(start,number*12)):
                 art={'id':1001+index,'creatorId':2000+index,'username':f'SyntheticArtist{index}',
                     'profileUrl':f'https://civitai.red/user/SyntheticArtist{index}',
                     'imageUrl':f'https://civitai.red/images/{1001+index}',
@@ -52,6 +54,8 @@ def run(width):
             if held:break
             page.wait_for_timeout(20)
         assert len(held)==1
+        assert sentinel.get_attribute('aria-busy')=='true'
+        assert 'Loading' in sentinel.inner_text()
         for _ in range(5):page.mouse.wheel(0,3000)
         page.wait_for_timeout(100);assert calls.count((False,2))==1
         saved=page.evaluate('scrollY')
@@ -68,6 +72,8 @@ def run(width):
         # Resume retries only the aborted cursor, never the first page.
         page.mouse.wheel(0,500);sentinel.scroll_into_view_if_needed()
         page.wait_for_function("()=>document.querySelectorAll('#communityGrid .creator-card').length===24")
+        ids=page.locator('#communityGrid .creator-card').evaluate_all('(xs)=>xs.map(x=>x.dataset.id)')
+        assert len(ids)==len(set(ids)), 'overlapping cursor pages must deduplicate'
         before=page.evaluate('scrollY')
         assert before>=saved-80
         sentinel.scroll_into_view_if_needed();page.mouse.wheel(0,3000)
@@ -101,6 +107,7 @@ def run(width):
         page.wait_for_function("()=>document.querySelectorAll('#communityGrid .creator-card').length===12")
         sentinel.scroll_into_view_if_needed();page.mouse.wheel(0,1000)
         sentinel.filter(has_text="caught up").wait_for()
+        assert sentinel.get_attribute('aria-busy')=='false'
         final_calls=len(calls)
         for _ in range(3):page.mouse.wheel(0,3000)
         page.wait_for_timeout(100);assert len(calls)==final_calls

@@ -123,9 +123,12 @@ else:
             'PGRST_DB_POOL':'4','PGRST_DB_POOL_ACQUISITION_TIMEOUT':'1','PGRST_LOG_LEVEL':'crit'})
     def start_edge(live=False,state='enabled'):
         return launch('deno',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
-            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT',
             '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
             'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2,4,8,16',
+            # The shared handler reads this even outside owner-only mode. Pin an
+            # expired synthetic value; never inherit an interactive write window.
+            'COMMUNITY_OWNER_TEST_EXPIRES_AT':'2000-01-01T00:00:00Z',
             'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(edge_port),
             'CAD_TEST_LIVE_READONLY':'1' if live else '0',
             'DENO_NO_UPDATE_CHECK':'1','DENO_DIR':str(scratch/'deno-cache')})
