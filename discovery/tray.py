@@ -32,11 +32,11 @@ def start_windows_tray(url: str, icon_path: Path, on_exit: Callable[[], None],
         on_exit()
 
     menu = backend.Menu(
-        backend.MenuItem("Open Civitai Artist Discovery", open_app, default=True),
+        backend.MenuItem("Open Civitai Discovery 3.0 Beta", open_app, default=True),
         backend.MenuItem("Exit", exit_app),
     )
-    icon = backend.Icon("CivitaiArtistDiscovery", image_open(icon_path),
-                        "Civitai Artist Discovery", menu)
+    icon = backend.Icon("CivitaiDiscoveryBeta", image_open(icon_path),
+                        "Civitai Discovery 3.0 Beta", menu)
     icon.run_detached()
     return icon
 

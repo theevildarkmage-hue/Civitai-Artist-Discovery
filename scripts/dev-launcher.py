@@ -62,7 +62,7 @@ def owned_instance(data,port,*,listeners=None):
     process=powershell(f'Get-CimInstance Win32_Process -Filter "ProcessId={pid}" | Select-Object ExecutablePath,CommandLine | ConvertTo-Json -Compress')
     if not owns_process(process):raise RuntimeError('The listener is not this Discovery 3.0 checkout. No process was stopped.')
     config=read_json(url+'/api/history/config')
-    if config.get('version')!='3.0.0-dev':raise RuntimeError('The listener does not report Discovery 3.0 development.')
+    if config.get('version') not in ('3.0.0-dev','3.0.0-beta.1'):raise RuntimeError('The listener does not report Discovery 3.0 development.')
     mode=None
     if config.get('developmentDiagnostics'):
         info=read_json(url+'/api/development/diagnostics')

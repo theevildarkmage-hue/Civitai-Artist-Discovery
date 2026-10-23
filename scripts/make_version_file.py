@@ -33,9 +33,9 @@ OUT.write_text(f"""VSVersionInfo(
         StringStruct('CompanyName', 'theevildarkmage126'),
         StringStruct('FileDescription', 'Browse Civitai artists one day at a time'),
         StringStruct('FileVersion', '{version}'),
-        StringStruct('InternalName', 'CivitaiArtistDiscovery'),
+        StringStruct('InternalName', 'CivitaiDiscoveryBeta'),
         StringStruct('LegalCopyright', 'Copyright (c) 2026 theevildarkmage126. MIT licensed.'),
-        StringStruct('OriginalFilename', 'CivitaiArtistDiscovery.exe'),
+        StringStruct('OriginalFilename', 'CivitaiDiscoveryBeta.exe'),
         StringStruct('ProductName', '{name}'),
         StringStruct('ProductVersion', '{version}')])
     ]),

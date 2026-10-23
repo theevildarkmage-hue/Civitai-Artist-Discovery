@@ -87,6 +87,7 @@ logs/
 !supabase/**/*.ts
 !supabase/config.toml
 !supabase/.env.example
+!supabase/deployment-baseline.json
 
 # Reviewed offline video/browser fixtures and availability contract.
 !tests/fixtures/

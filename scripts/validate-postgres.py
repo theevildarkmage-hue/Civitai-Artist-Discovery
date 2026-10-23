@@ -26,8 +26,11 @@ def main():
     parser.add_argument('--manual-test-lab',action='store_true',help='Keep the owned local service and removable Test Lab running after validation')
     parser.add_argument('--beta-only',action='store_true',help='Fast owned beta iteration, skips baseline HTTP scenarios')
     parser.add_argument('--deployment-rehearsal',action='store_true',help='Owned interruption/operator/backup/recovery rehearsal')
+    parser.add_argument('--release-candidate',action='store_true',help='Registry/Auth-operator migrations and signed API role tests')
     args = parser.parse_args()
     if args.deployment_rehearsal and not args.private_beta:parser.error('--deployment-rehearsal requires --private-beta')
+    if args.release_candidate and not args.private_beta:parser.error('--release-candidate requires --private-beta')
+    if args.release_candidate and not args.deployment_rehearsal:parser.error('--release-candidate requires --deployment-rehearsal')
     if args.beta_only and not args.private_beta:parser.error('--beta-only requires --private-beta')
     if bool(args.http_deno) != bool(args.http_postgrest):
         parser.error('Supply both HTTP runtime paths')
@@ -201,6 +204,7 @@ def main():
             env['CAD_TEST_BETA_ACCEPTANCE']='1' if args.private_beta else '0'
             env['CAD_TEST_BETA_ONLY']='1' if args.beta_only else '0'
             env['CAD_TEST_REHEARSAL']='1' if args.deployment_rehearsal else '0'
+            env['CAD_TEST_RELEASE']='1' if args.release_candidate else '0'
             env.update(CAD_ALLOW_LOCAL_HTTP_TESTS='1',CAD_TEST_DENO=str(args.http_deno.resolve()),
                        CAD_TEST_POSTGREST=str(args.http_postgrest.resolve()),CAD_TEST_HTTP_OUTPUT=str(output/'http'))
             if args.http_live_readonly:env['CAD_TEST_LIVE_READONLY']='1'

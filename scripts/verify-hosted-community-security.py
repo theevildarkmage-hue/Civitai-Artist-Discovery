@@ -14,7 +14,7 @@ def main():
     parser.add_argument('--project-ref',required=True,choices=[REF])
     parser.add_argument('--output',required=True,type=Path)
     parser.add_argument('--http-denials',action='store_true',help='After approval, use SUPABASE_PUBLISHABLE_KEY for bounded read/invalid-RPC probes. No valid recommendation inputs.')
-    parser.add_argument('--schema-model',choices=['baseline','candidate'],default='baseline')
+    parser.add_argument('--schema-model',choices=['baseline','candidate','release'],default='baseline')
     parser.add_argument('--catalog-file',type=Path,help='Offline local catalog only; never claims hosted verification')
     parser.add_argument('--expected-owner',default='postgres',help='Offline local catalog owner only; hosted owner is always postgres')
     parser.add_argument('--expected-definitions',type=Path,help='Reviewed native function body fingerprints')

@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 
-def run(*,second_instance,legacy_probe,restored_probe,sql,call,request,edge,member,restart,set_fault,env,output,seed):
+def run(*,second_instance,legacy_probe,restored_probe,release_probe,sql,call,request,edge,member,restart,set_fault,env,output,seed):
     assert env.get('CAD_TEST_PG_SYSTEM_IDENTIFIER')==sql('select system_identifier from pg_control_system();')
     assert Path(env['CAD_TEST_PG_DATA_DIR']).resolve()==Path(sql('show data_directory;')).resolve()
     root=Path(__file__).resolve().parents[1]
@@ -208,7 +208,8 @@ def run(*,second_instance,legacy_probe,restored_probe,sql,call,request,edge,memb
     if rehearsal_before:
         from community_deployment_rehearsal import finish
         rehearsal=finish(sql=sql,env=env,output=output,before=rehearsal_before,call=call,member=member,request=request,edge=edge,restart=restart,legacy_probe=legacy_probe,restored_probe=restored_probe,seed=seed)
-    result={'deploymentRehearsal':rehearsal,'passed':True,'checks':len(checks),'simulatedCivitaiIdentity':True,'realPostgreSQL':True,'realPostgREST':True,'realDeno':True,'migrationPreservedLedger':True}
+    release=release_probe() if env.get('CAD_TEST_RELEASE')=='1' else None
+    result={'releaseCandidate':release,'deploymentRehearsal':rehearsal,'passed':True,'checks':len(checks),'simulatedCivitaiIdentity':True,'realPostgreSQL':True,'realPostgREST':True,'realDeno':True,'migrationPreservedLedger':True}
     (output/'private-beta.json').write_text(json.dumps({'passed':True,'completed':True,'checks':checks},indent=2))
     (output/'private-beta-summary.json').write_text(json.dumps(result,indent=2))
     return result

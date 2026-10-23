@@ -43,8 +43,9 @@ COLLECTIONS_WRITE = 1 << 18
 READ_SCOPE = 1 | 32  # UserRead | MediaRead
 APP_DATA = data_root()
 TOKEN_PATH = APP_DATA / "oauth_tokens.dpapi"
-KEYRING_SERVICE = "CivitaiArtistDiscovery-3.0-dev"
-KEYRING_ACCOUNT = "oauth-tokens"
+KEYRING_SERVICE = "CivitaiDiscoveryBeta"
+# Local keyring namespace only; never sent to the registry or another service.
+KEYRING_ACCOUNT = hashlib.sha256(str(APP_DATA.resolve()).encode()).hexdigest()
 # The 3.0 development namespace must not import a token from an earlier installation.
 LEGACY_TOKEN_PATH = TOKEN_PATH  # No credential migration in the isolated 3.0 build.
 HEADERS = {"Accept": "application/json", "User-Agent": "CivitaiArtistDiscovery/1.0"}

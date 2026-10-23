@@ -1,0 +1,25 @@
+{
+  "projectRef": "aibelmhucizupzvvhdvf",
+  "migrations": [
+    {
+      "path": "supabase/migrations/202610140001_community_v1.sql",
+      "sqlLfSha256": "60d45077374f98240491e427cd3558cf8ffda7c719c0f6e4687cf8cc66312696"
+    },
+    {
+      "path": "supabase/migrations/202610150001_submission_idempotency.sql",
+      "sqlLfSha256": "22e1b5d74d1033714e813a5efbdb5dbc0a72563ff90041dbb3186fbfa87c5cb8"
+    },
+    {
+      "path": "supabase/migrations/202610210001_community_rpc_guards.sql",
+      "sqlLfSha256": "ca1c0d0ed06a495718454bb73c29e96c1a2ade04e8c794c6745e07fd9f43c764"
+    },
+    {
+      "path": "supabase/migrations/202610220001_replay_identity_guards.sql",
+      "sqlLfSha256": "9bac2a9197ea32e4ab1e5949cb5cc4c481c98d7bb317615a7ae9fa416fb93188"
+    }
+  ],
+  "pinnedCandidate": {
+    "path": "supabase/beta-migrations/202610230001_private_beta_security.sql",
+    "sqlLfSha256": "fb5a9959398fe31a59e622e0840d15ffe385423f1ad4bb6467759dbd684c9a66"
+  }
+}

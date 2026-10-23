@@ -50,12 +50,14 @@ from discovery.updater import UpdateManager, apply_staged_update
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
-APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "3.0.0-dev"
+APP_NAME = "Civitai Discovery 3.0 Beta"
+APP_VERSION = "3.0.0-beta.1"
 from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
 DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
+from discovery.registry import RegistryClient
+REGISTRY = RegistryClient(DATA_ROOT,APP_VERSION)
 PERSONAL_THUMBNAILS=ThumbnailCache(DATA_ROOT/'cache'/'artwork-thumbnails',allow_downscale=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
 FOLLOW_CACHE = DATA_ROOT / "following.json"
@@ -1333,9 +1335,12 @@ class Handler(BaseHTTPRequestHandler):
                 # refresh it, so an idle app would sit until the authorization expired and
                 # the next action failed. The page polls this, so the session stays alive
                 # while someone is reading rather than dying underneath them.
-                from discovery.oauth import session_status
+                from discovery.oauth import session_status, get_access_token
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
-                self.json_response({**session_status(), "oauthJob": job})
+                identity=session_status()
+                if identity.get('connected') and not identity.get('needsReauthentication'):
+                    REGISTRY.authenticated(identity,get_access_token)
+                self.json_response({**identity, "oauthJob": job})
             except Exception:
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
                 self.json_response({"connected": False, "socialWrite": False,
@@ -1343,6 +1348,8 @@ class Handler(BaseHTTPRequestHandler):
                                     "collectionsRead": False, "collectionsWrite": False,
                                     "readOnly": True, "oauthJob": job})
             return
+        if parsed.path == '/api/registry/consent':
+            self.json_response(REGISTRY.consent());return
         if parsed.path == "/api/oauth/client":
             try:
                 self.json_response(client_info())
@@ -1860,6 +1867,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         try:
             body = self.request_json()
+            if parsed.path=='/api/registry/consent':
+                self.json_response(REGISTRY.set_consent(body.get('consented')));return
             if getattr(sys,'frozen',False) and parsed.path.startswith(('/__dev/','/api/community/development/')):
                 self.send_error(404);return
             if parsed.path=='/api/community/beta':
@@ -2386,8 +2395,12 @@ if __name__ == "__main__":
     except Exception:
         DATA_ROOT.mkdir(parents=True, exist_ok=True)
         (DATA_ROOT / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
+        # The replacement helper reports through its receipt, not a blocking
+        # startup dialog. Failed unattended installs must return a failing status.
+        if len(sys.argv)==3 and sys.argv[1]=='--apply-update':raise SystemExit(1)
         if getattr(sys, "frozen", False) and os.name == "nt":
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, f"Civitai Artist Discovery could not start.\n\nSee:\n{DATA_ROOT / 'error.log'}", "Civitai Artist Discovery", 0x10)
+            ctypes.windll.user32.MessageBoxW(None, f"Civitai Discovery 3.0 Beta could not start.\n\nSee:\n{DATA_ROOT / 'error.log'}", "Civitai Discovery 3.0 Beta", 0x10)
+            raise SystemExit(1)
         else:
             raise

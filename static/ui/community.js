@@ -37,12 +37,12 @@ export function mountCommunity() {
     el('communityRecommend').disabled=!submissions;
     el('communitySubmit').disabled=busy||!submissions;
     if(!submissions&&dialog.open)dialog.close();
-    if(!submissions)message('Community Beta is read-only. Your personal galleries still work.');
+    if(!submissions)message(status?.beta?.available ? 'Community Beta is read-only. Your personal galleries still work.' : 'Community Beta is temporarily disabled or under maintenance. Your Daily Gallery still works.');
   }
   async function configureBeta() {
     const beta=await api('/api/community/beta');productionBeta=beta.production===true;
     policyControlled=productionBeta||beta.serverPolicy===true;
-    tab.hidden=productionBeta&&!beta.enabled;tab.classList.toggle('hidden',tab.hidden);
+    tab.hidden=false;tab.classList.remove('hidden');
     if(!policyControlled){submissions=true;el('communityRecommend').disabled=false;el('communitySubmit').disabled=false;}
     if(!productionBeta)return;
     tab.textContent='Community Beta';submissions=false;el('communityRecommend').disabled=true;
@@ -50,10 +50,23 @@ export function mountCommunity() {
     const check=document.createElement('input');check.type='checkbox';check.checked=beta.optedIn;check.disabled=!beta.available;
     label.append(check,document.createTextNode(beta.available?' Opt in to Community Beta':' Community Beta is not available yet.'));
     document.getElementById('discovery').append(label);
-    check.onchange=async()=>{check.disabled=true;try{const result=await api('/api/community/beta',{method:'POST',body:JSON.stringify({optedIn:check.checked})});tab.hidden=!result.enabled;tab.classList.toggle('hidden',tab.hidden);if(!result.enabled){invalidate();document.getElementById('tabGallery').click();}}catch(error){check.checked=!check.checked;}finally{check.disabled=false;}};
+    check.onchange=async()=>{check.disabled=true;try{const result=await api('/api/community/beta',{method:'POST',body:JSON.stringify({optedIn:check.checked})});if(!result.enabled){invalidate();document.getElementById('tabGallery').click();}}catch(error){check.checked=!check.checked;}finally{check.disabled=false;}};
   }
-  configureBeta().catch(()=>{tab.hidden=true;tab.classList.add('hidden');});
+  configureBeta().catch(()=>{tab.hidden=false;tab.classList.remove('hidden');});
   const message = value => { el('communityMessage').setAttribute('role','status'); el('communityMessage').textContent = value; };
+  function accessError(error) {
+    applyPolicy(null);
+    const states={
+      INVITE_ONLY:"Community Beta is Invite Only\nWe're currently testing Community with a small group of invited Civitai members. Your account isn't on the invitation list yet. You can continue using the Daily Gallery normally.",
+      INVITE_REVOKED:'Your Community Beta invitation was revoked. Your Daily Gallery still works.',
+      INVITE_EXPIRED:'Your Community Beta invitation expired. Your Daily Gallery still works.',
+      SUBMITTER_BLOCKED:'This account is blocked from Community participation. Contact the beta owner for review.',
+      BETA_DISABLED:'Community Beta is temporarily disabled or under maintenance. Your Daily Gallery still works.',
+      UNAVAILABLE:'Community is temporarily unavailable. Please retry later. Your Daily Gallery still works.',
+      AUTH_REQUIRED:'Sign in to Civitai to use Community.',AUTH_EXPIRED:'Please sign in to Civitai again.',
+    };
+    message(states[error.code]||error.message);
+  }
   let cursor = null, generation = 0, busy = false, draftVersion = 0, requestKey = null, requestValue = null;
   const quota = value => { if (value) {
     el('communityQuota').textContent = `${value.remaining} left this week`;
@@ -66,7 +79,7 @@ export function mountCommunity() {
     visible:()=>authorized && !section.classList.contains('hidden'),
     hasMore:()=>!initialized || firstPage || !!cursor,
     load:fetchPage,
-    onError:error=>{applyPolicy(null);message(error.message);},
+    onError:accessError,
   });
   const artists = new Map(), recommendations = new Map();
   function clearCards() {
@@ -165,7 +178,7 @@ export function mountCommunity() {
       // A restarted server has a new volatile artwork admission list. Refresh the
       // projection then; ordinary tab switches still keep their pages and scroll.
       if (viewSession && status.viewSession && viewSession !== status.viewSession) return load();
-    } catch (error) { applyPolicy(null);if (id === generation) message(error.message); }
+    } catch (error) { if (id === generation) accessError(error); }
   }
   function deactivate() {
     ++generation; clearTimeout(metadataTimer); pages.pause();

@@ -38,20 +38,37 @@ end $cad3$;
 """.replace('QUERY',query)+"insert into supabase_migrations.schema_migrations(version,name,statements) values('202610230001','private_beta_security',array[$cad3_source$"+candidate+"$cad3_source$]);\nnotify pgrst,'reload schema';\ncommit;\n"
 
 
+def build_release_bundle(*,expected_owner='postgres',expected_database='postgres'):
+    bundle=build_bundle(expected_owner=expected_owner,expected_database=expected_database)
+    prerequisite="do $$ begin if to_regclass('auth.users') is null or to_regprocedure('auth.uid()') is null or to_regprocedure('auth.jwt()') is null or to_regprocedure('auth.role()') is null then raise exception 'Supported Supabase Auth schema required';end if;end $$;\n"
+    bundle=bundle.replace('begin;\n', 'begin;\n'+prerequisite,1)
+    extra=''
+    for filename in ('202610230002_application_registry.sql','202610230003_auth_operator.sql'):
+        path=ROOT/'supabase/beta-migrations'/filename;source=path.read_text(encoding='utf-8');version,name=path.stem.split('_',1)
+        assert '$cad3_release$' not in source
+        extra+=source+"\ninsert into supabase_migrations.schema_migrations(version,name,statements) values('"+version+"','"+name+"',array[$cad3_release$"+source+"$cad3_release$]);\n"
+    extra+="do $$ begin if ("+preservation_query()+") is distinct from (select snapshot from cad3_preservation_before) then raise exception 'Release durable-data preservation mismatch';end if;end $$;\n"
+    return bundle.replace("notify pgrst,'reload schema';\ncommit;",extra+"notify pgrst,'reload schema';\ncommit;")
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project-ref',required=True,choices=[REF])
     parser.add_argument('--output-directory',required=True,type=Path)
+    parser.add_argument('--schema-model',choices=['candidate','release'],default='candidate')
     args=parser.parse_args();out=args.output_directory.resolve()
     if out.is_relative_to(ROOT) and not out.is_relative_to(ROOT/'reports'):parser.error('Use ignored reports or external output')
     out.mkdir(parents=True,exist_ok=True)
-    bundle=out/'candidate-upgrade.sql';bundle.write_text(build_bundle(),encoding='utf-8')
+    bundle=out/'candidate-upgrade.sql';bundle.write_text((build_release_bundle if args.schema_model=='release' else build_bundle)(),encoding='utf-8')
     files=list(sorted((ROOT/'supabase/migrations').glob('*.sql')))+[ROOT/'supabase/beta-migrations/202610230001_private_beta_security.sql']
+    if args.schema_model=='release':files+=list(sorted((ROOT/'supabase/beta-migrations').glob('20261023000[23]_*.sql')))
     manifest={'projectRef':REF,'region':'us-west-2','sourceCommit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT).decode().strip(),
       'workingTreeClean':not subprocess.check_output(['git','status','--porcelain'],cwd=ROOT).strip(),'preparedOnly':True,
       'policy':{'COMMUNITY_BETA_STATE':'disabled','COMMUNITY_ALLOWED_RATINGS':'1,2'},
       'expectedHostedBaselineFunction':10,'expectedBaselineMigrations':list(BASE),'candidateVersion':'202610230001',
-      'onlyCandidateApplied':True,'historyRecordedInSameTransaction':True,
+      'onlyCandidateApplied':args.schema_model=='candidate','historyRecordedInSameTransaction':True,
+      'schemaModel':args.schema_model,'appliedVersions':[p.stem.split('_')[0] for p in files[4:]],
+      'registryCollection':'disabled',
       'files':[{'path':str(p.relative_to(ROOT)).replace('\\','/'),'rawSha256':hashlib.sha256(p.read_bytes()).hexdigest(),
                 'sqlLfSha256':hashlib.sha256(p.read_text(encoding='utf-8').encode()).hexdigest()} for p in files],
       'bundleSha256':hashlib.sha256(bundle.read_bytes()).hexdigest(),

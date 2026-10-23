@@ -54,6 +54,7 @@ def run(width):
             if held:break
             page.wait_for_timeout(20)
         assert len(held)==1
+        original_aborted_route=held[0]
         assert sentinel.get_attribute('aria-busy')=='true'
         assert 'Loading' in sentinel.inner_text()
         for _ in range(5):page.mouse.wheel(0,3000)
@@ -64,9 +65,19 @@ def run(width):
         assert page.locator('#communityGrid .creator-card').count()==12
         assert calls.count((False,1))==1,'returning to a tab must retain loaded pages'
         assert abs(page.evaluate('scrollY')-saved)<80
+        # Force a resumed request to coexist with the old aborted route. The
+        # previous fixture indiscriminately aborted both after returning to the
+        # tab, intermittently converting a valid retry into a simulated outage.
+        page.mouse.wheel(0,500);sentinel.scroll_into_view_if_needed()
+        for _ in range(100):
+            if len(held)>1:break
+            page.wait_for_timeout(20)
+        assert len(held)==2,'resume must retry the aborted cursor once'
         hold_second=False
         for route in held:
-            try:route.abort()
+            try:
+                if route is original_aborted_route:route.abort()
+                else:reply(route,response(2))
             except Exception:pass
         held.clear()
         # Resume retries only the aborted cursor, never the first page.
