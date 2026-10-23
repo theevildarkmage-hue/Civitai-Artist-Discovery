@@ -17,7 +17,8 @@ def configuration(data):
         value=json.loads((Path(data)/'community-beta.json').read_text())
         opted=value.get('optedIn') is True
     except (OSError,ValueError,AttributeError):opted=False
-    return {'production':production(),'available':bool(BETA_ENDPOINT),'optedIn':opted,
+    return {'production':production(),'serverPolicy':production() or os.environ.get('CAD_COMMUNITY_MODE')=='supabase',
+            'available':bool(BETA_ENDPOINT),'optedIn':opted,
             'enabled':not production() or bool(BETA_ENDPOINT and opted)}
 
 def opt_in(data,value):
