@@ -49,7 +49,7 @@ def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_de
                 expected=bool(allowed and allowed(a.get('role'),field))
                 check(key(row)+' '+str(a.get('role'))+' '+field,a.get(field) is expected)
     expected_tables=BASE_TABLES|(PRIVATE_TABLES if candidate else set())
-    if release:expected_tables|={'community_private.discovery_users','community_private.auth_operators'}
+    if release:expected_tables|={'community_private.discovery_users'}
     check('exact table inventory',{key(t) for t in objects('relations')}==expected_tables and len(objects('relations'))==len(expected_tables))
     for row in objects('relations'):
         check('table ownership/RLS '+key(row),row.get('kind')=='r' and row.get('owner')==owner and row.get('rlsEnabled') is True)
@@ -66,16 +66,15 @@ def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_de
         expected.update({'public.'+name:types for name,types in (NEW_RPC|LEGACY_RPC).items()})
         expected['community_private.assert_member']='bigint, boolean'
     if release:expected.update({'public.community_registry_upsert':'bigint, text, text, text, text',
-                               'public.community_admin':'text, bigint, text, timestamp with time zone'})
+                               'community_private.owner_admin':'text, bigint, text, timestamp with time zone'})
     check('exact routine inventory',{key(r) for r in objects('rpcs')}==set(expected) and len(objects('rpcs'))==len(expected))
     for row in objects('rpcs'):
         name=key(row);path=[c.replace(' ','') for c in row.get('configuration') or []]
-        check('routine authority/signature '+name,row.get('owner')==owner and row.get('securityDefiner') is True
+        check('routine authority/signature '+name,row.get('owner')==owner and row.get('securityDefiner') is (name!='community_private.owner_admin')
               and path==['search_path=public,pg_temp'] and row.get('types')==expected.get(name))
         def permitted(role,field):
-            if release and name=='public.community_admin':return role=='authenticated'
             if release and name=='public.community_registry_upsert':return role=='service_role'
-            if name=='public.community_operator':return candidate and role=='community_operator'
+            if name=='public.community_operator':return candidate and not release and role=='community_operator'
             return role=='service_role' and name.startswith('public.') and row.get('name') in (RUNTIME_CANDIDATE if candidate else BASE_RPC)
         access(row,('execute',),permitted)
     schemas=objects('schemas')

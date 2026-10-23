@@ -1,4 +1,4 @@
-"""Release migrations and actual signed PostgREST role attacks; Auth fixtures only."""
+"""Owner-admin release migrations and actual signed PostgREST role attacks."""
 import json,time,secrets,subprocess,importlib.util,hashlib
 from pathlib import Path
 import sys
@@ -8,8 +8,8 @@ from discovery.secure_backup import transform
 
 def backup_release(*,sql,env,output,restore_http):
     from community_deployment_rehearsal import command,catalog,history
-    tables=json.loads(sql("select jsonb_agg(format('%I.%I',n.nspname,c.relname) order by n.nspname,c.relname) from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind='r' and (n.nspname='community_private' or (n.nspname='public' and c.relname like 'community_%') or (n.nspname='auth' and c.relname='users'));"))
-    assert len(tables)==15,'Fourteen application tables plus isolated Auth fixture required'
+    tables=json.loads(sql("select jsonb_agg(format('%I.%I',n.nspname,c.relname) order by n.nspname,c.relname) from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind='r' and (n.nspname='community_private' or (n.nspname='public' and c.relname like 'community_%'));"))
+    assert len(tables)==13,'Thirteen application tables required; no Auth fixture'
     def state(execute):return {table:json.loads(execute("select jsonb_build_object('count',count(*),'md5',md5(coalesce(jsonb_agg(to_jsonb(t) order by to_jsonb(t)::text)::text,'[]'))) from "+table+' t;')) for table in tables}
     before=state(sql);matrix=catalog(sql);versions=history(sql)
     dump=subprocess.run(['pg_dump','-Fc'],env=env,capture_output=True,timeout=45);assert dump.returncode==0
@@ -23,12 +23,7 @@ def backup_release(*,sql,env,output,restore_http):
     restored_http=restore_http(name);assert restored_http['status']==200 and restored_http['recommendCode']=='BETA_DISABLED'
     assert state(execute)['community_private.discovery_users']==before['community_private.discovery_users']
     evidence={'passed':True,'encrypted':True,'archiveSha256':hashlib.sha256(encrypted).hexdigest(),'before':before,'after':after,'migrationHistory':versions,'catalogAndBodiesEqual':True,'http':restored_http,'separateDatabaseSameCluster':True,'hostedAuthRecoveryVerified':False}
-    (output/'release-restore.json').write_text(json.dumps(evidence,indent=2));return {'passed':True,'applicationTables':14,'authTables':'isolated fixture only','separateDatabaseSameCluster':True,'hostedAuthRecoveryVerified':False}
-
-AUTH_FIXTURE=("create schema auth;create table auth.users(id uuid primary key);"
-    "create function auth.jwt() returns jsonb language sql stable as $$select coalesce(nullif(current_setting('request.jwt.claims',true),'')::jsonb,'{}'::jsonb)$$;"
-    "create function auth.uid() returns uuid language sql stable as $$select (auth.jwt()->>'sub')::uuid$$;"
-    "create function auth.role() returns text language sql stable as $$select auth.jwt()->>'role'$$;")
+    (output/'release-restore.json').write_text(json.dumps(evidence,indent=2));return {'passed':True,'applicationTables':13,'authTables':'none required','separateDatabaseSameCluster':True,'hostedAuthRecoveryVerified':False}
 
 def rehearse_atomic(sql,env,output):
     from community_deployment_rehearsal import command,data_snapshot
@@ -40,7 +35,7 @@ def rehearse_atomic(sql,env,output):
     for path in sorted((ROOT/'supabase/migrations').glob('*.sql')):
         source=path.read_text();version,label=path.stem.split('_',1)
         baseline+=source+"\ninsert into supabase_migrations.schema_migrations values('"+version+"','"+label+"',array[$baseline$"+source+"$baseline$]);\n"
-    execute('begin;'+history+baseline+AUTH_FIXTURE+"select community_submit_once(8800000001,'SyntheticHistorical',8800000002,8800000003,'synthetic_atomic_replay');commit;")
+    execute('begin;'+history+baseline+"select community_submit_once(8800000001,'SyntheticHistorical',8800000002,8800000003,'synthetic_atomic_replay');commit;")
     before=data_snapshot(execute)
     spec=importlib.util.spec_from_file_location('release_builder',ROOT/'scripts/prepare-community-candidate.py');builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
     bundle=builder.build_release_bundle(expected_owner='cad3_admin',expected_database=name)
@@ -74,8 +69,7 @@ def run(*,sql,env,output,api,register):
         (output/'release-checks.json').write_text(json.dumps({'checks':checks,'passed':False},indent=2))
         assert value,name
     rehearse_atomic(sql,env,output);check('atomic seven-version interruption retry and preservation',True)
-    sql(AUTH_FIXTURE)
-    for filename in ('202610230002_application_registry.sql','202610230003_auth_operator.sql'):
+    for filename in ('202610230002_application_registry.sql','202610230003_owner_administration.sql'):
         path=ROOT/'supabase/beta-migrations'/filename;source=path.read_text();version,name=path.stem.split('_',1)
         sql('begin;'+source+"insert into supabase_migrations.schema_migrations values('"+version+"','"+name+"',array[$release$"+source+"$release$]);commit;")
     sql("notify pgrst,'reload schema';");time.sleep(.5)
@@ -99,10 +93,14 @@ def run(*,sql,env,output,api,register):
     for role in ('anon','ordinary','service','operator_aal1','forged'):
         result=api(role,'community_admin',{'p_action':'registry_stats'})
         check('operator denied '+role,result[0]>=400)
-    stats=api('operator','community_admin',{'p_action':'registry_stats'})
-    check('mapped MFA operator aggregates',stats[0]==200 and stats[1]['users']==1)
+    check('no Supabase Auth schema dependency',sql("select to_regnamespace('auth') is null;")=='t')
+    def owner(action,target=None,reason='Synthetic owner administration'):
+        value='null' if target is None else str(int(target))
+        return json.loads(sql("select community_private.owner_admin('"+action+"',"+value+",'"+reason+"');"))
+    stats=owner('registry_stats')
+    check('owner-only aggregates',stats['users']==1)
     for role in ('anon','ordinary','service','operator'):
-        for table in ('community_private.discovery_users','community_private.auth_operators','community_private.invitations','community_private.moderator_audit'):
+        for table in ('community_private.discovery_users','community_private.invitations','community_private.moderator_audit'):
             check('private enumeration denied '+role+' '+table,api(role,table,None)[0]>=400)
         for method in ('POST','PATCH','DELETE'):
             response=api(role,'community_private.discovery_users',{'__method':method,'civitai_id':999,'username':'Forged','app_version':'x','platform':'Linux','disclosure_version':'2026-10-23'})
@@ -110,15 +108,38 @@ def run(*,sql,env,output,api,register):
     check('operator cannot invoke runtime registry RPC',api('operator','community_registry_upsert',{'p_member':999,'p_name':'Forged','p_version':'x','p_platform':'Linux','p_disclosure':'2026-10-23'})[0]>=400)
     check('ordinary user cannot invoke runtime registry RPC',api('ordinary','community_registry_upsert',{'p_member':999,'p_name':'Forged','p_version':'x','p_platform':'Linux','p_disclosure':'2026-10-23'})[0]>=400)
     check('moderator identity spoof rejected',api('operator','community_admin',{'p_action':'registry_stats','p_actor':999})[0]>=400)
-    check('operator registry deletion',api('operator','community_admin',{'p_action':'registry_delete','p_target':8800000000,'p_reason':'Synthetic requested deletion'})[0]==200)
+    check('owner registry deletion',owner('registry_delete',8800000000)['completed'])
     check('registry deleted without Community deletion',sql('select count(*)=0 from community_private.discovery_users;')=='t')
     register();sql("update community_private.discovery_users set last_seen=clock_timestamp()-interval '181 days';")
-    check('operator retention executes',api('operator','community_admin',{'p_action':'registry_retention','p_reason':'Synthetic retention approval'})[0]==200)
+    check('owner retention executes',owner('registry_retention')['completed'])
     check('retention deletes expired registry only',sql('select count(*)=0 from community_private.discovery_users;')=='t')
-    check('operator audit derives stable mapped actor',sql("select count(*)=2 and bool_and(actor_id=9900 and actor_login='auth:00000000-0000-0000-0000-000000000001') from community_private.moderator_audit where action in ('registry_delete','registry_retention');")=='t')
-    sql("update community_private.auth_operators set revoked=true;")
-    check('existing signed JWT loses authority after revocation',api('operator','community_admin',{'p_action':'registry_stats'})[0]>=400)
-    result={'passed':True,'checks':checks,'realPostgREST':True,'syntheticSupabaseAuthIdentity':True,'hostedVerified':False}
-    (output/'release-checks.json').write_text(json.dumps(result,indent=2));return {'passed':True,'checks':len(checks),'syntheticAuthIdentity':True}
+    check('explicit owner administration audit identifier',sql("select count(*)=2 and bool_and(actor_id=1 and actor_login='owner-admin:discovery3') from community_private.moderator_audit where action in ('registry_delete','registry_retention');")=='t')
+    for role in ('anon','authenticated','service_role','community_operator'):
+        check('owner routine execute grant denied '+role,sql("select not has_function_privilege('"+role+"','community_private.owner_admin(text,bigint,text,timestamptz)','execute');")=='t')
+        # Test actual SQL roles, not only function ACL inventory or missing routes.
+        block="do $test$ begin begin perform community_private.owner_admin('registry_stats',null,'Denied role test');raise exception 'UNEXPECTED_ADMIN_ACCESS';exception when insufficient_privilege then null;end;end $test$;"
+        sql('begin;set local role '+role+';'+block+'rollback;')
+        check('actual owner routine denial '+role,True)
+    # Exercise the complete replacement owner path inside one disposable rollback.
+    operations="begin;delete from community_private.invitations;select community_private.owner_admin('configure',null,'Synthetic owner setup');"
+    for number in range(5):
+        operations+="select community_private.owner_admin('invite',"+str(8810000000+number)+",'Synthetic invitation',clock_timestamp()+interval '1 day');"
+    operations+="do $$begin begin perform community_private.owner_admin('invite',8810000005,'Synthetic sixth account',clock_timestamp()+interval '1 day');raise exception 'LIMIT_BYPASS';exception when raise_exception then if sqlerrm<>'INVITE_LIMIT' then raise;end if;end;end$$;"
+    operations+="select community_private.owner_admin('revoke_invite',8810000000,'Synthetic revocation');select community_private.owner_admin('invite',8810000005,'Synthetic replacement',clock_timestamp()+interval '1 day');"
+    operations+="select community_private.owner_admin('block',8810000005,'Synthetic durable block');do $$begin begin perform community_access(8810000005);raise exception 'BLOCK_BYPASS';exception when raise_exception then if sqlerrm<>'SUBMITTER_BLOCKED' then raise;end if;end;end$$;select community_private.owner_admin('unblock',8810000005,'Synthetic unblock');select community_access(8810000005);"
+    operations+="insert into community_members values(8810000006,'SyntheticOwnerFixture');insert into community_recommendations(image_id,creator_id,member_id,week) values(8810000007,8810000008,8810000006,date_trunc('week',clock_timestamp() at time zone 'UTC')::date);"
+    operations+="insert into community_private.reports(image_id,reporter_id,reason) values(8810000007,8810000005,'abuse'),(8810000007,8810000004,'ownership');"
+    operations+="select community_private.owner_admin('reports',null,'Synthetic report review');select community_private.owner_admin('audit',null,'Synthetic audit review');"
+    operations+="select community_private.owner_admin('resolve_report',(select seq from community_private.reports where image_id=8810000007 and reporter_id=8810000005),'Synthetic resolution');select community_private.owner_admin('dismiss_report',(select seq from community_private.reports where image_id=8810000007 and reporter_id=8810000004),'Synthetic dismissal');"
+    operations+="select community_private.owner_admin('hide',8810000007,'Synthetic hide');select community_private.owner_admin('remove',8810000007,'Synthetic removal');"
+    operations+="do $$begin if (select status from community_recommendations where image_id=8810000007)<>'removed' or (select count(*) from community_audit where image_id=8810000007)<>2 or (select count(*) from community_private.reports where image_id=8810000007 and decision<>'pending')<>2 then raise exception 'MODERATION_FAILED';end if;end$$;rollback;"
+    preserved=sql("select count(*) from community_private.moderator_audit;")
+    sql(operations)
+    check('owner invitations five-account limit revocation block reports and moderation rollback',preserved==sql("select count(*) from community_private.moderator_audit;"))
+    before=sql('select count(*) from community_private.moderator_audit;')
+    sql("begin;select community_private.owner_admin('registry_stats',null,'Rollback validation');rollback;")
+    check('rolled-back owner action has no persistent audit',before==sql('select count(*) from community_private.moderator_audit;'))
+    result={'passed':True,'checks':checks,'realPostgREST':True,'ownerAdministration':True,'hostedVerified':False}
+    (output/'release-checks.json').write_text(json.dumps(result,indent=2));return {'passed':True,'checks':len(checks),'ownerAdministration':True}
 
 if __name__=='__main__':print('SKIP: run through owned native private-beta runner')

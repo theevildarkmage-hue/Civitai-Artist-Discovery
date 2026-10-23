@@ -26,7 +26,7 @@ def main():
     parser.add_argument('--manual-test-lab',action='store_true',help='Keep the owned local service and removable Test Lab running after validation')
     parser.add_argument('--beta-only',action='store_true',help='Fast owned beta iteration, skips baseline HTTP scenarios')
     parser.add_argument('--deployment-rehearsal',action='store_true',help='Owned interruption/operator/backup/recovery rehearsal')
-    parser.add_argument('--release-candidate',action='store_true',help='Registry/Auth-operator migrations and signed API role tests')
+    parser.add_argument('--release-candidate',action='store_true',help='Registry/owner-administration migrations and signed API role tests')
     args = parser.parse_args()
     if args.deployment_rehearsal and not args.private_beta:parser.error('--deployment-rehearsal requires --private-beta')
     if args.release_candidate and not args.private_beta:parser.error('--release-candidate requires --private-beta')

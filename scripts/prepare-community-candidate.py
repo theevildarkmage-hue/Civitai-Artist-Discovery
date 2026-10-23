@@ -28,6 +28,9 @@ do $cad3$ begin
  if current_user<>OWNER or current_database()<>DATABASE then raise exception 'Unexpected migration operator/database';end if;
  if to_regnamespace('community_private') is not null then raise exception 'Candidate already present; do not rerun';end if;
  if (select array_agg(version order by version) from supabase_migrations.schema_migrations where version in ('202610140001','202610150001','202610210001','202610220001','202610230001')) is distinct from array['202610140001','202610150001','202610210001','202610220001']::text[] then raise exception 'Four-migration history mismatch';end if;
+ if not exists(select 1 from pg_roles where rolname='community_operator') then
+   create role community_operator nologin noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls;
+ end if;
  if not exists(select 1 from pg_roles where rolname='community_operator' and not rolcanlogin and not rolinherit and not rolsuper and not rolbypassrls and not rolcreaterole and not rolcreatedb and not rolreplication)
     or exists(select 1 from pg_auth_members where member=(select oid from pg_roles where rolname='community_operator')) then raise exception 'Restricted operator group prerequisite mismatch';end if;
 end $cad3$;
@@ -40,10 +43,8 @@ end $cad3$;
 
 def build_release_bundle(*,expected_owner='postgres',expected_database='postgres'):
     bundle=build_bundle(expected_owner=expected_owner,expected_database=expected_database)
-    prerequisite="do $$ begin if to_regclass('auth.users') is null or to_regprocedure('auth.uid()') is null or to_regprocedure('auth.jwt()') is null or to_regprocedure('auth.role()') is null then raise exception 'Supported Supabase Auth schema required';end if;end $$;\n"
-    bundle=bundle.replace('begin;\n', 'begin;\n'+prerequisite,1)
     extra=''
-    for filename in ('202610230002_application_registry.sql','202610230003_auth_operator.sql'):
+    for filename in ('202610230002_application_registry.sql','202610230003_owner_administration.sql'):
         path=ROOT/'supabase/beta-migrations'/filename;source=path.read_text(encoding='utf-8');version,name=path.stem.split('_',1)
         assert '$cad3_release$' not in source
         extra+=source+"\ninsert into supabase_migrations.schema_migrations(version,name,statements) values('"+version+"','"+name+"',array[$cad3_release$"+source+"$cad3_release$]);\n"
@@ -69,6 +70,8 @@ def main():
       'onlyCandidateApplied':args.schema_model=='candidate','historyRecordedInSameTransaction':True,
       'schemaModel':args.schema_model,'appliedVersions':[p.stem.split('_')[0] for p in files[4:]],
       'registryCollection':'disabled',
+      'administration':{'model':'owner-operated Management SQL','actor':'owner-admin:discovery3','independentModeratorAttribution':False,'separateAuthRequired':False,'compatibilityRole':'NOLOGIN, no client members, legacy EXECUTE revoked'},
+      'supersededUnappliedCandidate':{'path':'supabase/beta-migrations/202610230003_auth_operator.sql','sqlLfSha256':'7081d3968cd71e02acfeba92c069ea25ac9b452124765f7564225515aa702068','reason':'Explicit owner architecture revision; never deployed'},
       'files':[{'path':str(p.relative_to(ROOT)).replace('\\','/'),'rawSha256':hashlib.sha256(p.read_bytes()).hexdigest(),
                 'sqlLfSha256':hashlib.sha256(p.read_text(encoding='utf-8').encode()).hexdigest()} for p in files],
       'bundleSha256':hashlib.sha256(bundle.read_bytes()).hexdigest(),
