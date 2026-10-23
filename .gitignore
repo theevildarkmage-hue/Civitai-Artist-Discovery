@@ -126,3 +126,6 @@ dev/community-test-lab/*
 !dev/community-test-lab/*.css
 !dev/community-test-lab/README.md
 !dev/community-test-lab/public-fixtures.json
+
+# Pinned legacy SQL/Edge compatibility regression source; never packaged.
+!tests/fixtures/community-legacy-handler.ts
