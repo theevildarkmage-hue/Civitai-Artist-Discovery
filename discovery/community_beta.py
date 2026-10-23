@@ -5,8 +5,8 @@ from pathlib import Path
 import sys
 import threading
 
-# Set only in a separately approved rollout source change. No hosted endpoint yet.
-BETA_ENDPOINT = None
+# Reviewed staging connection for owner acceptance; hosted submissions stay disabled.
+BETA_ENDPOINT = "https://aibelmhucizupzvvhdvf.supabase.co/functions/v1/community-v1"
 _lock=threading.Lock()
 
 def production():
