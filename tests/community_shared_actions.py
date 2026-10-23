@@ -15,6 +15,30 @@ from discovery.community import CommunityClient, ContentProfile, FixtureVerifier
 
 
 class AdmissionTests(unittest.TestCase):
+    def test_remote_feed_never_masks_revocation_with_cached_success(self):
+        from discovery.community import CommunityError
+        backend=Mock();backend.request.return_value={'apiVersion':1,'items':[]}
+        client=CommunityClient(backend,None,lambda:'synthetic-fresh',lambda token:None)
+        client.mode='supabase';client.identity_provider=lambda:42
+        client.store=Mock()
+        client._read('gallery',None,{'refresh':True})
+        backend.request.assert_called_once_with('gallery','synthetic-fresh',{})
+        client.store.get.assert_not_called()
+        backend.request.side_effect=CommunityError('FORBIDDEN',403)
+        with self.assertRaises(CommunityError):client._read('gallery',None,{})
+        client.store.get.assert_not_called()
+
+    def test_report_forwards_only_verified_transport_and_minimal_payload(self):
+        from discovery.community import CommunityError
+        backend=Mock();backend.request.return_value={'apiVersion':1,'reported':True}
+        client=CommunityClient(backend,None,lambda:'synthetic-fresh-credential',lambda token:self.fail('Report fetched unrelated content preferences'))
+        client.mode='supabase'
+        client.request('report',{'artwork':1001,'reason':'abuse','memberId':999})
+        backend.request.assert_called_once_with('report','synthetic-fresh-credential',{'artwork':1001,'reason':'abuse'})
+        with self.assertRaises(CommunityError):client.request('report',{'artwork':1001,'reason':'free text'})
+        client.mode='fixture'
+        with self.assertRaises(CommunityError):client.request('report',{'artwork':1001,'reason':'abuse'})
+
     def setUp(self):
         self.verifier = FixtureVerifier(development=True)
         self.profile = ContentProfile(levels=frozenset((1,2,4,8,16)))

@@ -35,7 +35,7 @@ else:
     creators={};fault='';received=[];scenarios=[];public_active=False;public_artworks={};public_members={}
     flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
     def sql(statement):
-        child=subprocess.run(['psql','-X','-A','-t','-v','ON_ERROR_STOP=1','-c',statement],
+        child=subprocess.run(['psql','-X','-A','-t','-v','ON_ERROR_STOP=1'],input=statement+'\n',
             env=env,capture_output=True,text=True,encoding='utf-8',timeout=20,creationflags=flags)
         assert child.returncode==0,child.stderr
         return child.stdout.strip()
@@ -80,12 +80,13 @@ else:
                     data={'sub':claims['sub'],'id':int(claims['sub']),
                         'username':public_members[int(claims['sub'])]['username'] if public_active else 'SignedMember'+claims['sub']}
                 except Exception:status=401;data={}
-            elif fault in ('unavailable','limited','missing'):
-                status={'unavailable':503,'limited':429,'missing':404}[fault];data={}
+            elif fault in ('unavailable','limited','missing','private'):
+                status={'unavailable':503,'limited':429,'missing':404,'private':403}[fault];data={}
             else:
                 if path.path=='/api/v1/images':image=int(parse_qs(path.query)['imageId'][0])
                 else:image=json.loads(parse_qs(path.query)['input'][0])['json']['id']
                 creator=creators.get(image,image+100000)
+                if fault=='changed_owner':creator+=99999
                 if public_active:
                     art=public_artworks.get(image)
                     if not art:status=404;data={}
@@ -93,11 +94,11 @@ else:
                     else:data={'result':{'data':{'json':art['detail']}}}
                 elif path.path=='/api/v1/images':
                     data={'items':[{'id':image,'type':'video' if fault=='video' else 'image',
-                        'username':f'Artist{creator}','browsingLevel':1 if image%2 else 2,
+                        'username':f'Artist{creator}','browsingLevel':16 if fault=='rating' else 1 if image%2 else 2,
                         'url':'https://image.civitai.com/synthetic-local-only.jpeg'}]}
                 else:data={'result':{'data':{'json':{'id':image,'user':{'id':creator,'username':f'Artist{creator}'},
                     'availability':'Public','ingestion':'Scanned','needsReview':None,
-                    'publishedAt':'2026-01-01T00:00:00Z','nsfwLevel':1 if image%2 else 2}}}}
+                    'publishedAt':'2026-01-01T00:00:00Z','nsfwLevel':16 if fault=='rating' else 1 if image%2 else 2}}}}
             raw=json.dumps(data).encode();self.send_response(status);self.send_header('Content-Type','application/json')
             self.send_header('Content-Length',str(len(raw)));self.end_headers()
             try:self.wfile.write(raw)
@@ -121,15 +122,16 @@ else:
             'PGPASSWORD':rest_password,'PGRST_DB_SCHEMAS':'public','PGRST_DB_ANON_ROLE':'anon',
             'PGRST_JWT_SECRET':secret,'PGRST_SERVER_HOST':'127.0.0.1','PGRST_SERVER_PORT':str(rest_port),
             'PGRST_DB_POOL':'4','PGRST_DB_POOL_ACQUISITION_TIMEOUT':'1','PGRST_LOG_LEVEL':'crit'})
-    def start_edge(live=False,state='enabled'):
+    def start_edge(live=False,state='enabled',private_beta=False,port_override=None):
         return launch('deno',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
-            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_PRIVATE_BETA',
             '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
-            'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2,4,8,16',
+            'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2' if private_beta else '1,2,4,8,16',
             # The shared handler reads this even outside owner-only mode. Pin an
             # expired synthetic value; never inherit an interactive write window.
             'COMMUNITY_OWNER_TEST_EXPIRES_AT':'2000-01-01T00:00:00Z',
-            'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(edge_port),
+            'CAD_TEST_PRIVATE_BETA':'1' if private_beta else '0',
+            'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(port_override or edge_port),
             'CAD_TEST_LIVE_READONLY':'1' if live else '0',
             'DENO_NO_UPDATE_CHECK':'1','DENO_DIR':str(scratch/'deno-cache')})
     def call(operation='status',n=0,**fields):
@@ -158,6 +160,22 @@ else:
         sql('select pg_reload_conf();')
         rest_process=start_rest();wait(rest,rest_process)
         edge_process=start_edge();wait(edge,edge_process)
+        if env.get('CAD_TEST_BETA_ONLY')=='1':
+            from community_private_beta import run as run_beta
+            def beta_restart_fast(state):
+                global edge_process
+                edge_process.terminate();edge_process.wait(timeout=10)
+                edge_process=start_edge(state=state,private_beta=True);wait(edge,edge_process)
+            def beta_fault_fast(value):
+                global fault
+                fault=value
+            def second_instance():
+                second_port=port();process=start_edge(private_beta=True,port_override=second_port)
+                url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
+            beta_result=run_beta(second_instance=second_instance,sql=sql,call=call,request=request,edge=edge,member=member,
+                restart=beta_restart_fast,set_fault=beta_fault_fast,env=env,output=output,seed=seed)
+            (output/'summary.json').write_text(json.dumps({'passed':True,'privateBeta':beta_result,'baselineHttpSkipped':True},indent=2))
+            raise SystemExit(0)
         initial=call()
         if initial[0]!=200:
             req=urllib.request.Request(rest+'/rpc/community_take_rate',data=b'{"p_key":"http-diagnostic"}',
@@ -299,7 +317,11 @@ else:
         sys.path.insert(0,str(ROOT/'tests'))
         from community_http_gallery import run_gallery
         (output/'progress.json').write_text(json.dumps({'stage':'Shared gallery browser'}))
-        gallery=run_gallery(edge,member,seed,creators,sql,scratch,output,lambda:edge_process,lambda:start_edge())
+        def restart_gallery_service():
+            global edge_process
+            edge_process=start_edge()
+            return edge_process
+        gallery=run_gallery(edge,member,seed,creators,sql,scratch,output,lambda:edge_process,restart_gallery_service)
         live_result=None
         if env.get('CAD_TEST_LIVE_READONLY')=='1':
             processes[-1].terminate();processes[-1].wait(timeout=10)
@@ -371,11 +393,26 @@ else:
                 if not manual_ready:lab.close();public_active=False
         # Persisted records always have a matching accepted audit; no duplicates/overcaps.
         sql(f"do $$ begin assert not exists(select 1 from community_recommendations r left join community_audit a on a.image_id=r.image_id and a.action='accepted' where member_id between {seed} and {seed+999} group by r.image_id having count(a.seq)<>1); assert not exists(select 1 from community_recommendations where member_id between {seed} and {seed+999} group by member_id,week having count(*)>3); end $$;")
+        beta_result=None
+        if env.get('CAD_TEST_BETA_ACCEPTANCE')=='1':
+            from community_private_beta import run as run_beta
+            def beta_restart(state):
+                global edge_process
+                edge_process.terminate();edge_process.wait(timeout=10)
+                edge_process=start_edge(state=state,private_beta=True);wait(edge,edge_process)
+            def beta_fault(value):
+                global fault
+                fault=value
+            def second_instance():
+                second_port=port();process=start_edge(private_beta=True,port_override=second_port)
+                url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
+            beta_result=run_beta(second_instance=second_instance,sql=sql,call=call,request=request,edge=edge,member=member,
+                restart=beta_restart,set_fault=beta_fault,env=env,output=output,seed=seed)
         summary={'passed':True,'runtime':'Deno','realPostgREST':True,'realPostgreSQL':True,
             'syntheticSignedUserInfo':True,'syntheticArtworkMetadata':True,'scenarios':scenarios,'counts':http_counts,
             'httpResponsesRecorded':len(received),'gallery':gallery,'postgresInterruptedAndRecovered':True,
             'dumpRestoreCompared':True,'httpRlsAfterTemporaryGrant':True,'liveHandler':live_result,
-            'realFixtureLab':real_lab,'deployedSupabase':False}
+            'realFixtureLab':real_lab,'privateBeta':beta_result,'deployedSupabase':False}
         (output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True)
         if env.get('CAD_TEST_MANUAL_LAB')=='1':
             print('Removable manual Test Lab ready; private connection file: '+str(lab.state),flush=True)

@@ -34,7 +34,9 @@ globalThis.fetch = async (url, options={}) => {
     publishedAt:fault==='future'?'2999-01-01T00:00:00Z':'2026-01-01T00:00:00Z',nsfwLevel:fault==='rating-mismatch'?1:8}}}});
   throw Error('Unexpected network destination');
 };
-await import('../supabase/functions/community-v1/index.ts');
+// Retained bounded-owner contract; invitation entry point has separate tests.
+const {createCommunityHandler}=await import('../supabase/functions/community-v1/handler.ts');
+handler=createCommunityHandler({ownerOnly:true});
 async function request(body, token='synthetic-test-token') {
   const response=await handler(new Request('https://test.supabase.co/functions/v1/community-v1',{
     method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},

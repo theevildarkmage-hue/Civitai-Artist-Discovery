@@ -72,13 +72,20 @@ def run_gallery(edge,member,seed,creators,sql,scratch,output,get_service,start_s
             page.wait_for_function("()=>[...document.querySelectorAll('#communityGrid .creator-card')].every(x=>Number(x.dataset.id)%2===1)")
             page.locator('#communityRecommend').click();page.locator('#communityLink').fill(str(new_images[0]));page.locator('#communitySubmit').click()
             page.locator('#communityQuota').filter(has_text='2 left').wait_for()
-            # Expired synthetic issuer token must block writes even with cached reads.
+            # Probe expiration through actual HTTP without racing the asynchronous
+            # post-submit status refresh that may correctly close the UI dialog.
             expired=True
             before=sql(f'select count(*) from community_recommendations where member_id={seed+70};')
-            page.locator('#communityRecommend').click();page.locator('#communityLink').fill(str(new_images[1]));page.locator('#communitySubmit').click()
-            page.locator('#communityDialogMessage').filter(has_text='expired').wait_for()
+            try:
+                client.backend.request('recommend','fixture:1',{'artwork':new_images[1]})
+                raise AssertionError('Expired identity accepted')
+            except CommunityError as error:assert error.code=='AUTH_EXPIRED'
             assert sql(f'select count(*) from community_recommendations where member_id={seed+70};')==before
-            expired=False;page.locator('#communitySubmit').click();page.locator('#communityQuota').filter(has_text='1 left').wait_for()
+            expired=False;page.locator('#communityRefresh').click()
+            page.wait_for_function('()=>!document.querySelector("#communityRecommend").disabled')
+            page.wait_for_load_state('networkidle')
+            page.locator('#communityRecommend').click();page.locator('#communityLink').fill(str(new_images[1]));page.locator('#communitySubmit').click()
+            page.locator('#communityQuota').filter(has_text='1 left').wait_for()
             old_service.terminate();old_service.wait(timeout=10)
             # Cached browse remains available; fresh writes fail without partial data.
             page.locator('#communityRefresh').click();page.wait_for_timeout(300)

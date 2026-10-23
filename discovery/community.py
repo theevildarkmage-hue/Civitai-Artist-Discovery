@@ -36,6 +36,7 @@ MESSAGES = {
     "RATE_LIMITED": "Please wait a moment before trying again.",
     "CONTENT_FILTERED": "This artwork is outside your current content controls.",
     "FORBIDDEN": "This community operation is not allowed.",
+    "SUBMITTER_BLOCKED": "This account cannot submit Community recommendations.",
     "INVALID_REQUEST": "Please check the request and try again.",
 }
 
@@ -526,6 +527,12 @@ class CommunityClient:
 
     def _read(self,operation,token,payload):
         store=getattr(self,'store',None);identity=self._identity(token)
+        if getattr(self,'mode',None)=='supabase':
+            # Admission/moderation/availability are server-owned. A 24-hour local
+            # feed/status cache must not mask revocation or disabled policy.
+            value=self.backend.request(operation,self.token_provider(),
+                {k:v for k,v in payload.items() if k!='refresh'})
+            return {**value,'cache':{'state':'current'}}
         if not store or not identity:
             if getattr(self,'dev_offline',False):raise CommunityError('UNAVAILABLE',503)
             return self.backend.request(operation,token,payload)
@@ -574,6 +581,11 @@ class CommunityClient:
             if not isinstance(self.verifier, FixtureVerifier) or getattr(self, 'mode', None) != 'fixture':
                 raise CommunityError('FORBIDDEN', 403)
             token = fixture_token
+        if operation=='report':
+            if getattr(self,'mode',None)!='supabase':raise CommunityError('UNAVAILABLE',503)
+            if payload.get('reason') not in ('inappropriate','abuse','ownership','unavailable'):
+                raise CommunityError('INVALID_REQUEST')
+            return self.backend.request('report',token,{'artwork':parse_artwork(payload.get('artwork')),'reason':payload['reason']})
         profile = self.profile_provider(token)
         if operation=='detail':
             art,_=self.browse_artwork(parse_artwork(payload.get('artwork')),profile)

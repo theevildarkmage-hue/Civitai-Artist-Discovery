@@ -18,11 +18,19 @@ export function mountCommunity() {
   dialog.innerHTML = `<h2 id="communityDialogTitle">Recommend Art</h2><form id="communityForm"><p class="community-rules">Recommend someone else's public artwork. Each member can recommend three artworks per week; each artist can be featured three times. Resets Monday at 00:00 UTC.</p><p id="communityFormQuota"></p><label for="communityLink">Civitai artwork URL or image ID</label><div class="community-input"><input id="communityLink" maxlength="512" autocomplete="off" placeholder="https://civitai.red/images/12345" aria-describedby="communityDialogMessage" required autofocus></div><p id="communityDialogMessage" role="status" aria-live="polite"></p><div class="loading-actions"><button id="communitySubmit" type="submit" class="primary-button">Submit Recommendation</button><button id="communityCancel" type="button">Close</button></div></form>`;
   document.body.append(dialog);
   bindDialog(dialog, {labelledBy:'communityDialogTitle', closeButtons:[dialog.querySelector('#communityCancel')]});
+  const reportDialog=document.createElement('dialog');reportDialog.className='community-dialog';
+  reportDialog.innerHTML='<h2 id="communityReportTitle">Report recommendation</h2><form id="communityReportForm"><label>Reason <select id="communityReportReason"><option value="inappropriate">Inappropriate content</option><option value="abuse">Abuse</option><option value="ownership">Ownership concern</option><option value="unavailable">Artwork unavailable</option></select></label><p id="communityReportMessage" role="status"></p><button type="submit" id="communityReportSubmit">Send report</button><button type="button" id="communityReportClose">Cancel</button></form>';
+  document.body.append(reportDialog);
+  bindDialog(reportDialog,{labelledBy:'communityReportTitle',closeButtons:[reportDialog.querySelector('#communityReportClose')]});
   const el = id => document.getElementById(id);
   let productionBeta=false, policyControlled=true, submissions=false;
+  let reporting=false,reportTarget=null,reportBusy=false;
   el('communityRecommend').disabled=true;
   el('communitySubmit').disabled=true;
   function applyPolicy(status) {
+    reporting=status?.beta?.reporting===true && status?.cache?.state!=='stale';
+    section.querySelectorAll('.community-report').forEach(button=>{button.hidden=!reporting;});
+    if(!reporting&&reportDialog.open)reportDialog.close();
     if(status?.beta)policyControlled=true;
     if(!policyControlled)return;
     submissions=status?.beta?.submissions===true && status?.cache?.state!=='stale';
@@ -49,7 +57,7 @@ export function mountCommunity() {
   let cursor = null, generation = 0, busy = false, draftVersion = 0, requestKey = null, requestValue = null;
   const quota = value => { if (value) {
     el('communityQuota').textContent = `${value.remaining} left this week`;
-    el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week · ${value.remaining} remaining`;
+    el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week Â· ${value.remaining} remaining`;
   } };
   let initialized = false, firstPage = true, refreshPage = false, metadataTimer = null, metadataRetries = 0, viewSession = null;
   const requestedCursors = new Set();
@@ -89,7 +97,14 @@ export function mountCommunity() {
         },
       });
       card.classList.add('community-card');
-      card.append(credit); artists.set(key, card); el('communityGrid').append(card);
+      const reportButton=document.createElement('button');reportButton.type='button';
+      reportButton.className='community-report';reportButton.textContent='Report recommendation';reportButton.hidden=!reporting;
+      reportButton.onclick=()=>{
+        if(!reporting||reportBusy)return;
+        reportTarget=card.dataset.id;el('communityReportMessage').textContent='Reports are reviewed by a moderator. Reporting does not remove artwork.';
+        reportDialog.showModal();
+      };
+      card.append(credit,reportButton); artists.set(key, card); el('communityGrid').append(card);
       addedArtists.push(artist); addedCards.push(card);
     }
     window.DiscoveryGallery.enrichCards(addedArtists, addedCards);
@@ -157,7 +172,7 @@ export function mountCommunity() {
   }
   function invalidate() {
     deactivate(); initialized = false; cursor = null; firstPage = true;
-    ++draftVersion; clearCards(); dialog.close();
+    ++draftVersion; clearCards(); dialog.close();reportDialog.close();reporting=false;reportTarget=null;
   }
   function recommend(value = '') {
     if (busy || !authorized || !submissions) return;
@@ -228,6 +243,15 @@ export function mountCommunity() {
     else { invalidate(); section.classList.add('hidden'); }
   });
   el('communityRecommend').onclick = () => recommend();
+  el('communityReportForm').onsubmit=async event=>{
+    event.preventDefault();if(!reporting||reportBusy||!reportTarget)return;
+    reportBusy=true;el('communityReportSubmit').disabled=true;
+    try {
+      await api('/api/community/report',{method:'POST',body:JSON.stringify({artwork:reportTarget,reason:el('communityReportReason').value})});
+      el('communityReportMessage').textContent='Report received. Thank you.';
+    } catch(error) {el('communityReportMessage').textContent=error.message;}
+    finally {reportBusy=false;el('communityReportSubmit').disabled=false;}
+  };
   el('communityRefresh').onclick = () => { metadataRetries = 0; load(false, true); };
   // A settings/account change invalidates all rendered previews and the pending draft.
   window.addEventListener('community-controls-changed', () => {
