@@ -116,17 +116,17 @@ else:
             try:request(url,{},method='POST');return
             except OSError:time.sleep(.1)
         raise RuntimeError('Owned service did not become ready')
-    def start_rest():
+    def start_rest(database_override=None,port_override=None):
         return launch('postgrest',[env['CAD_TEST_POSTGREST']],{
-            'PGRST_DB_URI':f"postgresql://cad3_rest@127.0.0.1:{env['PGPORT']}/{env['PGDATABASE']}",
+            'PGRST_DB_URI':f"postgresql://cad3_rest@127.0.0.1:{env['PGPORT']}/{database_override or env['PGDATABASE']}",
             'PGPASSWORD':rest_password,'PGRST_DB_SCHEMAS':'public','PGRST_DB_ANON_ROLE':'anon',
-            'PGRST_JWT_SECRET':secret,'PGRST_SERVER_HOST':'127.0.0.1','PGRST_SERVER_PORT':str(rest_port),
+            'PGRST_JWT_SECRET':secret,'PGRST_SERVER_HOST':'127.0.0.1','PGRST_SERVER_PORT':str(port_override or rest_port),
             'PGRST_DB_POOL':'4','PGRST_DB_POOL_ACQUISITION_TIMEOUT':'1','PGRST_LOG_LEVEL':'crit'})
-    def start_edge(live=False,state='enabled',private_beta=False,port_override=None):
+    def start_edge(live=False,state='enabled',private_beta=False,port_override=None,rest_override=None):
         return launch('deno',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
             '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_PRIVATE_BETA',
             '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
-            'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2' if private_beta else '1,2,4,8,16',
+            'SUPABASE_URL':rest_override or rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2' if private_beta else '1,2,4,8,16',
             # The shared handler reads this even outside owner-only mode. Pin an
             # expired synthetic value; never inherit an interactive write window.
             'COMMUNITY_OWNER_TEST_EXPIRES_AT':'2000-01-01T00:00:00Z',
@@ -134,6 +134,44 @@ else:
             'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(port_override or edge_port),
             'CAD_TEST_LIVE_READONLY':'1' if live else '0',
             'DENO_NO_UPDATE_CHECK':'1','DENO_DIR':str(scratch/'deno-cache')})
+    def legacy_probe(owner,owner_token):
+        legacy_dir=scratch/'legacy-v10';legacy_dir.mkdir(exist_ok=True)
+        old=subprocess.run(['git','show','1256bcac5b9fa0b8c1eb350bb49baa0a77c6eea3:supabase/functions/community-v1/handler.ts'],cwd=ROOT,capture_output=True,check=True).stdout
+        digest=hashlib.sha256(old).hexdigest()
+        # The reviewed hosted download used CRLF; this Git blob uses LF. Their
+        # canonical bytes were compared, and both immutable digests are recorded.
+        assert digest=='f879ae189551dfed71649002c9b6f4708c4e07a6e6b0e55272d94c31c3d898eb','Pinned v10 source mismatch'
+        (legacy_dir/'handler.ts').write_bytes(old)
+        launcher=(ROOT/'supabase/tests/local_service.ts').read_text().replace("../functions/community-v1/handler.ts","./handler.ts").replace("invitationOnly:Deno.env.get('CAD_TEST_PRIVATE_BETA')==='1'","ownerOnly:true")
+        (legacy_dir/'serve.ts').write_text(launcher)
+        legacy_port=port();url=f'http://127.0.0.1:{legacy_port}'
+        proc=launch('legacy-v10',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_TEST_OWNER_ID,COMMUNITY_OWNER_TEST_EXPIRES_AT',
+            '--allow-net=127.0.0.1',str(legacy_dir/'serve.ts')],{
+            'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}',
+            'CAD_TEST_EDGE_PORT':str(legacy_port),'CAD_TEST_LIVE_READONLY':'0','COMMUNITY_BETA_STATE':'read_only',
+            'COMMUNITY_TEST_OWNER_ID':str(owner),'COMMUNITY_OWNER_TEST_EXPIRES_AT':'2000-01-01T00:00:00Z','COMMUNITY_ALLOWED_RATINGS':'1,2'})
+        wait(url,proc)
+        status,value=request(url,{'apiVersion':1,'operation':'gallery'},auth='Bearer '+owner_token)
+        proc.terminate();proc.wait(timeout=10)
+        return {'status':status,'code':value.get('code'),'pinnedVersion10HandlerSha256':digest,
+            'reviewedHostedCrlfSha256':'30708e456dac1929e30fc0deabc44703126777a063075e557952fcd4877430a5','separateEndpoint':True}
+    def restored_probe(database,owner_token):
+        rest_test_port,edge_test_port=port(),port()
+        sql('grant connect on database '+database+' to cad3_rest;')
+        hba=Path(env['CAD_TEST_PG_DATA_DIR'])/'pg_hba.conf'
+        hba.write_text(f"host {database} cad3_rest 127.0.0.1/32 scram-sha-256\n"+hba.read_text());sql('select pg_reload_conf();')
+        rest_url=f'http://127.0.0.1:{rest_test_port}';edge_url=f'http://127.0.0.1:{edge_test_port}'
+        rest_proc=start_rest(database_override=database,port_override=rest_test_port);wait(rest_url,rest_proc)
+        edge_proc=start_edge(state='disabled',private_beta=True,port_override=edge_test_port,rest_override=rest_url);wait(edge_url,edge_proc)
+        status,_=request(edge_url,{'apiVersion':1,'operation':'status'},auth='Bearer '+owner_token)
+        _,denial=request(edge_url,{'apiVersion':1,'operation':'recommend','artwork':0},auth='Bearer '+owner_token)
+        broken=scratch/'broken-rollout.ts';broken.write_text("throw new Error('Synthetic failed rollout');")
+        failed=launch('failed-rollout',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock',str(broken)],{})
+        failed.wait(timeout=20)
+        after,_=request(edge_url,{'apiVersion':1,'operation':'status'},auth='Bearer '+owner_token)
+        edge_proc.terminate();edge_proc.wait(timeout=10);rest_proc.terminate();rest_proc.wait(timeout=10)
+        return {'status':status,'recommendCode':denial.get('code'),'failedRolloutExited':failed.returncode!=0,'statusAfterFailedRollout':after}
     def call(operation='status',n=0,**fields):
         result=request(edge,{'apiVersion':1,'operation':operation,**fields},auth='Bearer '+member(n))
         received.append(result);return result
@@ -172,7 +210,7 @@ else:
             def second_instance():
                 second_port=port();process=start_edge(private_beta=True,port_override=second_port)
                 url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
-            beta_result=run_beta(second_instance=second_instance,sql=sql,call=call,request=request,edge=edge,member=member,
+            beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,sql=sql,call=call,request=request,edge=edge,member=member,
                 restart=beta_restart_fast,set_fault=beta_fault_fast,env=env,output=output,seed=seed)
             (output/'summary.json').write_text(json.dumps({'passed':True,'privateBeta':beta_result,'baselineHttpSkipped':True},indent=2))
             raise SystemExit(0)
@@ -406,7 +444,7 @@ else:
             def second_instance():
                 second_port=port();process=start_edge(private_beta=True,port_override=second_port)
                 url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
-            beta_result=run_beta(second_instance=second_instance,sql=sql,call=call,request=request,edge=edge,member=member,
+            beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,sql=sql,call=call,request=request,edge=edge,member=member,
                 restart=beta_restart,set_fault=beta_fault,env=env,output=output,seed=seed)
         summary={'passed':True,'runtime':'Deno','realPostgREST':True,'realPostgreSQL':True,
             'syntheticSignedUserInfo':True,'syntheticArtworkMetadata':True,'scenarios':scenarios,'counts':http_counts,
