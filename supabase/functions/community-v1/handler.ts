@@ -186,6 +186,14 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     if(typeof username!=='string' || username.length<1 || username.length>200) fail('AUTH_EXPIRED');
     await rpc('community_take_rate',{p_key:`member:${memberId}`});
 
+    // The staging entry point fixes this option in code, never in a request.
+    // Compare only fresh UserInfo identity, before any content/quota/write RPC.
+    if(ownerOnly) {
+      const owner=Deno.env.get('COMMUNITY_TEST_OWNER_ID');
+      if(!owner || !/^[1-9][0-9]{0,14}$/.test(owner)) fail('BETA_DISABLED');
+      if(String(memberId)!==owner) fail('FORBIDDEN');
+    }
+
     // Application registry is independent of Community invitations and policy.
     // Identity always comes from the fresh UserInfo response above.
     if(body.operation==='register') {
@@ -193,16 +201,15 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
          || typeof body.appVersion!=='string' || body.appVersion.length<1 || body.appVersion.length>64
          || !['Windows','Linux','macOS','Other'].includes(body.platform)) fail('INVALID_REQUEST');
       if(Deno.env.get('DISCOVERY_REGISTRY_STATE')!=='enabled') return reply({apiVersion:1,registered:false,retryAfterSeconds:43200});
+      // The existing owner-only staging mode must bound registry writes too.
+      if(ownerOnly) {
+        const until=Deno.env.get('COMMUNITY_OWNER_TEST_EXPIRES_AT')??'';
+        const remaining=Date.parse(until)-Date.now();
+        if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(until)
+           || !Number.isFinite(remaining) || remaining<=0 || remaining>30*60*1000) fail('BETA_DISABLED');
+      }
       return reply(await rpc('community_registry_upsert',{p_member:memberId,p_name:username,
         p_version:body.appVersion,p_platform:body.platform}));
-    }
-
-    // The staging entry point fixes this option in code, never in a request.
-    // Compare only fresh UserInfo identity, before any content/quota/write RPC.
-    if(ownerOnly) {
-      const owner=Deno.env.get('COMMUNITY_TEST_OWNER_ID');
-      if(!owner || !/^[1-9][0-9]{0,14}$/.test(owner)) fail('BETA_DISABLED');
-      if(String(memberId)!==owner) fail('FORBIDDEN');
     }
 
     const keys=Object.keys(body);
