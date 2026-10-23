@@ -67,6 +67,12 @@ class CatalogTests(unittest.TestCase):
         for field,value in [('inherit',True),('login',True),('createRole',True),('memberOf',['service_role'])]:
             matrix=fixture(True);next(r for r in matrix['roles'] if r['role']=='community_operator')[field]=value
             self.assertFalse(validate_catalog(matrix,'candidate')['passed'])
+    def test_ordinary_role_cannot_join_any_privileged_group(self):
+        for role in ('anon','authenticated','service_role'):
+            matrix=fixture(True)
+            next(r for r in matrix['roles'] if r['role']==role)['memberOf']=['postgres']
+            self.assertFalse(validate_catalog(matrix,'candidate')['passed'])
+
     def test_overloads_and_extra_objects(self):
         matrix=fixture(True);matrix['rpcs'].append(copy.deepcopy(matrix['rpcs'][0]))
         self.assertFalse(validate_catalog(matrix,'candidate')['passed'])
