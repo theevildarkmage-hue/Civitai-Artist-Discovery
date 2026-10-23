@@ -184,7 +184,8 @@ else:
         return result
     def legacy_probe(owner,owner_token):
         legacy_dir=scratch/'legacy-v10';legacy_dir.mkdir(exist_ok=True)
-        old=subprocess.run(['git','show','1256bcac5b9fa0b8c1eb350bb49baa0a77c6eea3:supabase/functions/community-v1/handler.ts'],cwd=ROOT,capture_output=True,check=True).stdout
+        # Immutable regression source, never packaged/deployed; no private Git ancestry.
+        old=(ROOT/'tests/fixtures/community-legacy-handler.ts').read_bytes().replace(b'\r\n',b'\n')
         digest=hashlib.sha256(old).hexdigest()
         # The reviewed hosted download used CRLF; this Git blob uses LF. Their
         # canonical bytes were compared, and both immutable digests are recorded.
