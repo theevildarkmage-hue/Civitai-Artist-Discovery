@@ -200,7 +200,11 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
       if(Object.keys(body).some(k=>!['apiVersion','operation','appVersion','platform'].includes(k))
          || typeof body.appVersion!=='string' || body.appVersion.length<1 || body.appVersion.length>64
          || !['Windows','Linux','macOS','Other'].includes(body.platform)) fail('INVALID_REQUEST');
-      if(Deno.env.get('DISCOVERY_REGISTRY_STATE')!=='enabled') return reply({apiVersion:1,registered:false,retryAfterSeconds:43200});
+      const registryState=Deno.env.get('DISCOVERY_REGISTRY_STATE');
+      // Staging uses a distinct value so normal/older revisions stay disabled
+      // even if they receive the same project-wide environment configuration.
+      if(registryState!=='enabled' && !(ownerOnly && registryState==='owner_test'))
+        return reply({apiVersion:1,registered:false,retryAfterSeconds:43200});
       // The existing owner-only staging mode must bound registry writes too.
       if(ownerOnly) {
         const until=Deno.env.get('COMMUNITY_OWNER_TEST_EXPIRES_AT')??'';
