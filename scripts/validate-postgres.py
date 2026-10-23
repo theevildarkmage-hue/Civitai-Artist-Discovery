@@ -19,15 +19,19 @@ def main():
     parser.add_argument('--bin', required=True, type=Path, help='Verified PostgreSQL bin directory')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--repeats', type=int, default=5)
+    parser.add_argument('--private-beta',action='store_true',help='Apply candidate only to owned HTTP test DB')
     parser.add_argument('--http-deno', type=Path, help='Verified native Deno for real HTTP integration')
     parser.add_argument('--http-postgrest', type=Path, help='Verified native PostgREST for real HTTP integration')
     parser.add_argument('--http-live-readonly', action='store_true', help='Bounded live UserInfo/artwork preview using the selected protected session')
     parser.add_argument('--manual-test-lab',action='store_true',help='Keep the owned local service and removable Test Lab running after validation')
+    parser.add_argument('--beta-only',action='store_true',help='Fast owned beta iteration, skips baseline HTTP scenarios')
     args = parser.parse_args()
+    if args.beta_only and not args.private_beta:parser.error('--beta-only requires --private-beta')
     if bool(args.http_deno) != bool(args.http_postgrest):
         parser.error('Supply both HTTP runtime paths')
     if (args.manual_test_lab or args.http_live_readonly) and not args.http_deno:
         parser.error('Manual Lab and live preview require both HTTP runtime paths')
+    if args.private_beta and not args.http_deno:parser.error('Private beta tests require HTTP runtimes')
     if not 1 <= args.repeats <= 20:
         parser.error('Use 1..20 repetitions')
     binary = args.bin.resolve()
@@ -115,6 +119,11 @@ def main():
         atomic_inventory=json.loads(require(sql(inventory_sql,child_env=atomic_env),'Atomic inventory'))
         assert len(atomic_inventory['relations'])==5 and len(atomic_inventory['rpcs'])==7
         assert all(t['rlsEnabled'] for t in atomic_inventory['relations'])
+        if args.private_beta:
+            require(sql('create role community_operator nologin noinherit nobypassrls;',child_env=atomic_env),'Restricted operator group')
+            candidate=(ROOT/'supabase/beta-migrations/202610230001_private_beta_security.sql').read_text()
+            require(sql('begin;\n'+candidate+'\ncommit;',child_env=atomic_env),'Candidate atomic bootstrap rehearsal')
+            summary['privateBetaAtomicBootstrapPassed']=True
         summary['orderedAtomicBootstrapPassed']=True
         summary['migrations'] = []
         for migration in migrations:
@@ -187,6 +196,8 @@ def main():
             summary['handlerPersistedState']=json.loads(counts)
             assert summary['handlerPersistedState']=={'recommendations':12,'audits':12,'replayKeys':12}
         if args.http_deno:
+            env['CAD_TEST_BETA_ACCEPTANCE']='1' if args.private_beta else '0'
+            env['CAD_TEST_BETA_ONLY']='1' if args.beta_only else '0'
             env.update(CAD_ALLOW_LOCAL_HTTP_TESTS='1',CAD_TEST_DENO=str(args.http_deno.resolve()),
                        CAD_TEST_POSTGREST=str(args.http_postgrest.resolve()),CAD_TEST_HTTP_OUTPUT=str(output/'http'))
             if args.http_live_readonly:env['CAD_TEST_LIVE_READONLY']='1'

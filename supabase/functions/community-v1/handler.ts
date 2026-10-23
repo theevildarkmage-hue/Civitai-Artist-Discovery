@@ -1,6 +1,6 @@
 // Undeployed Edge Function. No SDK dependency and no browser OAuth transport.
 export function createCommunityHandler({fetch:transport=globalThis.fetch, ipLimit=120,
-  ipWindowMs=60000, maxConcurrent=16, ownerOnly=false} = {}) {
+  ipWindowMs=60000, maxConcurrent=16, ownerOnly=false, invitationOnly=false} = {}) {
 const fetch=transport;
 const ingress=new Map<string,{started:number,count:number}>();
 let active=0;
@@ -19,12 +19,14 @@ const messages: Record<string, string> = {
   BETA_DISABLED:"Community Beta is temporarily disabled. Your personal galleries still work.",
   CONTENT_FILTERED:"This artwork is outside the Community Beta content policy.",
   READ_ONLY:"Community Beta is read-only. Please try submitting again later.",
+  SUBMITTER_BLOCKED:"This account cannot submit Community recommendations.",
+  INVITE_LIMIT:"The invitation limit has been reached.",
 };
 class Failure extends Error { constructor(public code: string) { super(code); } }
 const fail = (code: string): never => { throw new Failure(code); };
 const status = (code: string) => ({AUTH_REQUIRED:401, AUTH_EXPIRED:401, FORBIDDEN:403,
   SELF_RECOMMENDATION:403, DUPLICATE:409, MEMBER_QUOTA:409, ARTIST_QUOTA:409,
-  UNAVAILABLE:503, RATE_LIMITED:429, BETA_DISABLED:503, READ_ONLY:403, CONTENT_FILTERED:403}[code] ?? 400);
+  UNAVAILABLE:503, RATE_LIMITED:429, BETA_DISABLED:503, READ_ONLY:403, CONTENT_FILTERED:403, SUBMITTER_BLOCKED:403}[code] ?? 400);
 const reply = (body: unknown, code=200) => new Response(JSON.stringify(body), {
   status:code, headers:{'Content-Type':'application/json','Cache-Control':'no-store'},
 });
@@ -61,7 +63,8 @@ async function readJSON(response: Response, max: number): Promise<any> {
 async function upstream(url: string, token?: string): Promise<any> {
   const response=await fetch(url, {redirect:'manual',signal:AbortSignal.timeout(8000),
     headers:{Accept:'application/json','User-Agent':'CivitaiArtistDiscovery/3.0.0-dev',...(token?{Authorization:`Bearer ${token}`}:{})}});
-  if(response.status===401 || response.status===403) fail('AUTH_EXPIRED');
+  if(response.status===401) fail('AUTH_EXPIRED');
+  if(response.status===403) fail(url==='https://auth.civitai.com/api/auth/oauth/userinfo'?'AUTH_EXPIRED':'INVALID_ARTWORK');
   if(response.status===429) fail('RATE_LIMITED');
   if(response.status===404) fail('INVALID_ARTWORK');
   if(!response.ok || response.status>=300) fail('UNAVAILABLE');
@@ -185,9 +188,12 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     }
 
     const keys=Object.keys(body);
-    const fields=body.operation==='recommend'?['artwork','idempotencyKey']:
+    const fields=body.operation==='report'?['artwork','reason']:body.operation==='recommend'?['artwork','idempotencyKey']:
       ['verify','withdraw'].includes(body.operation)?['artwork']:body.operation==='gallery'?['cursor','limit']:[];
     if(keys.some(k=>!['apiVersion','operation',...fields].includes(k))) fail('INVALID_REQUEST');
+    // Only fresh Civitai UserInfo supplies this ID. No JWT/body/header identity.
+    // Database invitation checks are deliberately uncached across instances.
+    if(invitationOnly) await rpc('community_access',{p_member:memberId});
     // Server-owned configuration, read for every authenticated operation. Missing
     // or malformed state is disabled; clients cannot override it. Secret changes
     // disable submissions without an application release (propagation tested in staging).
@@ -199,14 +205,39 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
       && Number.isFinite(remaining) && remaining>0 && remaining<=30*60*1000;
     // In the deployed owner-only entry point, even "enabled" fails closed.
     const submissions=ownerWindow || (!ownerOnly && state==='enabled');
-    const policy={available:submissions||state==='read_only',submissions};
+    const policy={available:submissions||state==='read_only',submissions,
+      ...(invitationOnly?{reporting:submissions||state==='read_only'}:{})};
     if(body.operation!=='status' && !policy.available) fail('BETA_DISABLED');
     if(['recommend','verify','withdraw'].includes(body.operation) && !policy.submissions) fail('READ_ONLY');
     let result:any;
     switch(body.operation) {
       case 'status': result={apiVersion:1,member:{id:memberId,username},
         quota:await rpc('community_quota',{p_member:memberId}),development:false,beta:policy}; break;
-      case 'gallery': result=await rpc('community_gallery',{p_cursor:body.cursor==null?null:id(body.cursor),p_limit:body.limit??24}); break;
+      case 'gallery': {
+        const cursor=body.cursor==null?null:id(body.cursor),limit=body.limit??24;
+        if(!Number.isInteger(limit) || limit<1 || limit>50) fail('INVALID_REQUEST');
+        if(invitationOnly) {
+          const candidates=await rpc('community_review_candidates',{p_member:memberId});
+          if(!Array.isArray(candidates) || candidates.length>3) fail('UNAVAILABLE');
+          await Promise.all(candidates.map(async (candidate:any)=>{
+            const image=id(candidate.imageId),creator=id(candidate.creatorId);
+            let failure:string|null=null;
+            try {if(await artwork(image,token)!==creator) failure='owner';}
+            catch(error) {
+              const code=error instanceof Failure?error.code:'UNAVAILABLE';
+              if(code==='AUTH_EXPIRED') throw error;
+              failure=code==='CONTENT_FILTERED'?'rating':code==='INVALID_ARTWORK'||code==='UNVERIFIED_OWNER'?'unavailable':'transient';
+            }
+            await rpc('community_record_review',{p_member:memberId,p_image:image,p_creator:creator,p_lease:candidate.lease,p_failure:failure});
+          }));
+          result=await rpc('community_beta_gallery',{p_member:memberId,p_cursor:cursor,p_limit:limit});
+        } else result=await rpc('community_gallery',{p_cursor:cursor,p_limit:limit});
+        break;
+      }
+      case 'report': {
+        if(!invitationOnly || !['inappropriate','abuse','ownership','unavailable'].includes(body.reason)) fail('INVALID_REQUEST');
+        result=await rpc('community_report',{p_member:memberId,p_image:artworkInput(body.artwork),p_reason:body.reason});break;
+      }
       case 'verify': case 'recommend': {
         const image=artworkInput(body.artwork), creator=await artwork(image,token);
         const key=body.idempotencyKey;

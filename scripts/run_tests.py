@@ -80,6 +80,7 @@ def main():
     parser.add_argument("--only", nargs="*")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--output", type=Path)
+    parser.add_argument('--resume',action='store_true',help='Resume completed rows in the same reviewed worktree/output; caller must rerun tests affected by later edits')
     args = parser.parse_args()
     interpreter = test_interpreter()
     if args.child:
@@ -91,6 +92,11 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     print(f'Validation artifacts: {output.resolve()}',flush=True)
     results = []
+    if args.resume and (output/'results.json').exists():
+        results=[row for row in json.loads((output/'results.json').read_text(encoding='utf-8'))
+                 if row['name'] in names and row['state'] in ('passed','skipped')]
+        completed={row['name'] for row in results}
+        names=[name for name in names if name not in completed]
     for index, name in enumerate(names, 1):
         with tempfile.TemporaryDirectory(
             prefix="civitai-suite-", ignore_cleanup_errors=True
@@ -149,7 +155,7 @@ def main():
                 "seconds": round(time.monotonic() - started, 1),
             }
             results.append(result)
-            if any(artifacts.iterdir()):
+            if artifacts.exists() and any(artifacts.iterdir()):
                 shutil.copytree(artifacts, output/'artifacts'/name, dirs_exist_ok=True)
             (output / "results.json").write_text(
                 json.dumps(results, indent=2), encoding="utf-8"

@@ -1885,8 +1885,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path.startswith("/api/community/"):
                 operation = parsed.path.rsplit("/", 1)[-1]
-                allowed = {'artwork','idempotencyKey'} if operation == 'recommend' else {'artwork'}
-                if operation not in ("verify", "recommend", "withdraw") or 'artwork' not in body or not set(body) <= allowed:
+                allowed = {'artwork','reason'} if operation == 'report' else {'artwork','idempotencyKey'} if operation == 'recommend' else {'artwork'}
+                if operation not in ("verify", "recommend", "withdraw", "report") or 'artwork' not in body or not set(body) <= allowed:
                     self.json_response(CommunityError("INVALID_REQUEST").response(), 400); return
                 self.community_response(operation, body); return
             if parsed.path == "/api/artwork/availability":
