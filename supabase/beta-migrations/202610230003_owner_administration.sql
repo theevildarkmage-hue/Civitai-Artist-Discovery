@@ -1,42 +1,34 @@
--- Supported Supabase Auth authentication; no DB LOGIN password is provisioned.
--- Enrollment is an independently reviewed administrative action, never signup.
-create table community_private.auth_operators(
-  auth_id uuid primary key references auth.users(id),
-  actor_id bigint not null check(actor_id>0),
-  expires_at timestamptz not null check(isfinite(expires_at)),
-  revoked boolean not null default false
-);
-alter table community_private.auth_operators enable row level security;
-revoke all on community_private.auth_operators from public,anon,authenticated,service_role,community_operator;
-
-create function public.community_admin(p_action text,p_target bigint default null,p_reason text default null,p_until timestamptz default null)
-returns jsonb language plpgsql security definer set search_path=public,pg_temp as $$
-declare actor bigint; principal uuid; result jsonb; actor_login name;begin
-  -- Request claims are trusted ONLY from the authenticated PostgREST connection.
-  -- Browser-supplied IDs, metadata and service-role keys do not enroll operators.
-  if session_user<>'authenticator' or auth.role() is distinct from 'authenticated'
-     or (auth.jwt()->>'aal') is distinct from 'aal2' then raise exception 'FORBIDDEN';end if;
-  principal:=auth.uid();
+-- Supersedes the UNAPPLIED Auth-operator candidate by explicit owner request.
+-- No Auth account, MFA, hosted login, or public administrative RPC is required.
+create function community_private.owner_admin(p_action text,p_target bigint default null,p_reason text default null,p_until timestamptz default null)
+returns jsonb language plpgsql security invoker set search_path=public,pg_temp as $$
+declare result jsonb;begin
+  -- This is infrastructure-owner administration, not per-moderator authentication.
+  -- INVOKER plus owner/session checks reject PostgREST even with forged JWT claims.
+  if session_user<>current_user or current_user is distinct from
+     pg_get_userbyid((select proowner from pg_proc where oid='community_private.owner_admin(text,bigint,text,timestamptz)'::regprocedure))
+     then raise exception 'FORBIDDEN';end if;
+  if p_reason is null or length(p_reason) not between 3 and 256 then raise exception 'INVALID_REQUEST';end if;
   perform pg_advisory_xact_lock(7530230001);
-  select actor_id into actor from community_private.auth_operators
-    where auth_id=principal and not revoked and expires_at>clock_timestamp();
-  if actor is null then raise exception 'FORBIDDEN';end if;
-  actor_login:=('auth:'||principal::text)::name;
   if p_action='invitation_status' then
     if p_target is null or p_target<=0 then raise exception 'INVALID_REQUEST';end if;
-    return coalesce((select jsonb_build_object('memberId',member_id,'expiresAt',expires_at,'revoked',revoked) from community_private.invitations where member_id=p_target),'{}'::jsonb);
+    select coalesce((select jsonb_build_object('memberId',member_id,'expiresAt',expires_at,'revoked',revoked) from community_private.invitations where member_id=p_target),'{}'::jsonb) into result;
+    insert into community_private.moderator_audit(actor_id,actor_login,action,target,reason) values(1,'owner-admin:discovery3',p_action,p_target,p_reason);return result;
   end if;
   if p_action='registry_stats' then
-    return (select jsonb_build_object('users',count(*),'active24h',count(*) filter(where last_seen>clock_timestamp()-interval '24 hours')) from community_private.discovery_users);
+    select jsonb_build_object('users',count(*),'active24h',count(*) filter(where last_seen>clock_timestamp()-interval '24 hours')) into result from community_private.discovery_users;
+    insert into community_private.moderator_audit(actor_id,actor_login,action,target,reason) values(1,'owner-admin:discovery3',p_action,p_target,p_reason);return result;
   end if;
   if p_action='reports' then
     select coalesce(jsonb_agg(to_jsonb(q)),'[]'::jsonb) into result from
       (select seq,image_id,reporter_id,reason,created_at,decision from community_private.reports
-       where seq>coalesce(p_target,0) order by seq limit 50) q;return result;
+       where seq>coalesce(p_target,0) order by seq limit 50) q;
+    insert into community_private.moderator_audit(actor_id,actor_login,action,target,reason) values(1,'owner-admin:discovery3',p_action,p_target,p_reason);return result;
   end if;
   if p_action='audit' then
     select coalesce(jsonb_agg(to_jsonb(q)),'[]'::jsonb) into result from
-      (select * from community_private.moderator_audit where seq>coalesce(p_target,0) order by seq limit 50) q;return result;
+      (select * from community_private.moderator_audit where seq>coalesce(p_target,0) order by seq limit 50) q;
+    insert into community_private.moderator_audit(actor_id,actor_login,action,target,reason) values(1,'owner-admin:discovery3',p_action,p_target,p_reason);return result;
   end if;
   if p_reason is null or length(p_reason) not between 3 and 256 then raise exception 'INVALID_REQUEST';end if;
   if p_action not in ('configure','registry_retention') and (p_target is null or p_target<=0) then raise exception 'INVALID_REQUEST';end if;
@@ -65,11 +57,12 @@ declare actor bigint; principal uuid; result jsonb; actor_login name;begin
     -- Fixed conservative bound; execution requires separately approved retention.
     delete from community_private.discovery_users where last_seen<clock_timestamp()-interval '180 days';
   else raise exception 'INVALID_REQUEST';end case;
-  insert into community_private.moderator_audit(actor_id,actor_login,action,target,reason) values(actor,actor_login,p_action,p_target,p_reason);
+  insert into community_private.moderator_audit(actor_id,actor_login,action,target,reason) values(1,'owner-admin:discovery3',p_action,p_target,p_reason);
   return jsonb_build_object('apiVersion',1,'completed',true);
 end $$;
-revoke all on function public.community_admin(text,bigint,text,timestamptz) from public,anon,authenticated,service_role,community_operator;
-grant execute on function public.community_admin(text,bigint,text,timestamptz) to authenticated;
+revoke all on function community_private.owner_admin(text,bigint,text,timestamptz) from public,anon,authenticated,service_role,community_operator;
+revoke execute on function public.community_operator(text,bigint,text,timestamptz) from community_operator;
+
 
 -- Status errors disclose only the requesting member's eligibility, never a roster.
 create or replace function public.community_access(p_member bigint) returns jsonb

@@ -145,7 +145,6 @@ else:
                 password=secrets.token_urlsafe(40)
                 sql("create role authenticator login noinherit password '"+password+"';grant anon,authenticated,service_role to authenticator;grant connect on database "+env['PGDATABASE']+" to authenticator;")
                 hba=Path(env['CAD_TEST_PG_DATA_DIR'])/'pg_hba.conf';hba.write_text(f"host {env['PGDATABASE']} authenticator 127.0.0.1/32 scram-sha-256\n"+hba.read_text());sql('select pg_reload_conf();')
-                sql("insert into auth.users values('00000000-0000-0000-0000-000000000001');insert into community_private.auth_operators values('00000000-0000-0000-0000-000000000001',9900,clock_timestamp()+interval '1 hour',false);")
                 rest_test_port=port();auth_url=f'http://127.0.0.1:{rest_test_port}'
                 wait(auth_url,start_rest(port_override=rest_test_port,role='authenticator',password=password))
             claims={'role':'service_role' if role=='service' else 'anon' if role=='anon' else 'authenticated','exp':int(time.time())+3600,
