@@ -1,6 +1,7 @@
 """Real browser coordinator journeys; synthetic paged transport, disposable server only."""
 import test_safety
 import json
+import os
 import socket
 from urllib.parse import urlsplit,parse_qs
 from playwright.sync_api import sync_playwright
@@ -14,7 +15,7 @@ def run(width):
     with sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
         page=browser.new_page(viewport={'width':width,'height':900},extra_http_headers=h.headers())
-        calls=[];held=[];errors=[];hold_second=True;fail_third=True;filtered=False
+        calls=[];held=[];slow_filtered=[];errors=[];hold_second=True;fail_third=True;filtered=False
         page.on('pageerror',lambda error:errors.append(str(error)))
         def reply(route,value,status=200):route.fulfill(status=status,content_type='application/json',body=json.dumps(value))
         page.route('**/api/auth-status',lambda route:reply(route,{'connected':True,'id':42,'username':'MockAccount'}))
@@ -39,6 +40,8 @@ def run(width):
             nonlocal fail_third
             number=int(parse_qs(urlsplit(route.request.url).query).get('cursor',['1'])[0])
             calls.append((filtered,number))
+            if filtered and number==2 and os.environ.get("CAD_TEST_SLOW_FILTER"):
+                slow_filtered.append(route);return
             if number==2 and hold_second and not filtered:held.append(route);return
             if number==3 and fail_third and not filtered:
                 fail_third=False;reply(route,{'error':'Synthetic offline page'},503);return
@@ -115,7 +118,26 @@ def run(width):
         empty_calls=[n for f,n in calls if f]
         assert len(empty_calls)<=3,'empty filtered pages must not drain an entire feed automatically'
         page.mouse.wheel(0,600)
-        page.wait_for_function("()=>document.querySelectorAll('#communityGrid .creator-card').length===12")
+        if slow_filtered:
+            page.wait_for_timeout(100)
+            for route in slow_filtered:reply(route,response(2))
+            slow_filtered.clear()
+        try:
+            # Intent while an empty page is pending can coalesce into its next
+            # page budget. Wait for completion, then supply further user intent;
+            # a fixed delay cannot establish that all initial pages have settled.
+            for _ in range(3):
+                page.wait_for_function("()=>document.querySelector('#communitySentinel').getAttribute('aria-busy')==='false'")
+                if page.locator('#communityGrid .creator-card').count()==12:break
+                page.mouse.wheel(0,600)
+                page.wait_for_timeout(100)
+            page.wait_for_function("()=>document.querySelectorAll('#communityGrid .creator-card').length===12",timeout=10000)
+            assert [n for f,n in calls if f]==[1,2,3,4], 'filtered cursor progression must be ordered and single-flight'
+        except Exception:
+            state=page.evaluate("()=>({cards:document.querySelectorAll('#communityGrid .creator-card').length,scrollY,dialogs:[...document.querySelectorAll('dialog[open]')].map(x=>x.id),sentinel:document.querySelector('#communitySentinel').outerHTML,bounds:document.querySelector('#communitySentinel').getBoundingClientRect().toJSON()})")
+            (test_safety.REPORTS/f'filtered-timeout-{width}.json').write_text(json.dumps({'calls':calls,'emptyCallsBeforeWheel':empty_calls,'browser':state,'errors':errors},indent=2))
+            page.screenshot(path=str(test_safety.REPORTS/f'filtered-timeout-{width}.png'))
+            raise
         sentinel.scroll_into_view_if_needed();page.mouse.wheel(0,1000)
         sentinel.filter(has_text="caught up").wait_for()
         assert sentinel.get_attribute('aria-busy')=='false'
