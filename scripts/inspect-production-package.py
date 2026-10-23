@@ -83,7 +83,8 @@ def main():
             else:raise RuntimeError('Frozen package did not become ready')
             for path in ('/api/development/diagnostics','/api/test-isolation','/api/community/development/member','/__dev/community-test-lab/entry.js','/community-fixture.svg'):
                 assert request(path)[0]==404,(scenario,path)
-            beta=request('/api/community/beta')[1];assert beta['production'] and not beta['enabled'] and beta['available']
+            beta=request('/api/community/beta')[1];assert beta['production'] and beta['available']
+            assert beta['enabled'] is (scenario=='hostile-environment'), 'Only the explicitly seeded local preference enables Community'
             assert request('/api/community/recommend',{'artwork':123})[0] in (401,403)
             assert request('/api/community/beta',{'optedIn':True})[0]==200
             assert request('/api/community/beta',{'optedIn':False})[0]==200
@@ -105,7 +106,7 @@ def main():
             assert request('/api/app/close',{})[1]['closing'];process.wait(timeout=15)
             after=snapshot(profile)
             assert all(after.get(k)==v for k,v in before.items()),'Upgrade record changes'
-            result['profiles'].append({'scenario':scenario,'passed':True,'preservedCriticalTables':len(before),'noOAuthCredentialsCopied':True,'developerRoutes404':True,'betaDefaultOff':True,'localOptInSupported':True,'communityTabVisible':True,'oauthWelcomeRendered':True,'browserOnlyFakeIdentityCannotSubmit':True})
+            result['profiles'].append({'scenario':scenario,'passed':True,'preservedCriticalTables':len(before),'noOAuthCredentialsCopied':True,'developerRoutes404':True,'betaDefaultOff':scenario!='hostile-environment','localPreferenceHonored':True,'localOptInSupported':True,'communityTabVisible':True,'oauthWelcomeRendered':True,'browserOnlyFakeIdentityCannotSubmit':True})
         finally:
             if process.poll() is None:process.terminate();process.wait(timeout=10)
     result['passed']=True;result['scratch']=str(scratch)
