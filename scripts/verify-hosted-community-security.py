@@ -17,7 +17,7 @@ def main():
     parser.add_argument('--schema-model',choices=['baseline','candidate','release'],default='baseline')
     parser.add_argument('--catalog-file',type=Path,help='Offline local catalog only; never claims hosted verification')
     parser.add_argument('--expected-owner',default='postgres',help='Offline local catalog owner only; hosted owner is always postgres')
-    parser.add_argument('--expected-definitions',type=Path,help='Reviewed native function body fingerprints')
+    parser.add_argument('--expected-definitions',type=Path,help='Reviewed LF-normalized native function body fingerprints')
     parser.add_argument('--expected-function-version',type=int)
     args=parser.parse_args()
     if args.catalog_file and args.http_denials:parser.error('Offline catalogs cannot run hosted probes')
@@ -86,6 +86,7 @@ def main():
         'passed':not errors,'errors':errors,'checks':verdict['checks'],'matrix':matrix,'migrations':migrations,
         'function':{k:function.get(k) for k in ('slug','version','status','verify_jwt')} if function else None,
         'deploymentVerified':False,'httpDenialProbes':probes,
+        'functionBodyFingerprintFormat':'as recorded in offline catalog' if args.catalog_file else 'LF-normalized; bodyStoredMd5 retains original bytes',
         'limitations':['Catalog verification is not function-source or deployment acceptance. Offline results make no hosted claim. Catalog assertions plus optional bounded GET/invalid-input RPC denials only. No direct hosted CRUD mutations, valid recommendations, handler calls or Civitai OAuth. Authenticated-role HTTP coverage requires a dedicated Supabase test JWT.']}
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(result,indent=2),encoding='utf-8')

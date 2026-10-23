@@ -33,7 +33,8 @@ select jsonb_build_object(
     'select',has_sequence_privilege(r.oid,c.oid,'SELECT'),'update',has_sequence_privilege(r.oid,c.oid,'UPDATE'))) from principals r)))
    from pg_class c join scope n on n.oid=c.relnamespace where c.relkind='S' and (n.nspname='community_private' or c.relname like 'community_%')),
  'rpcs',(select jsonb_agg(jsonb_build_object('schema',n.nspname,'name',p.proname,'types',oidvectortypes(p.proargtypes),
-   'owner',pg_get_userbyid(p.proowner),'securityDefiner',p.prosecdef,'configuration',p.proconfig,'bodyMd5',md5(p.prosrc),
+   'owner',pg_get_userbyid(p.proowner),'securityDefiner',p.prosecdef,'configuration',p.proconfig,
+   'bodyMd5',md5(replace(p.prosrc,chr(13)||chr(10),chr(10))),'bodyStoredMd5',md5(p.prosrc),
    'access',(select jsonb_agg(jsonb_build_object('role',r.rolname,'execute',has_function_privilege(r.oid,p.oid,'EXECUTE'))) from principals r)))
    from pg_proc p join scope n on n.oid=p.pronamespace where n.nspname='community_private' or p.proname like 'community_%'),
  'policies',(select coalesce(jsonb_agg(jsonb_build_object('schema',schemaname,'table',tablename,'name',policyname)),'[]'::jsonb)
