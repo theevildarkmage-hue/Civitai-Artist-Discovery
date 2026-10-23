@@ -1,5 +1,7 @@
 """Read-only hosted catalog assertions after an approved deployment. No user rows or handler calls."""
 import argparse,json,os,sys,urllib.request,urllib.error
+sys.path.insert(0,str(__import__('pathlib').Path(__file__).resolve().parents[1]))
+from discovery.community_catalog import validate_catalog
 from pathlib import Path
 
 REF='aibelmhucizupzvvhdvf'
@@ -12,9 +14,15 @@ def main():
     parser.add_argument('--project-ref',required=True,choices=[REF])
     parser.add_argument('--output',required=True,type=Path)
     parser.add_argument('--http-denials',action='store_true',help='After approval, use SUPABASE_PUBLISHABLE_KEY for bounded read/invalid-RPC probes. No valid recommendation inputs.')
+    parser.add_argument('--schema-model',choices=['baseline','candidate'],default='baseline')
+    parser.add_argument('--catalog-file',type=Path,help='Offline local catalog only; never claims hosted verification')
+    parser.add_argument('--expected-owner',default='postgres',help='Offline local catalog owner only; hosted owner is always postgres')
+    parser.add_argument('--expected-definitions',type=Path,help='Reviewed native function body fingerprints')
+    parser.add_argument('--expected-function-version',type=int)
     args=parser.parse_args()
+    if args.catalog_file and args.http_denials:parser.error('Offline catalogs cannot run hosted probes')
     token=os.environ.get('SUPABASE_ACCESS_TOKEN')
-    if not token:parser.error('SUPABASE_ACCESS_TOKEN unavailable; no request performed. Never paste credentials into arguments.')
+    if not token and not args.catalog_file:parser.error('SUPABASE_ACCESS_TOKEN unavailable; no request performed. Never paste credentials into arguments.')
     base='https://api.supabase.com/v1/projects/'+args.project_ref
     def read(path,query=None):
         assert path in ('/database/query/read-only','/functions','/database/migrations')
@@ -24,36 +32,28 @@ def main():
             with urllib.request.urlopen(req,timeout=30) as response:return json.load(response)
         except urllib.error.HTTPError as error:
             code=error.code;error.close();raise RuntimeError(f'Read-only audit HTTP {code}; response body withheld') from None
-    query=(ROOT/'supabase/tests/security_inventory.sql').read_text()
-    rows=read('/database/query/read-only',query)
-    matrix=next(iter(rows[0].values()))
-    errors=[]
-    tables=matrix.get('relations') or []
-    if {t['name'] for t in tables}!=EXPECTED:errors.append('Missing/extra Community relations')
-    if matrix.get('policies'):errors.append('Unexpected Community RLS policies')
-    for table in tables:
-        if table['kind']!='r' or not table['rlsEnabled'] or table['owner']!='postgres':errors.append('Table ownership/RLS mismatch: '+table['name'])
-        for access in table['access']:
-            if access['role'] in ('anon','authenticated','service_role') and any(access[k] for k in ('select','insert','update','delete','truncate')):errors.append('Direct table privilege: '+table['name']+'/'+access['role'])
-    sequences=matrix.get('sequences') or []
-    if {s['name'] for s in sequences}!={'community_recommendations_seq_seq','community_audit_seq_seq'}:errors.append('Missing/extra Community sequences')
-    for sequence in sequences:
-        if sequence['owner']!='postgres':errors.append('Unexpected sequence owner: '+sequence['name'])
-        for access in sequence['access']:
-            if access['role'] in ('anon','authenticated','service_role') and any(access[k] for k in ('usage','select','update')):errors.append('Direct sequence privilege: '+sequence['name']+'/'+access['role'])
-    routines=matrix.get('rpcs') or []
-    if {r['name'] for r in routines}!=RPCS or len(routines)!=len(RPCS):errors.append('Missing/extra RPCs or overloads')
-    for routine in routines:
-        if routine['owner']!='postgres' or not routine['securityDefiner'] or ['search_path=public,pg_temp']!=[c.replace(' ','') for c in routine['configuration'] or []]:errors.append('RPC owner/search_path mismatch: '+routine['name'])
-        for access in routine['access']:
-            if access['role'] in ('anon','authenticated') and access['execute']:errors.append('Public RPC execution: '+routine['name'])
-            if access['role']=='service_role' and not access['execute']:errors.append('Missing service RPC execution: '+routine['name'])
-    functions=read('/functions')
+    query=(ROOT/'supabase/tests/security_inventory_v2.sql').read_text()
+    if args.catalog_file:
+        document=json.loads(args.catalog_file.read_text(encoding='utf-8'))
+        matrix=document.get('matrix',document)
+        migrations=document.get('migrations')
+        functions=[]
+    else:
+        rows=read('/database/query/read-only',query)
+        matrix=next(iter(rows[0].values()))
+        migrations=read('/database/migrations')
+        functions=read('/functions')
+    expected=None
+    if args.expected_definitions:expected=json.loads(args.expected_definitions.read_text(encoding='utf-8'))
+    verdict=validate_catalog(matrix,args.schema_model,owner=args.expected_owner if args.catalog_file else 'postgres',
+        migrations=migrations,expected_definitions=expected)
+    errors=list(verdict['errors'])
     function=next((f for f in functions if f.get('slug')=='community-v1'),None)
-    if not function or function.get('verify_jwt') is not False:errors.append('Missing function or unexpected platform JWT configuration')
-    migrations=read('/database/migrations')
-    versions={m.get('version') for m in migrations}
-    if not {'202610140001','202610150001','202610210001','202610220001'}.issubset(versions):errors.append('Incomplete four-migration ledger; inspect schema before any repair')
+    if not args.catalog_file:
+        if not function or function.get('verify_jwt') is not False or function.get('status')!='ACTIVE':
+            errors.append('Missing/inactive function or unexpected platform JWT configuration')
+        if args.expected_function_version is not None and (not function or function.get('version')!=args.expected_function_version):
+            errors.append('Unexpected function revision; source compatibility must be checked separately')
     probes=[]
     if args.http_denials and not errors:
         public_key=os.environ.get('SUPABASE_PUBLISHABLE_KEY')
@@ -81,8 +81,12 @@ def main():
                 ('community_withdraw',{'p_member':0,'p_image':0}),
                 ('community_moderate',{'p_image':0,'p_status':'invalid'})):
                 probe('rpc/'+name,payload,auth)
-    result={'projectRef':args.project_ref,'passed':not errors,'errors':errors,'matrix':matrix,'httpDenialProbes':probes,
-        'limitations':['Catalog assertions plus optional bounded GET/invalid-input RPC denials only. No direct hosted CRUD mutations, valid recommendations, handler calls or Civitai OAuth. Authenticated-role HTTP coverage requires a dedicated Supabase test JWT.']}
+    result={'projectRef':args.project_ref,'schemaModel':args.schema_model,
+        'transport':'offline catalog' if args.catalog_file else 'hosted read-only Management API',
+        'passed':not errors,'errors':errors,'checks':verdict['checks'],'matrix':matrix,'migrations':migrations,
+        'function':{k:function.get(k) for k in ('slug','version','status','verify_jwt')} if function else None,
+        'deploymentVerified':False,'httpDenialProbes':probes,
+        'limitations':['Catalog verification is not function-source or deployment acceptance. Offline results make no hosted claim. Catalog assertions plus optional bounded GET/invalid-input RPC denials only. No direct hosted CRUD mutations, valid recommendations, handler calls or Civitai OAuth. Authenticated-role HTTP coverage requires a dedicated Supabase test JWT.']}
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(result,indent=2),encoding='utf-8')
     print(json.dumps({'passed':result['passed'],'errors':errors}));return bool(errors)

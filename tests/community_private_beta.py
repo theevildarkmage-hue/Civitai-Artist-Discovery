@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 
-def run(*,second_instance,sql,call,request,edge,member,restart,set_fault,env,output,seed):
+def run(*,second_instance,legacy_probe,restored_probe,sql,call,request,edge,member,restart,set_fault,env,output,seed):
     assert env.get('CAD_TEST_PG_SYSTEM_IDENTIFIER')==sql('select system_identifier from pg_control_system();')
     assert Path(env['CAD_TEST_PG_DATA_DIR']).resolve()==Path(sql('show data_directory;')).resolve()
     root=Path(__file__).resolve().parents[1]
@@ -32,9 +32,14 @@ def run(*,second_instance,sql,call,request,edge,member,restart,set_fault,env,out
         return sql("select jsonb_object_agg(n,v) from ("+' union all '.join(
             "select '"+n+"' n,jsonb_build_object('count',count(*),'hash',md5(coalesce(jsonb_agg(to_jsonb(t) order by to_jsonb(t)::text)::text,'[]'))) v from public."+n+" t"
             for n in ['community_members','community_recommendations','community_audit','community_submission_requests'])+") q;")
+    rehearsal_before=None
+    if env.get('CAD_TEST_REHEARSAL')=='1':
+        from community_deployment_rehearsal import prepare
+        rehearsal_before=prepare(sql,env,output)
     before=snapshot()
     candidate=root/'supabase/beta-migrations/202610230001_private_beta_security.sql'
-    sql('begin;'+candidate.read_text()+'commit;')
+    history_record="insert into supabase_migrations.schema_migrations values('202610230001','private_beta_security',array['rehearsed candidate']);" if rehearsal_before else ''
+    sql(rehearsal_before['retryBundle'] if rehearsal_before else 'begin;'+candidate.read_text()+history_record+'commit;')
     check('migration preserves existing ledger hashes',before==snapshot())
     # Hold earlier baseline fixtures out of this targeted revalidation exercise.
     sql("update community_private.artwork_reviews set lease_until=clock_timestamp()+interval '1 day';")
@@ -199,7 +204,11 @@ def run(*,second_instance,sql,call,request,edge,member,restart,set_fault,env,out
     check('revoked operator denied',op('reports',ok=False))
     sql("update community_private.operators set revoked=false where login='cad3_beta_operator';")
     check('all operator actions have authenticated actor/reason',sql("select not exists(select 1 from community_private.moderator_audit where actor_id<>9001 or actor_login<>'cad3_beta_operator' or length(reason)<3);")=='t')
-    result={'passed':True,'checks':len(checks),'simulatedCivitaiIdentity':True,'realPostgreSQL':True,'realPostgREST':True,'realDeno':True,'migrationPreservedLedger':True}
+    rehearsal=None
+    if rehearsal_before:
+        from community_deployment_rehearsal import finish
+        rehearsal=finish(sql=sql,env=env,output=output,before=rehearsal_before,call=call,member=member,request=request,edge=edge,restart=restart,legacy_probe=legacy_probe,restored_probe=restored_probe,seed=seed)
+    result={'deploymentRehearsal':rehearsal,'passed':True,'checks':len(checks),'simulatedCivitaiIdentity':True,'realPostgreSQL':True,'realPostgREST':True,'realDeno':True,'migrationPreservedLedger':True}
     (output/'private-beta.json').write_text(json.dumps({'passed':True,'completed':True,'checks':checks},indent=2))
     (output/'private-beta-summary.json').write_text(json.dumps(result,indent=2))
     return result
