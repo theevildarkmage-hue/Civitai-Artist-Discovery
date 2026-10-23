@@ -36,7 +36,7 @@ def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_de
     for name,r in roles.items():
         if name in ('anon','authenticated','service_role'):
             check('role authority '+name,not any(r.get(k,True) for k in ('superuser','createRole','createDb','replication'))
-                and (name=='service_role' or r.get('bypassRls') is False) and 'community_operator' not in (r.get('memberOf') or []))
+                and (name=='service_role' or r.get('bypassRls') is False) and r.get('memberOf')==[])
         elif name!='community_operator':
             check('restricted operator login '+name,r.get('login') is True and not any(r.get(k,True) for k in
                 ('inherit','superuser','bypassRls','createRole','createDb','replication')) and r.get('memberOf')==['community_operator'])

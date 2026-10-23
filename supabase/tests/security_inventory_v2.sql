@@ -2,6 +2,9 @@
 with recursive operator_members(oid) as (
  select oid from pg_roles where rolname='community_operator'
  union select m.member from pg_auth_members m join operator_members g on m.roleid=g.oid
+ -- Infrastructure owners are already outside the restricted-login boundary.
+ -- Do not relabel their existing administration descendants as moderator logins.
+ where m.roleid not in (select oid from pg_roles where rolname in (current_user,'postgres'))
 ), principals as (
  select r.* from pg_roles r where r.rolname in ('anon','authenticated','service_role','community_operator')
  or (r.oid in (select oid from operator_members) and r.rolname not in (current_user,'postgres'))
