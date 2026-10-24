@@ -135,6 +135,7 @@ with tempfile.TemporaryDirectory(
 
     handler = server.Handler.__new__(server.Handler)
     handler.path = "/api/reaction-status?imageId=1"
+    handler.headers = {}
     handler.host_allowed = lambda: True
     responses = []
     handler.json_response = lambda value, status=200: responses.append((status, value))

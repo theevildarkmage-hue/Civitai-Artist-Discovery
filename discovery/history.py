@@ -22,6 +22,7 @@ from typing import Callable
 from .civitai import API_LANE, API_URL, USER_AGENT, AdaptivePacer as AdaptivePacer, normalize, utcnow
 from .recovery import SuspiciousCaptureError, volume_issue, volume_rows
 from .retry import retry_after_seconds
+from .pagination import PageProgress
 from .diagnostics import redact_sensitive
 from .models import matches_models, normalize_base_model
 from .thumbnails import ThumbnailHints
@@ -688,6 +689,14 @@ class HistoryArchive:
 
     def start(self, value: str, start_utc: str, end_utc: str, timezone_name: str,
               segment: str = "all", requested_content_rating: str | None = None) -> dict:
+        # Status inspection and reservation are one operation. A second caller
+        # must see loading before it can replace this block's cancellation event.
+        with self.lock:
+            return self._start_locked(value, start_utc, end_utc, timezone_name,
+                                      segment, requested_content_rating)
+
+    def _start_locked(self, value: str, start_utc: str, end_utc: str, timezone_name: str,
+                      segment: str, requested_content_rating: str | None) -> dict:
         key = self.archive_key(value, segment)
         start, end = parse_bounds(value, start_utc, end_utc)
         requested_rating = content_rating(requested_content_rating or self.content_rating)
@@ -1003,11 +1012,12 @@ class HistoryArchive:
                     self.api_pacer.failure(reason)
                     retry = error.headers.get("Retry-After")
                     backoff_attempt = attempt % RATE_LIMIT_RETRIES
-                    if error.code == 429:
-                        try: wait = max(60.0, float(retry)) if retry else min(600.0, 60.0 * (2**backoff_attempt))
-                        except ValueError: wait = min(600.0, 60.0 * (2**backoff_attempt))
-                    else: wait = min(60.0, 2.0**backoff_attempt)
                     requested_wait = retry_after_seconds(retry)
+                    if requested_wait is not None and requested_wait > 600:
+                        raise RetryBudgetExhausted(reason, attempt + 1, 'Upstream requested a wait beyond the safe retry window')
+                    if error.code == 429:
+                        wait = max(60.0, requested_wait) if requested_wait is not None else min(600.0, 60.0 * (2**backoff_attempt))
+                    else: wait = min(60.0, 2.0**backoff_attempt)
                     delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
                 except (TimeoutError, urllib.error.URLError) as error:
                     if on_timing:
@@ -1092,14 +1102,13 @@ class HistoryArchive:
                     self.api_pacer.failure(reason)
                     retry = error.headers.get("Retry-After")
                     backoff_attempt = attempt % RATE_LIMIT_RETRIES
+                    requested_wait = retry_after_seconds(retry)
+                    if requested_wait is not None and requested_wait > 600:
+                        raise RetryBudgetExhausted(reason, attempt + 1, 'Upstream requested a wait beyond the safe retry window')
                     if error.code == 429:
-                        try:
-                            wait = max(30.0, float(retry)) if retry else min(300.0, 30.0 * 2**backoff_attempt)
-                        except ValueError:
-                            wait = min(300.0, 30.0 * 2**backoff_attempt)
+                        wait = max(30.0, requested_wait) if requested_wait is not None else min(300.0, 30.0 * 2**backoff_attempt)
                     else:
                         wait = min(60.0, 2.0**backoff_attempt)
-                    requested_wait = retry_after_seconds(retry)
                     delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
                 except (TimeoutError, urllib.error.URLError) as error:
                     if on_timing:
@@ -1678,9 +1687,11 @@ class HistoryArchive:
                     if cancel_event.is_set():
                         return
 
+                progress = PageProgress(cursor)
                 while True:
                     if cancel_event.is_set():
                         return
+                    progress.before_request()
                     params = {"limit": PAGE_SIZE, "sort": "Newest", "period": "AllTime",
                               "browsingLevel": mask, "withMeta": "false"}
                     if cursor:
@@ -1705,6 +1716,7 @@ class HistoryArchive:
                     request_seconds = time.monotonic() - request_started
                     rows = payload.get("items", [])
                     next_cursor = (payload.get("metadata") or {}).get("nextCursor")
+                    progress.observe(next_cursor, bool(rows))
                     timestamps = [parse_timestamp(row["createdAt"]) for row in rows
                                   if row.get("createdAt")]
                     oldest = min(timestamps) if timestamps else None
