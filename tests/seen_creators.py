@@ -203,6 +203,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-seen-", ignore_cleanup_errors=T
                 content_type="application/json", body='{"images":{}}'))
             page.route("**/api/history/prepare**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"prepared":false}'))
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             page.wait_for_selector(".creator-card")
 

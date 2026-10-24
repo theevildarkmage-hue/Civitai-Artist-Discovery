@@ -33,7 +33,7 @@ const transport=async(url,options)=>{
  throw Error('Unapproved network destination');
 };
 const handler=createCommunityHandler({fetch:transport,invitationOnly:true,galleryWindow:true});
-for(const [scenario,expected] of [['good',null],['video',null],['viewer','viewer'],['viewer401','viewer'],['owner','viewer'],['missing','viewer'],['rating','rating'],['outage','transient']]) {
+for(const [scenario,expected] of [['good',null],['video',null],['viewer','viewer'],['viewer401','viewer'],['owner','viewer'],['missing','unavailable'],['rating','rating'],['outage','transient']]) {
  mode=scenario;
  const response=await handler(new Request('https://isolated.invalid',{method:'POST',headers:{Authorization:'Bearer synthetic-read-only','Content-Type':'application/json'},body:JSON.stringify({apiVersion:1,operation:'gallery',cursor:123,limit:24})}));
  assert.equal(response.status,200,scenario);assert.equal(verdicts.at(-1),expected,scenario);

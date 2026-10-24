@@ -57,6 +57,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-window-fallback-", ignore_clean
                 body='{"connected":true,"socialWrite":true,"username":"tester","id":7}'))
             page.route("**/api/discovery/summary", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"hasData":true}'))
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.locator("#discovery:not(.hidden)").wait_for()
             page.locator('#tabGallery').click()

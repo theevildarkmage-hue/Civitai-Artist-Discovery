@@ -98,6 +98,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-full-day-progress-", ignore_cle
             page.route("**/api/history/cancel", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"cancelled":true}'))
 
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.locator("#discovery:not(.hidden)").wait_for()
             page.locator('#tabGallery').click()

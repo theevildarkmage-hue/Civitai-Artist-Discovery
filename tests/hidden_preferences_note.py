@@ -73,6 +73,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-hidden-note-", ignore_cleanup_e
             page.route("**/api/discovery/hidden*", lambda route: route.fulfill(status=200,
                 content_type="application/json", body=hidden_state["body"]))
 
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             page.wait_for_selector(".creator-card", timeout=30000)
 

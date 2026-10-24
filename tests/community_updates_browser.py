@@ -42,12 +42,15 @@ try:
    saved=page.evaluate('scrollY')
    page.evaluate('window.__noticeCards=[...document.querySelectorAll("#communityGrid .community-card")]')
    state['new']=[row(20003,True),row(20003,True),row(20002,True),row(20001,True)]
+   probe_refresh=[]
+   page.on('request',lambda request:probe_refresh.append(parse_qs(urlsplit(request.url).query).get('refresh',['0'])[0]) if '/api/community/gallery?' in request.url else None)
    page.clock.fast_forward(60000)
    try:page.wait_for_function('()=>document.querySelector("#communityUpdates").textContent.startsWith("3 new recommendations")',timeout=10000)
    except Exception:
     print({'calls':calls,'errors':errors,'browser':page.evaluate('()=>({notice:document.querySelector("#communityUpdates").textContent,message:document.querySelector("#communityMessage").textContent,filters:galleryFilterState()})')},flush=True)
     raise
    assert page.locator('#communityUpdates').inner_text()=='3 new recommendations \u2014 Refresh to Show'
+   assert probe_refresh and all(value=='0' for value in probe_refresh),'background notice must not force metadata refresh'
    assert page.evaluate('()=>{const now=[...document.querySelectorAll("#communityGrid .community-card")];return now.length===window.__noticeCards.length&&now.every((el,i)=>el===window.__noticeCards[i])}')
    assert abs(page.evaluate('scrollY')-saved)<2
    page.screenshot(path=str(test_safety.REPORTS/f'new-recommendations-{width}.png'),full_page=True)

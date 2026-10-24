@@ -2338,6 +2338,12 @@ class HistoryArchive:
         with self.connect() as db:
             return db.execute("SELECT 1 FROM images WHERE id=?", (image_id,)).fetchone() is not None
 
+    def cached_base_model(self, image_id: int) -> str:
+        """Optional card enrichment only; never fetch generation details."""
+        with self.connect() as db:
+            row=db.execute('SELECT base_model FROM images WHERE id=?',(image_id,)).fetchone()
+        return normalize_base_model(row[0] if row else None)
+
     def update_stats(self, image_id: int, stats: dict) -> None:
         with self.connect() as db: db.execute("UPDATE images SET stats=? WHERE id=?", (json.dumps(stats), image_id))
 

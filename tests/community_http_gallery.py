@@ -25,8 +25,10 @@ def run_gallery(edge,member,seed,creators,sql,scratch,output,get_service,start_s
             f'/community-fixture.svg?id={image}')
     expired=False
     def transport(url,token,payload):
-        # The desktop fixture cookie chooses a synthetic principal. Only the
-        # signed token's verified UserInfo determines the service member ID.
+        # Legacy HTTP business-rule bridge: the desktop supplies only a synthetic
+        # Discovery session. This local adapter substitutes the legacy issuer token;
+        # it does not exercise the new identity exchange (covered separately).
+        assert token == 'sdc_'+'t'*43
         request=urllib.request.Request(edge,data=json.dumps(payload).encode(),headers={
             'Content-Type':'application/json','Authorization':'Bearer '+member(70,expired=expired)})
         try:
@@ -34,7 +36,7 @@ def run_gallery(edge,member,seed,creators,sql,scratch,output,get_service,start_s
         except urllib.error.HTTPError as error:
             value=json.load(error);raise CommunityError(value.get('code','UNAVAILABLE'),error.code)
         except OSError:raise CommunityError('UNAVAILABLE',503)
-    client.backend=SupabaseCommunityBackend('https://local-test.supabase.co/functions/v1/community-v1',fetch=transport,identity_token_provider=lambda:member(70,expired=expired))
+    client.backend=SupabaseCommunityBackend('https://local-test.supabase.co/functions/v1/community-v1',fetch=transport,identity_token_provider=lambda:'sdc_'+'t'*43)
     server.COMMUNITY=client
     http=ThreadingHTTPServer(('127.0.0.1',0),server.Handler);server.RUNNING_PORT=http.server_port
     base=f'http://127.0.0.1:{http.server_port}'

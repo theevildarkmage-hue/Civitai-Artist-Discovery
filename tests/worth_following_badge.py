@@ -158,6 +158,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-worth-following-", ignore_clean
                 content_type="application/json", body='{"creators":{}}'))
             page.route("**/api/reaction-status**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"images":{}}'))
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             page.wait_for_selector(".creator-card", timeout=30000)
 

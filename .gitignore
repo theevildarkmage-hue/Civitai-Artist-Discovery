@@ -129,3 +129,6 @@ dev/community-test-lab/*
 
 # Pinned legacy SQL/Edge compatibility regression source; never packaged.
 !tests/fixtures/community-legacy-handler.ts
+
+# Read-only candidate artwork acceptance helper; contains no credentials.
+!scripts/verify-public-artwork.mjs
