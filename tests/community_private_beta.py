@@ -157,9 +157,12 @@ def run(*,second_instance,legacy_probe,restored_probe,release_probe,sql,call,req
     check('artwork accepted before metadata change',call('recommend',n=4,artwork=fresh)[0]==200)
     def stale():sql(f"update community_private.artwork_reviews set valid_until=clock_timestamp()-interval '1 second',lease_until=null where image_id={fresh};")
     def state():return sql(f"select state from community_private.artwork_reviews where image_id={fresh};")
-    for fault in ('missing','private','video','unavailable','rating','changed_owner'):
+    for fault in ('missing','private','unsupported','unavailable','rating','changed_owner'):
         stale();set_fault(fault);response=call('gallery',n=4)
         check('bounded unavailable revalidation '+fault,response[0]==200 and state()=='quarantined' and fresh not in [x['imageId'] for x in response[1].get('items',[])])
+    set_fault('video');stale()
+    video_response=call('gallery',n=4)
+    check('eligible public video survives revalidation',video_response[0]==200 and state()=='eligible' and fresh in [x['imageId'] for x in video_response[1].get('items',[])])
     set_fault('');stale()
     check('eligible metadata recovers',call('gallery',n=4)[0]==200 and state()=='eligible')
     stale()

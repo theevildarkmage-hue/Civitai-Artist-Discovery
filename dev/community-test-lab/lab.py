@@ -268,8 +268,8 @@ def exercise_browser(lab):
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
         page.screenshot(path=str(lab.output/'real-lab-gallery-mobile.png'))
         # Apply the existing shared controls to real ratings, in this isolated profile.
-        page.locator('#contentFilter').click()
-        for level in (2,4,8,16):page.locator(f'#contentPanel [data-level="{level}"]').click()
+        page.locator('#filterToggle').click()
+        for level in (2,4,8,16):page.locator(f'#contentMenu [data-level="{level}"]').click()
         page.keyboard.press('Escape')
         allowed=[a['rest']['id'] for m in members for a in m['artworks'] if a['rest']['browsingLevel']==1]
         page.wait_for_function("ids=>{const cards=[...document.querySelectorAll('#communityGrid .creator-card')];return cards.length>0&&cards.every(x=>ids.includes(Number(x.dataset.id)));}",arg=allowed,timeout=30000)

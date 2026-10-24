@@ -53,7 +53,7 @@ globalThis.fetch=async(url,options={})=>{
   let image;
   if(url.includes('/api/v1/images?')) {
     image=Number(new URL(url).searchParams.get('imageId'));
-    return reply({items:[{id:image,type:mode==='video'?'video':'image',username:`Artist${image}`,
+    return reply({items:[{id:image,type:mode==='video'?'video':mode==='unsupported'?'audio':'image',username:`Artist${image}`,
       browsingLevel:1,url:'https://image.civitai.com/isolated-art.jpeg'}]});
   }
   image=JSON.parse(new URL(url).searchParams.get('input')).json.id;
@@ -75,10 +75,12 @@ async function request(operation,fields={},token='isolated-member-0') {
 for(const token of ['expired','revoked','malformed']) {
   assert.equal((await request('status',{},token)).body.code,'AUTH_EXPIRED');
 }
-for(const [fault,code] of [['own','SELF_RECOMMENDATION'],['unavailable','UNAVAILABLE'],['video','INVALID_ARTWORK']]) {
+for(const [fault,code] of [['own','SELF_RECOMMENDATION'],['unavailable','UNAVAILABLE'],['unsupported','INVALID_ARTWORK']]) {
   mode=fault;assert.equal((await request('recommend',{artwork:seed+100,idempotencyKey:`isolated-failed-${seed}`})).body.code,code);
   assert.equal((await request('status')).body.quota.used,0);
 }
+mode='video';assert.equal((await request('verify',{artwork:seed+100})).status,200);
+assert.equal((await request('status')).body.quota.used,0);
 mode='';
 assert.equal((await request('recommend',{artwork:seed+100,memberId:999})).body.code,'INVALID_REQUEST');
 for(let index=0;index<10;index++) {

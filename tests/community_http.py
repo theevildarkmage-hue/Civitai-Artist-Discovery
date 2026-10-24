@@ -94,7 +94,7 @@ else:
                     elif path.path=='/api/v1/images':data={'items':[art['rest']]}
                     else:data={'result':{'data':{'json':art['detail']}}}
                 elif path.path=='/api/v1/images':
-                    data={'items':[{'id':image,'type':'video' if fault=='video' else 'image',
+                    data={'items':[{'id':image,'type':'video' if fault=='video' else 'audio' if fault=='unsupported' else 'image',
                         'username':f'Artist{creator}','browsingLevel':16 if fault=='rating' else 1 if image%2 else 2,
                         'url':'https://image.civitai.com/synthetic-local-only.jpeg'}]}
                 else:data={'result':{'data':{'json':{'id':image,'user':{'id':creator,'username':f'Artist{creator}'},
@@ -361,7 +361,7 @@ else:
             status,_=request(rest+'/community_recommendations',{'image_id':seed+10000,'creator_id':seed+10001,'member_id':seed,'week':'2026-10-19'},auth='Bearer '+anon_key)
             assert status==403
         finally:sql('revoke all on community_recommendations from authenticated; revoke all on sequence community_recommendations_seq_seq from authenticated;')
-        for case,code in [('missing','INVALID_ARTWORK'),('video','INVALID_ARTWORK'),('unavailable','UNAVAILABLE'),('limited','RATE_LIMITED')]:
+        for case,code in [('missing','INVALID_ARTWORK'),('unsupported','INVALID_ARTWORK'),('unavailable','UNAVAILABLE'),('limited','RATE_LIMITED')]:
             before=counts();fault=case;assert call('recommend',artwork=seed+10000)[1]['code']==code;fault='';assert counts()==before
         # A partial body must not occupy a worker indefinitely. No upstream calls.
         before=counts();started=time.monotonic();connection=http.client.HTTPConnection('127.0.0.1',edge_port,timeout=8)
