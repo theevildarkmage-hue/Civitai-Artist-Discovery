@@ -21,7 +21,9 @@ try:
             page.route('**/api/community/beta',config)
             def status(route):
                 requests['status']+=1
-                if state['code']=='INVITED':return reply(route,{'member':{'id':42,'username':'Fixture'},'quota':{'used':0,'remaining':3,'limit':3},'beta':{'available':True,'submissions':True}})
+                if state['code'] in ('INVITED','OWNER'):
+                    quota={'used':8,'remaining':None,'limit':None,'unlimited':True} if state['code']=='OWNER' else {'used':0,'remaining':3,'limit':3}
+                    return reply(route,{'member':{'id':11107642 if state['code']=='OWNER' else 42,'username':'Fixture'},'quota':quota,'beta':{'available':True,'submissions':True}})
                 reply(route,{'code':state['code'],'error':'Synthetic denial'},503 if state['code']=='UNAVAILABLE' else 403)
             page.route('**/api/community/status*',status)
             page.route('**/api/community/gallery*',lambda r:reply(r,{'items':[],'nextCursor':None}))
@@ -43,6 +45,15 @@ try:
             page.wait_for_function('()=>!document.querySelector("#communityRecommend").disabled')
             page.locator('#communityRecommend').click();assert page.locator('.community-dialog[open]').count()==1
             page.locator('#communityCancel').click()
+            state['code']='OWNER';page.locator('#communityRefresh').click()
+            page.wait_for_function('()=>document.querySelector("#communityQuota").textContent.includes("Unlimited")')
+            page.locator('#communityRecommend').click()
+            assert '8 recommendations' in page.locator('#communityFormQuota').inner_text()
+            assert 'three-per-artist' in page.locator('#communityFormQuota').inner_text()
+            assert 'null' not in page.locator('#communityFormQuota').inner_text()
+            page.locator('#communityCancel').click()
+            state['code']='INVITED';page.locator('#communityRefresh').click()
+            page.wait_for_function('()=>document.querySelector("#communityQuota").textContent.includes("3 left")')
             page.screenshot(path=str(test_safety.REPORTS/f'automatic-invited-{width}.png'))
             # Fresh reload also connects automatically and has no opt-in UI or writes.
             page.reload(wait_until='networkidle');page.locator('#tabCommunity').click()

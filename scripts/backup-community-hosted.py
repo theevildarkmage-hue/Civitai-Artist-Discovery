@@ -51,7 +51,8 @@ def main():
     matrix=next(iter(api('/database/query/read-only',inventory)[0].values()))
     snapshot=api('/database/query/read-only',snapshot_query())[0]['snapshot']
     assert validate_catalog(matrix,a.schema_model,migrations=snapshot['migrations'])['passed'],'Hosted baseline drift'
-    assert len(snapshot['migrations'])==(8 if a.schema_model=='automatic' else 7 if a.schema_model=='release' else 4),'Unexpected migration history'
+    expected_count=len(json.loads(a.manifest.read_text())['files']) if a.manifest else 4
+    assert expected_count in (4,7,8,9) and len(snapshot['migrations'])==expected_count,'Unexpected migration history'
     functions=api('/functions');function=next(f for f in functions if f['slug']=='community-v1')
     assert function['version']==(a.expected_function_version or 10) and function['status']=='ACTIVE'
     files=sorted((ROOT/'supabase/migrations').glob('*.sql'))
