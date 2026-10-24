@@ -67,7 +67,7 @@ def run_gallery(edge,member,seed,creators,sql,scratch,output,get_service,start_s
             page.screenshot(path=str(output/'gallery-desktop.png'))
             page.locator('#communityGrid .info-button').first.click();page.locator('#details[open]').wait_for();page.locator('#close').click()
             # Existing controls API and card factory; Community endpoints are never mocked.
-            page.locator('#contentFilter').click();page.locator('#contentPanel [data-level="2"]').click();page.keyboard.press('Escape')
+            page.locator('#filterToggle').click();page.locator('#contentMenu [data-level="2"]').click();page.keyboard.press('Escape')
             page.wait_for_timeout(400)
             page.wait_for_function("()=>[...document.querySelectorAll('#communityGrid .creator-card')].every(x=>Number(x.dataset.id)%2===1)")
             page.locator('#communityRecommend').click();page.locator('#communityLink').fill(str(new_images[0]));page.locator('#communitySubmit').click()

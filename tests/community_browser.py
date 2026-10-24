@@ -128,8 +128,8 @@ def run(mode):
                 assert page.locator('dialog[open]').evaluate('(e)=>e.getBoundingClientRect().right<=innerWidth && e.getBoundingClientRect().height<600')
                 page.locator('#communityCancel').click()
                 # The shared setting updates through Community's browsing controls.
-                page.locator('#contentFilter').click()
-                page.locator('#contentPanel [data-level="1"]').click()
+                page.locator('#filterToggle').click()
+                page.locator('#contentMenu [data-level="1"]').click()
                 page.locator('#communityMessage').filter(has_text='No recommendations match').wait_for()
                 assert page.locator('#communityGrid img').count()==0
                 assert 'thumbnailUrl' not in json.dumps(request('/api/community/gallery'))

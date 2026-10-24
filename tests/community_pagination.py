@@ -15,11 +15,14 @@ def run(width):
     with sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
         page=browser.new_page(viewport={'width':width,'height':900},extra_http_headers=h.headers())
+        page.add_init_script("sessionStorage.setItem('civitai-active-view','gallery')")
         calls=[];held=[];slow_filtered=[];errors=[];hold_second=True;fail_third=True;filtered=False
         page.on('pageerror',lambda error:errors.append(str(error)))
         def reply(route,value,status=200):route.fulfill(status=status,content_type='application/json',body=json.dumps(value))
         page.route('**/api/auth-status',lambda route:reply(route,{'connected':True,'id':42,'username':'MockAccount'}))
         page.route('**/api/discovery/summary',lambda route:reply(route,{'hasData':False,'lastSyncAt':'2099-01-01T00:00:00Z'}))
+        page.route('**/api/history/status?*',lambda route:reply(route,{'complete':False,'state':'not_started','itemCount':0}))
+        page.route('**/api/history/blocks?*',lambda route:reply(route,{'blocks':{}}))
         page.route('**/api/creator-metadata?*',lambda route:reply(route,{'creators':{}}))
         page.route('**/api/reaction-status?*',lambda route:reply(route,{'images':{}}))
         def response(number):
@@ -47,7 +50,7 @@ def run(width):
                 fail_third=False;reply(route,{'error':'Synthetic offline page'},503);return
             reply(route,response(number))
         page.route('**/api/community/gallery?*',gallery)
-        page.goto(h.base,wait_until='networkidle');page.locator('#tabCommunity').click()
+        page.goto(h.base,wait_until='domcontentloaded');page.locator('#startLoading:not(.hidden)').wait_for();page.locator('#tabCommunity').click()
         page.wait_for_function("()=>document.querySelectorAll('#communityGrid .creator-card').length===12")
         assert calls==[(False,1)],calls
         assert page.locator('#communityMore').count()==0
@@ -108,7 +111,7 @@ def run(width):
         assert fourth
         filtered=True;page.unroute('**/api/community/gallery?*cursor=4',hold_fourth)
         # Use the actual shared settings endpoint, solely in this challenged fixture.
-        page.locator('#contentFilter').click();page.locator('#contentPanel [data-level="16"]').click()
+        page.locator('#filterToggle').click();page.locator('#contentMenu [data-level="16"]').click()
         page.keyboard.press('Escape')
         for route in fourth:
             try:route.fulfill(content_type='application/json',body=json.dumps(response(4)))

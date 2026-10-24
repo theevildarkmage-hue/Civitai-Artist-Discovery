@@ -23,7 +23,7 @@
 #communityRecommend { padding:10px 14px; }
 .community-credit a { color:var(--accent); }
 .community-view .segment-toolbar > :not(#filterToggle):not(.active-filters) { display:none !important; }
-.community-view .active-filters > :not(#contentFilter) { display:none !important; }
+.community-view .active-filters > * { display:none !important; }
 .community-view #filterPanel .model-search, .community-view #filterPanel #modelMenu, .community-view #filterPanel .model-more { display:none !important; }
 .community-view #filterPanel .media-filter { display:none !important; }
 .development-diagnostics-output { max-height:32rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }

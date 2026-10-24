@@ -102,6 +102,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-view-scroll-", ignore_cleanup_e
                 content_type="application/json", body='{"images":{}}'))
             page.route("**/api/history/prepare**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"prepared":false}'))
+            page.add_init_script("sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             page.wait_for_selector(".creator-card", timeout=20000)
             page.mouse.wheel(0, 900)

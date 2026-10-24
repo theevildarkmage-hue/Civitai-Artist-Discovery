@@ -13,7 +13,7 @@ export function mountCommunity() {
   const tab = document.createElement('button');
   tab.id = 'tabCommunity'; tab.textContent = 'Community Gallery'; tab.setAttribute('aria-pressed', 'false');
   tab.hidden = true;tab.classList.add('hidden');
-  document.getElementById('tabDiscovery').after(tab);
+  document.querySelector('.view-tabs').prepend(tab);
   const section = document.createElement('section'); section.id = 'community'; section.className = 'discovery hidden';
   section.innerHTML = `<div class="community-heading"><h2>Community Gallery</h2><p id="communityUpdates" class="community-updates" role="status" aria-live="polite" aria-atomic="true"></p><div class="community-tools"><button id="communityRecommend" type="button" class="primary-button" aria-haspopup="dialog">Recommend Art</button><button id="communityRefresh" type="button">Refresh</button><span id="communityQuota" role="status"></span></div></div><p id="communityMessage" class="discovery-message" role="status" aria-live="polite"></p><div id="communityGrid" class="gallery"></div><div id="communitySentinel" class="load-sentinel"></div><details id="communityDiagnostics" class="community-diagnostics hidden"><summary>Development diagnostics</summary><p id="communityMode"></p><div id="communityMemberHost"></div><p id="communityCounts"></p></details>`;
   document.querySelector('main').append(section);

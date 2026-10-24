@@ -25,7 +25,7 @@ try:
         page.locator('#gallery .creator-card').first.wait_for()
         assert page.locator('#gallery .creator-card').count()==12
         page.locator('#tabCommunity').click();page.locator('#communityGrid .creator-card').wait_for()
-        page.locator('#contentFilter').click();page.locator('#contentPanel [data-level="1"]').click()
+        page.locator('#filterToggle').click();page.locator('#contentMenu [data-level="1"]').click()
         page.keyboard.press('Escape')
         page.locator('#communityMessage').filter(has_text='No recommendations match').wait_for()
         assert page.locator('#gallery .creator-card').count()==0,'hidden Daily cards must not retain filtered previews'

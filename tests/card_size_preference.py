@@ -78,6 +78,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
                     if "civitai.com" in request.url or "civitai.red" in request.url else None)
             page.on("request", lambda request: history_starts.append(request.url)
                     if "/api/history/start" in request.url else None)
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             page.wait_for_selector(".creator-card", timeout=30000)
             page.wait_for_selector(".recommendation-badge:has-text('New match')")
@@ -90,16 +91,16 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
             # Choosing a mature level is itself the explicit opt-in; it must not summon a
             # blocking browser confirmation every time. Returning to the safe level uses
             # the completed local archive and never starts another collection.
-            page.click("#contentFilter")
-            page.click('#contentPanel [data-level="1"]')
-            page.wait_for_selector("#contentFilter:has-text('PG-13')")
-            page.wait_for_selector("#contentFilter:enabled")
-            page.click('#contentPanel [data-level="4"]')
-            page.wait_for_selector("#contentFilter:has-text('PG-13 + R')")
-            page.wait_for_selector("#contentFilter:enabled")
-            page.click('#contentPanel [data-level="4"]')
-            page.wait_for_selector("#contentFilter:has-text('PG-13')")
-            page.wait_for_selector("#contentFilter:enabled")
+            page.click("#filterToggle")
+            page.click('#contentMenu [data-level="1"]')
+            page.wait_for_selector('#contentMenu[aria-label="Content: PG-13"]')
+            page.wait_for_selector('#contentMenu:not([aria-busy="true"])')
+            page.click('#contentMenu [data-level="4"]')
+            page.wait_for_selector('#contentMenu[aria-label="Content: PG-13 + R"]')
+            page.wait_for_selector('#contentMenu:not([aria-busy="true"])')
+            page.click('#contentMenu [data-level="4"]')
+            page.wait_for_selector('#contentMenu[aria-label="Content: PG-13"]')
+            page.wait_for_selector('#contentMenu:not([aria-busy="true"])')
             page.wait_for_selector(".creator-card", timeout=30000)
             page.keyboard.press('Escape')
             assert not dialogs, dialogs
@@ -172,6 +173,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-card-size-", ignore_cleanup_err
                 body='{"connected":true,"socialWrite":true,"username":"tester","id":7}'))
             second.route("**/api/discovery/summary", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"hasData":false}'))
+            second.add_init_script("sessionStorage.setItem('civitai-active-view','gallery')")
             second.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             second.wait_for_selector(".creator-card", timeout=30000)
             assert second.eval_on_selector("#cardSize", "n => n.value") == "0.6"
