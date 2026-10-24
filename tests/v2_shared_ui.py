@@ -53,17 +53,16 @@ def run():
             }''')
             assert follow == {'blocked': True, 'calls': 1, 'following': True,
                               'disabled': True, 'pending': False}
-            trigger = page.locator('#contentFilter')
+            trigger = page.locator('#filterToggle')
             trigger.focus()
             trigger.press('ArrowDown')
-            page.wait_for_function("document.querySelector('#contentPanel').contains(document.activeElement)")
+            page.wait_for_function("document.querySelector('#contentMenu').contains(document.activeElement)")
             page.keyboard.press('Escape')
-            assert page.locator('#contentPanel').is_hidden()
+            assert page.locator('#filterPanel').is_hidden()
             assert trigger.get_attribute('aria-expanded') == 'false'
             assert trigger.evaluate('node => node === document.activeElement')
             # Enter/Space leave focus on the opener; Escape must still dismiss.
             for trigger_id, panel_id in [('filterToggle', 'filterPanel'),
-                                         ('contentFilter', 'contentPanel'),
                                          ('galleryPreferences', 'preferencesMenu')]:
                 keyboard_trigger = page.locator(f'#{trigger_id}')
                 keyboard_trigger.focus()
@@ -135,11 +134,11 @@ def run():
             assert page.locator('.model-chip').count() == 0
             page.locator('#contentMenu [data-level="2"]').click()
             page.locator('#filterToggle[data-active-count="1"]').wait_for()
-            page.wait_for_selector('#contentFilter:enabled')
+            page.wait_for_selector('#contentMenu:not([aria-busy="true"])')
             page.get_by_role('button', name='Reset filters', exact=True).click()
             page.locator('#filterToggle[data-active-count="0"]').wait_for()
             page.get_by_role('button', name='Close filters', exact=True).click()
-            assert page.locator('#contentFilter').inner_text() == 'Content: PG + PG-13'
+            assert page.locator('#contentMenu').get_attribute('aria-label') == 'Content: PG + PG-13'
 
             page.route('**/api/probe', lambda route: route.fulfill(content_type='application/json',
                 body='{"custom":"' + route.request.headers.get('x-ui-test', '') + '"}'))

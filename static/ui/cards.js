@@ -14,7 +14,7 @@ function availableCard(el) {
 document.addEventListener('keydown', event => {
   if (!['ArrowLeft', 'ArrowRight'].includes(event.key) || event.defaultPrevented ||
       event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || document.hidden) return;
-  if (document.querySelector('dialog[open],.filter-panel:not(.hidden),.content-panel:not(.hidden),.calendar-panel:not(.hidden),#preferencesMenu:not(.hidden),.card-action-menu:not(.hidden)')) return;
+  if (document.querySelector('dialog[open],.filter-panel:not(.hidden),.calendar-panel:not(.hidden),#preferencesMenu:not(.hidden),.card-action-menu:not(.hidden)')) return;
   const focus = document.activeElement;
   if (focus?.isContentEditable || focus?.closest(nativeArrowControl)) return;
   const focusedCard = focus?.closest('.creator-card');

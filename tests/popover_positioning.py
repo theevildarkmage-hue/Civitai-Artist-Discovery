@@ -42,7 +42,6 @@ try:
             for trigger, panel, close in (
                 ('#calendarToggle', '#calendarPanel', 'Close calendar'),
                 ('#filterToggle', '#filterPanel', 'Close filters'),
-                ('#contentFilter', '#contentPanel', 'Close content ratings'),
                 ('#galleryPreferences', '#preferencesMenu', 'Close gallery preferences'),
             ):
                 page.locator(trigger).click()

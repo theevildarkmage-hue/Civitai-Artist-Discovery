@@ -4,7 +4,7 @@ import { anchorPopover } from './menu.js';
 
 export function mountFilters(actions) {
   const toolbar = document.querySelector('.segment-toolbar');
-  const content = document.getElementById('contentFilter');
+  const content = document.getElementById('contentMenu');
   const model = document.getElementById('modelFilter');
   const modelMenu = document.getElementById('modelMenu');
   const button = document.createElement('button');
@@ -17,7 +17,6 @@ export function mountFilters(actions) {
   const chips = document.createElement('div');
   chips.className = 'active-filters';
   chips.setAttribute('aria-label', 'Active filters');
-  chips.append(content);
   toolbar.append(chips);
   const restrictions = document.createElement('span');
   restrictions.id = 'sharedControlsStatus'; restrictions.className = 'filter-button';
@@ -68,35 +67,13 @@ export function mountFilters(actions) {
     childList: true, subtree: true,
   });
   document.body.append(panel);
-  const compact = document.createElement('section');
-  compact.id = 'contentPanel';
-  compact.className = 'content-panel hidden';
-  compact.setAttribute('aria-label', 'Content ratings');
-  compact.innerHTML = '<div class="filter-head"><strong>Content ratings</strong><button type="button" class="quiet-button" aria-label="Close content ratings">\u00d7</button></div><div class="rating-pills" role="group" aria-label="Browsing levels"></div>';
-  const choices = [...document.querySelectorAll('#contentMenu [data-level]')].map(original => {
-    const choice = document.createElement('button');
-    choice.type = 'button'; choice.dataset.level = original.dataset.level;
-    const label = original.textContent.replace(/^\u2713\s*/, '');
-    choice.setAttribute('aria-label', label);
-    choice.onclick = () => actions.toggleLevel(Number(choice.dataset.level));
-    compact.querySelector('.rating-pills').append(choice);
-    return { choice, label };
-  });
-  document.body.append(compact);
-  content.setAttribute('aria-controls', compact.id);
   const position = anchorPopover(panel, () => button);
-  const positionContent = anchorPopover(compact, () => content);
-  const closeContent = (restoreFocus = false) => {
-    compact.classList.add('hidden'); content.setAttribute('aria-expanded', 'false');
-    if (restoreFocus) content.focus();
-  };
   const close = (restoreFocus = false) => {
     panel.classList.add('hidden');
     button.setAttribute('aria-expanded', 'false');
     if (restoreFocus) button.focus();
   };
   const open = async () => {
-    closeContent();
     panel.classList.remove('hidden');
     position();
     button.setAttribute('aria-expanded', 'true');
@@ -105,60 +82,37 @@ export function mountFilters(actions) {
     search.disabled = false;
     applyModelSearch();
   };
-  const openContent = () => {
-    close(); compact.classList.remove('hidden');
-    positionContent(); content.setAttribute('aria-expanded', 'true');
-  };
   button.onclick = () => panel.classList.contains('hidden') ? open() : close();
-  content.onclick = () => compact.classList.contains('hidden') ? openContent() : closeContent();
-  for (const trigger of [button, content]) trigger.addEventListener('keydown', event => {
-    const surface = trigger === content ? compact : panel;
-    const dismiss = trigger === content ? closeContent : close;
-    if (event.key === 'Escape' && !surface.classList.contains('hidden')) {
-      event.preventDefault();
-      dismiss(true);
-      return;
+  button.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !panel.classList.contains('hidden')) {
+      event.preventDefault();close(true);return;
     }
     if (event.key !== 'ArrowDown') return;
-    event.preventDefault();
-    if (trigger === content) openContent(); else open();
-    surface.querySelector('.rating-pills button:not(:disabled)')?.focus();
+    event.preventDefault();open();
+    panel.querySelector('.rating-pills button:not(:disabled)')?.focus();
   });
   panel.querySelector('.quiet-button').onclick = () => close(true);
   panel.addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.preventDefault(); close(true); }
   });
-  compact.querySelector('.quiet-button').onclick = () => closeContent(true);
-  compact.addEventListener('keydown', event => {
-    if (event.key === 'Escape') { event.preventDefault(); closeContent(true); }
-  });
   document.addEventListener('click', event => {
     if (!panel.contains(event.target) && !button.contains(event.target)) close();
-    if (!compact.contains(event.target) && !content.contains(event.target)) closeContent();
   });
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented || event.target.closest('dialog[open]')) return;
-    if (!compact.classList.contains('hidden')) { event.preventDefault(); closeContent(true); }
-    else if (!panel.classList.contains('hidden')) { event.preventDefault(); close(true); }
+    if (!panel.classList.contains('hidden')) { event.preventDefault(); close(true); }
   });
   panel.querySelector('.filter-reset').onclick = () => actions.reset();
 
   const paint = () => {
     applyModelSearch();
     const { models, levels, media = 'all' } = actions.state();
-    for (const { choice, label } of choices) {
-      const selected = levels.includes(Number(choice.dataset.level));
-      choice.classList.toggle('selected', selected);
-      choice.setAttribute('aria-pressed', String(selected));
-      choice.textContent = `${selected ? '\u2713 ' : ''}${label}`;
-      choice.disabled = content.disabled;
-    }
     mediaSelect.value = media;
     const ratingChanged = levels.length !== 2 || !levels.includes(1) || !levels.includes(2);
     const count = models.length + Number(ratingChanged) + Number(media !== 'all');
     button.textContent = count ? `Filters · ${count}` : 'Filters';
     button.dataset.activeCount = String(count);
-    panel.querySelector('.filter-reset').disabled = !count || content.disabled;
+    panel.querySelector('.filter-reset').disabled = !count;
     chips.querySelectorAll('.model-chip').forEach(chip => chip.remove());
     if (media !== 'all') {
       const chip = document.createElement('button');

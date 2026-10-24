@@ -22,7 +22,7 @@ const imageReactionState = new Map();
 const imageTagState = new Map();
 const pendingTagChecks = new Map();
 let tagCheckTimer = 0;
-const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="contentFilter" class="filter-button" aria-expanded="false" title="Choose the content levels to display">Content: PG + PG-13</button><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><button id="galleryPreferences" class="filter-button preferences-button" aria-expanded="false" aria-label="Gallery preferences" title="Gallery preferences">&#9881;</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div><div id="preferencesMenu" class="filter-menu preferences-menu hidden" aria-label="Gallery preferences"><div class="filter-head"><strong>Gallery preferences</strong><button id="closePreferences" class="quiet-button" aria-label="Close gallery preferences">×</button></div><label class="preference-row"><span><b>Dim viewed cards</b><small>Previously viewed artists still move later either way.</small></span><input id="prefDimSeen" type="checkbox"></label><label class="preference-row"><span><b>Hide high-volume artists</b><small>Applies to every gallery view.</small></span><input id="prefHideHighVolume" type="checkbox"></label><label class="preference-field" for="prefHighVolumeThreshold"><span>High-volume threshold</span><select id="prefHighVolumeThreshold"><option value="50">50+ images</option><option value="100">100+ images</option><option value="200">200+ images</option></select></label><label class="preference-field" for="prefEmergingMode"><span>Emerging First</span><select id="prefEmergingMode"><option value="balanced">Balanced discovery</option><option value="strict">Strict discovery</option><option value="unadjusted">No adjustment</option></select></label><p id="emergingModeHelp" class="preference-help"></p><label class="preference-field" for="prefEmergingLimit"><span>Strict-mode threshold</span><select id="prefEmergingLimit"><option value="100">100+ daily reactions</option><option value="250">250+ daily reactions</option><option value="500">500+ daily reactions</option></select></label><small class="preferences-footnote">Thresholds can be set anytime and apply when their matching option is active. These controls use the saved gallery and never download the day again.</small></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
+const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><button id="galleryPreferences" class="filter-button preferences-button" aria-expanded="false" aria-label="Gallery preferences" title="Gallery preferences">&#9881;</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div><div id="preferencesMenu" class="filter-menu preferences-menu hidden" aria-label="Gallery preferences"><div class="filter-head"><strong>Gallery preferences</strong><button id="closePreferences" class="quiet-button" aria-label="Close gallery preferences">×</button></div><label class="preference-row"><span><b>Dim viewed cards</b><small>Previously viewed artists still move later either way.</small></span><input id="prefDimSeen" type="checkbox"></label><label class="preference-row"><span><b>Hide high-volume artists</b><small>Applies to every gallery view.</small></span><input id="prefHideHighVolume" type="checkbox"></label><label class="preference-field" for="prefHighVolumeThreshold"><span>High-volume threshold</span><select id="prefHighVolumeThreshold"><option value="50">50+ images</option><option value="100">100+ images</option><option value="200">200+ images</option></select></label><label class="preference-field" for="prefEmergingMode"><span>Emerging First</span><select id="prefEmergingMode"><option value="balanced">Balanced discovery</option><option value="strict">Strict discovery</option><option value="unadjusted">No adjustment</option></select></label><p id="emergingModeHelp" class="preference-help"></p><label class="preference-field" for="prefEmergingLimit"><span>Strict-mode threshold</span><select id="prefEmergingLimit"><option value="100">100+ daily reactions</option><option value="250">250+ daily reactions</option><option value="500">500+ daily reactions</option></select></label><small class="preferences-footnote">Thresholds can be set anytime and apply when their matching option is active. These controls use the saved gallery and never download the day again.</small></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
 $("prefHighVolumeThreshold").querySelector('option[value="100"]').insertAdjacentHTML("afterend", '<option value="150">150+ images</option>');
 segmentToolbar.querySelector(".preferences-footnote").textContent = "These controls use the saved gallery and never download the day again.";
 // A fixed element inside the sticky, backdrop-filtered toolbar is fixed to that toolbar
@@ -72,7 +72,7 @@ function contentButtonLabel() {
   return selected.length === browsingLevelLabels.size ? "All ratings" : selected.join(" + ");
 }
 function showContentRating() {
-  $("contentFilter").textContent = `Content: ${contentButtonLabel()}`;
+  $("contentMenu").setAttribute("aria-label", `Content: ${contentButtonLabel()}`);
   $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
     const selected = visibleBrowsingLevels.has(Number(button.dataset.level));
     button.classList.toggle("selected", selected);
@@ -176,7 +176,7 @@ const contentSelection = window.CivitaiUI.createSelectionQueue({
     showContentRating();
     if(!result&&!error) {
       contentReloadNeeded=contentReloadNeeded||dayBuilt;
-      $('contentFilter').setAttribute('aria-busy','true');
+      $('contentMenu').setAttribute('aria-busy','true');
       ++activeLoadToken;clearGallery();
       window.dispatchEvent(new Event('content-controls-changing'));
     }
@@ -190,12 +190,12 @@ const contentSelection = window.CivitaiUI.createSelectionQueue({
     if(error) {
       try {result=await api('/api/settings');}
       catch(problem) {
-        if(isCurrent()&&!contentSelection.pending){$('contentFilter').setAttribute('aria-busy','false');window.CivitaiUI.finishControlChange(null);}
+        if(isCurrent()&&!contentSelection.pending){$('contentMenu').setAttribute('aria-busy','false');window.CivitaiUI.finishControlChange(null);}
         throw problem;
       }
     }
     if(!isCurrent()||contentSelection.pending)return;
-    $('contentFilter').setAttribute('aria-busy','false');
+    $('contentMenu').setAttribute('aria-busy','false');
     if(result) {
       visibleBrowsingLevels=new Set(result.browsingLevels);contentRating=result.contentRating;
       showContentRating();
@@ -1257,7 +1257,6 @@ $("galleryPreferences").onclick = () => {
   const hidden = $("preferencesMenu").classList.toggle("hidden");
   $("galleryPreferences").setAttribute("aria-expanded", String(!hidden));
   $("modelMenu").classList.add("hidden"); $("modelFilter").setAttribute("aria-expanded", "false");
-  $("contentMenu").classList.add("hidden"); $("contentFilter").setAttribute("aria-expanded", "false");
   if (!hidden) showGalleryPreferences();
 };
 $("closePreferences").onclick = () => {
@@ -1555,16 +1554,11 @@ async function startup() {
   setChrome(true);
   $("welcome").classList.add("hidden");
   $("loading").classList.add("hidden");
-  const saved = readFeedState();
-  let archived = await Promise.all(['all','morning','evening'].map(segment =>
-    api(`/api/history/status?date=${saved?.date || newestDate}&segment=${segment}`).catch(() => ({}))));
-  if (saved?.date && saved.date!==newestDate && !archived.some(block=>block.complete)) {
-    archived=await Promise.all(['all','morning','evening'].map(segment=>
-      api(`/api/history/status?date=${newestDate}&segment=${segment}`).catch(() => ({}))));
-  }
   if (navigationVersion === navigationAtStartup) {
-    if (archived.some(block => block.complete)) await openDay();
-    else showView('discovery');
+    const savedView = readActiveView();
+    const target = savedView === "community" && !auth.connected ? "gallery" : savedView;
+    showView(target);
+    if(target==='gallery')await openDay();
   }
   scheduleAutomaticProfileRefresh(summary);
 }
@@ -1581,7 +1575,8 @@ $("welcomeConnect").onclick = async () => {
     setChrome(true);
     $("welcome").classList.add("hidden");
     $("loading").classList.add("hidden");
-    showView('discovery');
+    showView(readActiveView());
+    if(currentView==='gallery')await openDay();
     scheduleAutomaticProfileRefresh(existing);
   } catch (error) { $("welcomeStatus").textContent = error.message; $("welcomeConnect").disabled = false; }
 };
@@ -1816,6 +1811,14 @@ window.addEventListener('shared-artist-hidden', () => {
   }
 });
 const viewScroll = { gallery: 0, discovery: 0, timemachine: 0 };
+const ACTIVE_VIEW_KEY='civitai-active-view';
+function readActiveView() {
+  try {
+    const view=sessionStorage.getItem(ACTIVE_VIEW_KEY);
+    if(['community','gallery','discovery','timemachine'].includes(view))return view;
+  } catch(_) {}
+  return 'community';
+}
 function showView(name) {
   if (name==='community' && !oauthConnected) return;
   navigationVersion++;
@@ -1824,6 +1827,7 @@ function showView(name) {
   if (previous === 'community' && name !== previous) window.CivitaiCommunity?.deactivate();
   if (previous === 'gallery' && name !== previous) dailyPager.pause();
   currentView = name;
+  try {sessionStorage.setItem(ACTIVE_VIEW_KEY,name);}catch(_) {}
   const discovery = name === "discovery";
   const timeMachine = name === "timemachine";
   const community = name === "community";
@@ -1882,7 +1886,7 @@ function showView(name) {
 }
 $("tabGallery").onclick = () => {
   showView("gallery");
-  if (!dayBuilt && !activeBuildSegment && !activeRebuild) loadDay(selectedDate || newestDate).catch(showLoadError);
+  if (!dayBuilt && !activeBuildSegment && !activeRebuild) openDay().catch(showLoadError);
 };
 $("tabDiscovery").onclick = () => showView("discovery");
 $("tabTimeMachine").onclick = () => showView("timemachine");
