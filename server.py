@@ -1760,8 +1760,9 @@ class Handler(BaseHTTPRequestHandler):
             from discovery.community_beta import require_enabled
             require_enabled(DATA_ROOT)
             self.require_community_session()
-            # Isolated development is loopback-only, even if a forged setting enables LAN.
-            if self.client_address[0] not in ("127.0.0.1", "::1"):
+            # Simulator identities stay local; normal LAN uses the host OAuth session.
+            from discovery.community_security import test_identity
+            if test_identity(DATA_ROOT) and self.client_address[0] not in ("127.0.0.1", "::1"):
                 raise CommunityError("FORBIDDEN", 403)
             if os.environ.get("CAD_COMMUNITY_MODE") == "offline":
                 raise CommunityError("UNAVAILABLE", 503)
