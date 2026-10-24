@@ -51,7 +51,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Discovery 3.0 Beta"
-APP_VERSION = "3.0.0-beta.2"
+APP_VERSION = "3.0.0-beta.3"
 from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
 DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
@@ -1868,8 +1868,7 @@ class Handler(BaseHTTPRequestHandler):
             if getattr(sys,'frozen',False) and parsed.path.startswith(('/__dev/','/api/community/development/')):
                 self.send_error(404);return
             if parsed.path=='/api/community/beta':
-                from discovery.community_beta import opt_in
-                self.json_response(opt_in(DATA_ROOT,body.get('optedIn')));return
+                self.send_error(404);return
             if parsed.path.startswith('/api/community/'):self.require_community_session()
             if parsed.path == '/api/community/development/member':
                 from discovery.community_security import fixture_enabled

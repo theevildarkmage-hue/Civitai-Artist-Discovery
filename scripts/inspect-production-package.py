@@ -49,7 +49,7 @@ def main():
     assert not code_findings,sorted(set(code_findings))
     paths=[str(p.relative_to(package)) for p in package.rglob('*') if p.is_file()]
     assert not any(any(x in name.lower() for x in ('community-test-lab','public-fixtures','postgres','oauth_tokens','reports/')) or name.endswith(('.sqlite3','.dpapi','.env')) for name in paths)
-    result={'archiveInspected':True,'excludedModulesAbsent':True,'applicationCodePatternFindings':code_findings,'pythonModules':len(pyz.toc),'packageFiles':len(paths),'executableSha256':hashlib.sha256(executable.read_bytes()).hexdigest(),'profiles':[],'limitations':['Configured staging remains disabled; enabled Community and real OAuth require separate live acceptance.','Copied upgrade data excludes all OAuth credentials.']}
+    result={'archiveInspected':True,'excludedModulesAbsent':True,'applicationCodePatternFindings':code_findings,'pythonModules':len(pyz.toc),'packageFiles':len(paths),'executableSha256':hashlib.sha256(executable.read_bytes()).hexdigest(),'profiles':[],'limitations':['Isolated unauthenticated profiles cannot verify invited-user access; real hosted OAuth is checked separately.','Copied upgrade data excludes all OAuth credentials.']}
     scratch=Path(tempfile.mkdtemp(prefix='cad3-production-acceptance-'))
     for scenario in ('fresh','upgrade','hostile-environment'):
         profile=scratch/scenario;profile.mkdir()
@@ -58,7 +58,7 @@ def main():
                 target=profile/source.relative_to(args.upgrade_profile.resolve());target.parent.mkdir(parents=True,exist_ok=True)
                 with sqlite3.connect(source.as_uri()+'?mode=ro',uri=True) as original,sqlite3.connect(target) as copied:original.backup(copied)
         (profile/'settings.json').write_text(json.dumps({'autoCapture':False,'checkForUpdates':False}))
-        if scenario=='hostile-environment':(profile/'community-beta.json').write_text('{"optedIn":true}')
+        if scenario=='hostile-environment':(profile/'community-beta.json').write_text('{"optedIn":false}')
         before=snapshot(profile)
         env={k:v for k,v in os.environ.items() if not k.startswith(('CAD_','SUPABASE_','PG'))}
         env['CIVITAI_HISTORY_DATA_DIR']=str(profile)
@@ -84,21 +84,23 @@ def main():
             for path in ('/api/development/diagnostics','/api/test-isolation','/api/community/development/member','/__dev/community-test-lab/entry.js','/community-fixture.svg'):
                 assert request(path)[0]==404,(scenario,path)
             beta=request('/api/community/beta')[1];assert beta['production'] and beta['available']
-            assert beta['enabled'] is (scenario=='hostile-environment'), 'Only the explicitly seeded local preference enables Community'
+            assert beta['enabled'] is True and 'optedIn' not in beta, 'Community connects automatically, including legacy disabled profiles'
             assert request('/api/community/recommend',{'artwork':123})[0] in (401,403)
-            assert request('/api/community/beta',{'optedIn':True})[0]==200
-            assert request('/api/community/beta',{'optedIn':False})[0]==200
+            assert request('/api/community/beta',{'optedIn':True})[0]==404
+            assert request('/api/community/beta',{'optedIn':False})[0]==404
             assert request('/api/auth-status')[1]['connected'] is False
             with sync_playwright() as pw:
                 browser=pw.chromium.launch(headless=True);page=browser.new_page(viewport={'width':1280,'height':900})
                 page.goto(base,wait_until='networkidle');page.screenshot(path=str(output/(scenario+'.png')))
                 assert page.locator('#tabCommunity').is_hidden()
                 assert page.locator('#communityTestLab').count()==0
+                assert page.get_by_text('Opt in to Community Beta',exact=False).count()==0
                 assert page.locator('#welcome').is_visible()
                 # UI-only identity simulation never supplies a backend credential.
                 page.route('**/api/auth-status',lambda route:route.fulfill(json={'connected':True,'id':700,'username':'UI simulation only','socialWrite':False}))
                 page.route('**/api/discovery/summary',lambda route:route.fulfill(json={'hasData':False,'lastSyncAt':'2099-01-01T00:00:00Z'}))
                 page.reload(wait_until='networkidle');assert page.locator('#tabGallery').is_visible()
+                assert page.get_by_text('Opt in to Community Beta',exact=False).count()==0
                 assert page.locator('#tabCommunity').is_visible()
                 assert request('/api/community/recommend',{'artwork':123})[0] in (401,403)
                 page.screenshot(path=str(output/(scenario+'-ui-simulated-auth.png')))
@@ -106,7 +108,7 @@ def main():
             assert request('/api/app/close',{})[1]['closing'];process.wait(timeout=15)
             after=snapshot(profile)
             assert all(after.get(k)==v for k,v in before.items()),'Upgrade record changes'
-            result['profiles'].append({'scenario':scenario,'passed':True,'preservedCriticalTables':len(before),'noOAuthCredentialsCopied':True,'developerRoutes404':True,'betaDefaultOff':scenario!='hostile-environment','localPreferenceHonored':True,'localOptInSupported':True,'communityTabVisible':True,'oauthWelcomeRendered':True,'browserOnlyFakeIdentityCannotSubmit':True})
+            result['profiles'].append({'scenario':scenario,'passed':True,'preservedCriticalTables':len(before),'noOAuthCredentialsCopied':True,'developerRoutes404':True,'automaticCommunityConnection':True,'legacyPreferenceIgnored':True,'optInApiRemoved':True,'communityTabVisible':True,'oauthWelcomeRendered':True,'browserOnlyFakeIdentityCannotSubmit':True})
         finally:
             if process.poll() is None:process.terminate();process.wait(timeout=10)
     result['passed']=True;result['scratch']=str(scratch)
