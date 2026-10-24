@@ -22,7 +22,7 @@ const transport=async(url,options)=>{
  if(url.includes('/api/v1/images?')) {
   publicRequests++;assert.equal(authorization,undefined,'shared public visibility check must be anonymous');
   if(mode==='outage')return Response.json({},{status:503});
-  return Response.json({items:mode==='missing'?[]:[{id:101,type:'image',username:'Artist',browsingLevel:mode==='rating'?16:1,url:'https://image.civitai.com/isolated.jpg'}]});
+  return Response.json({items:mode==='missing'?[]:[{id:101,type:mode==='video'?'video':'image',username:'Artist',browsingLevel:mode==='rating'?16:1,url:'https://image.civitai.com/isolated.jpg'}]});
  }
  if(url.includes('/api/trpc/image.get?')) {
   detailRequests++;assert.equal(authorization,'Bearer synthetic-read-only');
@@ -33,11 +33,11 @@ const transport=async(url,options)=>{
  throw Error('Unapproved network destination');
 };
 const handler=createCommunityHandler({fetch:transport,invitationOnly:true,galleryWindow:true});
-for(const [scenario,expected] of [['good',null],['viewer','viewer'],['viewer401','viewer'],['owner','viewer'],['missing','viewer'],['rating','rating'],['outage','transient']]) {
+for(const [scenario,expected] of [['good',null],['video',null],['viewer','viewer'],['viewer401','viewer'],['owner','viewer'],['missing','viewer'],['rating','rating'],['outage','transient']]) {
  mode=scenario;
  const response=await handler(new Request('https://isolated.invalid',{method:'POST',headers:{Authorization:'Bearer synthetic-read-only','Content-Type':'application/json'},body:JSON.stringify({apiVersion:1,operation:'gallery',cursor:123,limit:24})}));
  assert.equal(response.status,200,scenario);assert.equal(verdicts.at(-1),expected,scenario);
  const result=await response.json();assert.equal(result.nextCursor,'120');
  assert.equal('candidates' in result,false);assert.equal('lease' in result,false);
 }
-console.log(JSON.stringify({passed:true,scenarios:7,publicRequests,detailRequests,viewerFailuresNeverGlobalVerdicts:true,independentPublicRatingProof:true,upstreamCredentialsExposed:false,hostedRequests:0}));
+console.log(JSON.stringify({passed:true,scenarios:8,publicRequests,detailRequests,viewerFailuresNeverGlobalVerdicts:true,independentPublicRatingProof:true,upstreamCredentialsExposed:false,hostedRequests:0}));

@@ -39,7 +39,8 @@ try:
    page.wait_for_function('()=>document.querySelectorAll("#communityGrid .community-card").length===24')
    assert page.locator('#communityUpdates').inner_text()==''
    page.evaluate('scrollTo(0,800)');page.wait_for_timeout(50)
-   saved=page.evaluate('scrollY');before=page.locator('#communityGrid').inner_html()
+   saved=page.evaluate('scrollY')
+   page.evaluate('window.__noticeCards=[...document.querySelectorAll("#communityGrid .community-card")]')
    state['new']=[row(20003,True),row(20003,True),row(20002,True),row(20001,True)]
    page.clock.fast_forward(60000)
    try:page.wait_for_function('()=>document.querySelector("#communityUpdates").textContent.startsWith("3 new recommendations")',timeout=10000)
@@ -47,7 +48,7 @@ try:
     print({'calls':calls,'errors':errors,'browser':page.evaluate('()=>({notice:document.querySelector("#communityUpdates").textContent,message:document.querySelector("#communityMessage").textContent,filters:galleryFilterState()})')},flush=True)
     raise
    assert page.locator('#communityUpdates').inner_text()=='3 new recommendations \u2014 Refresh to Show'
-   assert page.locator('#communityGrid').inner_html()==before
+   assert page.evaluate('()=>{const now=[...document.querySelectorAll("#communityGrid .community-card")];return now.length===window.__noticeCards.length&&now.every((el,i)=>el===window.__noticeCards[i])}')
    assert abs(page.evaluate('scrollY')-saved)<2
    page.screenshot(path=str(test_safety.REPORTS/f'new-recommendations-{width}.png'),full_page=True)
    # Background outage preserves both the notice and existing browsing state.
@@ -76,10 +77,10 @@ try:
    # It must announce availability, without changing the existing cards/scroll.
    recovered=row(15000);recovered['submittedAt']='2026-10-24T12:00:00Z'
    restored.append(recovered)
-   before=page.locator('#communityGrid').inner_html();saved=page.evaluate('scrollY')
+   page.evaluate('window.__noticeCards=[...document.querySelectorAll("#communityGrid .community-card")]');saved=page.evaluate('scrollY')
    page.clock.fast_forward(60000)
    page.wait_for_function('()=>document.querySelector("#communityUpdates").textContent.startsWith("1 recommendation available")')
-   assert page.locator('#communityGrid').inner_html()==before
+   assert page.evaluate('()=>{const now=[...document.querySelectorAll("#communityGrid .community-card")];return now.length===window.__noticeCards.length&&now.every((el,i)=>el===window.__noticeCards[i])}')
    assert abs(page.evaluate('scrollY')-saved)<2
    restored.clear()
    # A large burst uses bounded reads and an honest lower-bound count.

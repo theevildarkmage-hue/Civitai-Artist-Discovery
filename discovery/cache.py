@@ -106,14 +106,15 @@ class ArtworkCache:
             'verifiedAt':entry['verified_at'],'refreshing':entry['stale'] or force,'lastError':entry['error']}
 
 
-def thumbnail_source(url,width=512):
+def thumbnail_source(url,width=512,*,video=False):
     from urllib.parse import urlsplit
-    from .history import preview_url
+    from .history import preview_url, video_still_url
     parsed=urlsplit(url)
     if (parsed.scheme!='https' or parsed.hostname!='image.civitai.com' or parsed.port
             or parsed.username or parsed.password):raise ValueError('Unapproved thumbnail source')
-    resized=preview_url(url,width=width)
-    if f'/width={width}/' not in resized:raise ValueError('Unsupported thumbnail transform')
+    resized=(video_still_url if video else preview_url)(url,width=width)
+    transform=f'anim=false,width={width}' if video else f'width={width}'
+    if f'/{transform}/' not in resized:raise ValueError('Unsupported thumbnail transform')
     return resized
 
 
@@ -217,8 +218,8 @@ class ThumbnailCache:
             body,kind=output.getvalue(),'image/webp'
         return body,kind
 
-    def get(self,url,width=512):
-        source=thumbnail_source(url,width)
+    def get(self,url,width=512,*,video=False):
+        source=thumbnail_source(url,width,video=video)
         key=hashlib.sha256(source.encode()).hexdigest()
         data=self.root/(key+'.image');meta=self.root/(key+'.json')
         def download():
