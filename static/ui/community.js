@@ -14,7 +14,7 @@ export function mountCommunity() {
   tab.hidden = true;tab.classList.add('hidden');
   document.getElementById('tabDiscovery').after(tab);
   const section = document.createElement('section'); section.id = 'community'; section.className = 'discovery hidden';
-  section.innerHTML = `<div class="community-heading"><h2>Community Gallery</h2><div class="community-tools"><button id="communityRecommend" type="button" class="primary-button" aria-haspopup="dialog">Recommend Art</button><button id="communityRefresh" type="button">Refresh</button><span id="communityQuota" role="status"></span></div></div><p id="communityMessage" class="discovery-message" role="status" aria-live="polite"></p><div id="communityGrid" class="gallery"></div><div id="communitySentinel" class="load-sentinel"></div><details id="communityDiagnostics" class="community-diagnostics hidden"><summary>Development diagnostics</summary><p id="communityMode"></p><div id="communityMemberHost"></div><p id="communityCounts"></p></details>`;
+  section.innerHTML = `<div class="community-heading"><h2>Community Gallery</h2><p id="communityUpdates" class="community-updates" role="status" aria-live="polite" aria-atomic="true"></p><div class="community-tools"><button id="communityRecommend" type="button" class="primary-button" aria-haspopup="dialog">Recommend Art</button><button id="communityRefresh" type="button">Refresh</button><span id="communityQuota" role="status"></span></div></div><p id="communityMessage" class="discovery-message" role="status" aria-live="polite"></p><div id="communityGrid" class="gallery"></div><div id="communitySentinel" class="load-sentinel"></div><details id="communityDiagnostics" class="community-diagnostics hidden"><summary>Development diagnostics</summary><p id="communityMode"></p><div id="communityMemberHost"></div><p id="communityCounts"></p></details>`;
   document.querySelector('main').append(section);
   document.getElementById('discovery').append(document.getElementById('communityDiagnostics'));
   const dialog = document.createElement('dialog'); dialog.className = 'community-dialog';
@@ -35,6 +35,8 @@ export function mountCommunity() {
     section.querySelectorAll('.community-report').forEach(button=>{button.hidden=!reporting;});
     if(!reporting&&reportDialog.open)reportDialog.close();
     if(status?.beta)policyControlled=true;
+    updatesAllowed=(!policyControlled || status?.beta?.available===true) && status?.cache?.state!=='stale';
+    if(!updatesAllowed)el('communityUpdates').textContent='';
     if(!policyControlled)return;
     submissions=status?.beta?.submissions===true && status?.cache?.state!=='stale';
     el('communityRecommend').disabled=!submissions;
@@ -52,6 +54,7 @@ export function mountCommunity() {
   configureBeta().catch(()=>{tab.hidden=false;tab.classList.remove('hidden');});
   const message = value => { el('communityMessage').setAttribute('role','status'); el('communityMessage').textContent = value; };
   function accessError(error) {
+    el('communityUpdates').textContent='';
     applyPolicy(null);
     const states={
       INVITE_ONLY:"Community Beta is Invite Only\nWe're currently testing Community with a small group of invited Civitai members. Your account isn't on the invitation list yet. You can continue using the Daily Gallery normally.",
@@ -79,6 +82,9 @@ export function mountCommunity() {
     el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week Â· ${value.remaining} remaining`;
   } };
   let initialized = false, firstPage = true, refreshPage = false, metadataTimer = null, metadataRetries = 0, viewSession = null;
+  // Background probes never change the rendered feed or its pagination cursor.
+  let newestShown=null, lastUpdateCheck=0, updateRequest=null, updatesAllowed=false;
+  function cancelUpdateCheck() { updateRequest?.abort(); updateRequest=null; }
   const requestedCursors = new Set();
   const pages = createInfinitePager({
     container:el('communityGrid'), sentinel:el('communitySentinel'),
@@ -143,6 +149,7 @@ export function mountCommunity() {
   }
   async function load(more = false, refresh = false) {
     if (more) return pages.request(true);
+    cancelUpdateCheck();
     el('communitySentinel').hidden=false;
     ++generation; clearTimeout(metadataTimer); pages.reset();
     cursor = null; firstPage = true; refreshPage = refresh; initialized = true;
@@ -173,6 +180,12 @@ export function mountCommunity() {
       if (pageCursor) requestedCursors.add(pageCursor);
       if (result.controls) window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:result.controls}));
       clearSkeleton(); appendRecommendations(result.items);
+      if(first) {
+        const dates=result.items.map(row=>Date.parse(row.submittedAt)).filter(Number.isFinite);
+        newestShown=dates.length ? Math.max(...dates) : null;
+        lastUpdateCheck=0;
+        el('communityUpdates').textContent='';
+      }
       cursor = next; firstPage = false; refreshPage = false;
       const cached = result.cache;
       if (result.counts) el('communityCounts').textContent = `This page: ${result.counts.acceptedPage} records; ${result.counts.contentControls} filtered; ${result.counts.returned} returned. More pages: ${cursor ? 'yes' : 'no'}.`;
@@ -184,6 +197,45 @@ export function mountCommunity() {
         metadataTimer = setTimeout(()=>{ if (id === generation && !section.classList.contains('hidden')) load(); },2500);
       }
     } finally { clearSkeleton(); }
+  }
+  async function checkNewRecommendations() {
+    if(updateRequest || pages.pending || firstPage || !updatesAllowed || !authorized ||
+       document.hidden || section.classList.contains('hidden') || Date.now()-lastUpdateCheck<60000) return;
+    const id=generation, controller=new AbortController(); updateRequest=controller;
+    lastUpdateCheck=Date.now();
+    const found=new Set(), cursors=new Set();
+    let next=null, stopped=false;
+    try {
+      // Bound background work to four normal-size pages. A capped count is shown
+      // honestly as "N+" rather than claiming to have scanned the entire feed.
+      for(let page=0;page<4;page++) {
+        const result=await api(`/api/community/gallery?refresh=1${next ? `&cursor=${encodeURIComponent(next)}` : ''}`,{signal:controller.signal});
+        if(id!==generation || controller.signal.aborted || !authorized || !updatesAllowed || document.hidden || section.classList.contains('hidden'))return;
+        if(result.cache?.state==='stale')return;
+        for(const row of result.items) {
+          const key=String(row.artwork.id), date=Date.parse(row.submittedAt);
+          if(recommendations.has(key) || (newestShown!==null && date<newestShown)) {stopped=true;break;}
+          if(Number.isFinite(date))found.add(key);
+        }
+        next=result.nextCursor;
+        if(stopped || !next)break;
+        if(cursors.has(next))throw new Error('Repeated update cursor');
+        cursors.add(next);
+      }
+      const count=found.size, capped=!!next && !stopped;
+      el('communityUpdates').textContent=count ? `${count}${capped?'+':''} new recommendation${count===1&&!capped?'':'s'} \u2014 Refresh to Show` : '';
+    } catch(error) {
+      if(id!==generation || controller.signal.aborted)return;
+      // A transient probe failure must not replace cards, scroll or foreground
+      // error state. Explicit access denials still close privileged UI promptly.
+      if(['INVITE_ONLY','INVITE_REVOKED','INVITE_EXPIRED','SUBMITTER_BLOCKED','BETA_DISABLED','AUTH_REQUIRED','AUTH_EXPIRED','FORBIDDEN'].includes(error.code))accessError(error);
+    } finally { if(updateRequest===controller)updateRequest=null; }
+  }
+  async function refreshRecommendations() {
+    metadataRetries=0;
+    const id=generation+1;
+    await load(false,true);
+    if(id===generation && !firstPage && !section.classList.contains('hidden'))window.scrollTo({top:0,behavior:'instant'});
   }
   async function activate() {
     pages.resume();
@@ -197,14 +249,16 @@ export function mountCommunity() {
       // A restarted server has a new volatile artwork admission list. Refresh the
       // projection then; ordinary tab switches still keep their pages and scroll.
       if (viewSession && status.viewSession && viewSession !== status.viewSession) return load();
+      await checkNewRecommendations();
     } catch (error) { if (id === generation) accessError(error); }
   }
   function deactivate() {
-    ++generation; clearTimeout(metadataTimer); pages.pause();
+    ++generation; clearTimeout(metadataTimer); cancelUpdateCheck(); pages.pause();
   }
   function invalidate() {
     deactivate(); initialized = false; cursor = null; firstPage = true;
     ++draftVersion; clearCards(); dialog.close();reportDialog.close();reporting=false;reportTarget=null;
+    newestShown=null;el('communityUpdates').textContent='';
   }
   function recommend(value = '') {
     if (busy || !authorized || !submissions) return;
@@ -284,7 +338,7 @@ export function mountCommunity() {
     } catch(error) {el('communityReportMessage').textContent=error.message;}
     finally {reportBusy=false;el('communityReportSubmit').disabled=false;}
   };
-  el('communityRefresh').onclick = () => { metadataRetries = 0; load(false, true); };
+  el('communityRefresh').onclick = refreshRecommendations;
   // A settings/account change invalidates all rendered previews and the pending draft.
   window.addEventListener('community-controls-changed', () => {
     invalidate();
@@ -292,5 +346,5 @@ export function mountCommunity() {
   });
   window.addEventListener('content-controls-changing', invalidate);
   window.CivitaiCommunity = Object.freeze({load, recommend, activate, deactivate});
-  setInterval(()=>{if(policyControlled&&authorized&&!section.classList.contains('hidden'))activate();},60000);
+  setInterval(()=>{if(policyControlled&&authorized&&!document.hidden&&!section.classList.contains('hidden'))activate();},60000);
 }

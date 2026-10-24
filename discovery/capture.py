@@ -19,6 +19,8 @@ and throw away data already paid for.
 
 from __future__ import annotations
 
+from .diagnostics import append_log
+
 from datetime import date, datetime, time as day_time, timedelta
 import json
 import threading
@@ -260,13 +262,8 @@ class AutoCapture:
                 except Exception:  # noqa: BLE001
                     # A capture failure must never take the app down with it; the next
                     # interval simply tries again.
-                    try:
-                        with (self.archive.root.parent / "error.log").open(
-                                "a", encoding="utf-8") as output:
-                            output.write(f"\n[{self._now().isoformat()}] Auto capture\n"
-                                         f"{traceback.format_exc()}")
-                    except OSError:
-                        pass
+                    append_log(self.archive.root.parent,
+                               f"\n[{self._now().isoformat()}] Auto capture\n{traceback.format_exc()}")
             # Re-read settings each cycle so a change takes effect without a restart,
             # and wake early when asked to stop or to run now.
             self.wake.wait(max(1.0, self.seconds_until_next()))

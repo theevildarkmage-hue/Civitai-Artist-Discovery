@@ -259,7 +259,17 @@ class Callback(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path != "/oauth/callback": self.send_error(404); return
-        self.server.result = {key: values[0] for key, values in urllib.parse.parse_qs(parsed.query).items()}  # type: ignore[attr-defined]
+        result = {key: values[0] for key, values in urllib.parse.parse_qs(parsed.query).items()}
+        expected = getattr(self.server, "expected_state", None)
+        if not expected or not secrets.compare_digest(result.get("state", "").encode("utf-8"), expected.encode("utf-8")):
+            self.send_error(400, "Invalid OAuth state")
+            return
+        # An unsolicited callback must not cancel the pending interactive login.
+        with self.server.result_lock:
+            if self.server.result is not None:
+                self.send_error(409, "Authorization already received")
+                return
+            self.server.result = result
         body = b"<!doctype html><title>Civitai connected</title><style>body{background:#111;color:#eee;font:20px system-ui;display:grid;place-items:center;height:90vh}</style><h1>Connected. You may close this tab.</h1>"
         self.send_response(200); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def log_message(self, *_): return
@@ -286,6 +296,8 @@ def _authorize_tokens(requested_scope: int, timeout: int = 300) -> dict:
         raise OAuthSetupError(f"Port {CALLBACK_PORT} is already in use on this computer, so "
                               "Civitai cannot send the authorization back. Close whatever "
                               "is using it and try again.") from error
+    server.expected_state = state
+    server.result_lock = threading.Lock()
     server.result = None  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
     try:

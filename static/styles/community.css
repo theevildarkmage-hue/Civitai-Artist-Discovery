@@ -1,6 +1,6 @@
 #community { grid-template-columns:minmax(0,1fr); width:100%; min-width:0; }
 #communityGrid { width:100%; }
-.community-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.community-heading { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:12px; }
 .community-heading h2 { margin:0; font-size:1.4rem; }
 .community-heading #communityQuota { color:var(--muted); font-size:.85rem; font-weight:400; }
 .community-rules { margin:0 0 8px; color:var(--muted); font-size:.9rem; }
@@ -39,3 +39,12 @@
 .community-dialog h2 { margin-bottom:12px; }
 .community-dialog #communityFormQuota { margin:12px 0; }
 .community-dialog #communityDialogMessage:not(:empty) { margin:12px 0; }
+
+/* Reserve notification space so a background check never shifts gallery cards. */
+.community-updates { margin:0; min-height:2.5em; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--muted); font-size:.9rem; overflow-wrap:anywhere; }
+.community-updates:empty { visibility:hidden; }
+@media (max-width:1000px) {
+  .community-heading { grid-template-columns:1fr; }
+  .community-heading .community-tools { grid-row:2; }
+  .community-updates { grid-row:3; }
+}
