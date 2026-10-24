@@ -25,9 +25,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
         assert value.get('mediaType') in ('all', 'image', 'video'), value
         return {key: item for key, item in value.items() if key not in ('captureSeed', 'mediaType')}
 
-    gallery_defaults = {"hideHighVolumeCreators": False, "highVolumeThreshold": 100,
+    gallery_defaults = {"hideHighVolumeCreators": True, "highVolumeThreshold": 50,
                         "emergingReactionMode": "balanced", "emergingReactionLimit": 0,
-                        "autoCapture": False, "autoCaptureHours": 12,
+                        "autoCapture": True, "autoCaptureHours": 12,
                         "autoCaptureMinute": None, "allowLanAccess": False,
                         "captureCoverage": "X"}
 
@@ -58,23 +58,24 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
                             emerging_reaction_limit_value=500)
     gallery_saved = {"hideHighVolumeCreators": True, "highVolumeThreshold": 200,
                      "emergingReactionMode": "strict", "emergingReactionLimit": 500,
-                     "autoCapture": False, "autoCaptureHours": 12,
+                     "autoCapture": True, "autoCaptureHours": 12,
                      "autoCaptureMinute": None, "allowLanAccess": False,
                      "captureCoverage": "X"}
     saved = settings.update(content_rating_value="Soft")
     assert view(saved) == {"contentRating": "Soft", "browsingLevels": [1, 2],
                      "dimSeenCards": False, "checkForUpdates": False, **gallery_saved}
 
-    # Automatic collection has its own coverage. A first run collects widely so archives
-    # are complete from the start, but an install that predates the setting keeps
-    # collecting exactly what it always has: an update does not get to start downloading
-    # explicit artwork onto someone's disk on their behalf.
+    # Owner-approved defaults apply to missing fields; explicit coverage survives.
     upgraded = path.with_name("upgraded.json")
     upgraded.write_text(json.dumps({"contentRating": "Soft", "autoCapture": True}), encoding="utf-8")
-    assert AppSettings(upgraded).load()["captureCoverage"] == "Soft"
+    assert AppSettings(upgraded).load()["captureCoverage"] == "X"
     upgraded.write_text(json.dumps({"contentRating": "Mature"}), encoding="utf-8")
-    assert AppSettings(upgraded).load()["captureCoverage"] == "Mature"
+    assert AppSettings(upgraded).load()["captureCoverage"] == "X"
     assert AppSettings(path.with_name("never-run.json")).load()["captureCoverage"] == "X"
+    upgraded.write_text(json.dumps({"autoCapture": False,"captureCoverage":"Soft", "hideHighVolumeCreators":False,"highVolumeThreshold":200,"checkForUpdates":False}),encoding="utf-8")
+    preserved=AppSettings(upgraded).load()
+    assert preserved['autoCapture'] is False and preserved['captureCoverage']=='Soft'
+    assert preserved['hideHighVolumeCreators'] is False and preserved['highVolumeThreshold']==200 and preserved['checkForUpdates'] is False
     # Once chosen it is independent: changing what is viewed never changes what is saved.
     chosen = AppSettings(path.with_name("chosen.json"))
     chosen.update(capture_coverage_value="X", content_rating_value="Soft")

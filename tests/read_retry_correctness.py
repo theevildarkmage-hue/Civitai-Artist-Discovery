@@ -134,6 +134,7 @@ with tempfile.TemporaryDirectory(
     import server
 
     handler = server.Handler.__new__(server.Handler)
+    handler.client_address=("127.0.0.1",12345)
     handler.path = "/api/reaction-status?imageId=1"
     handler.headers = {}
     handler.host_allowed = lambda: True

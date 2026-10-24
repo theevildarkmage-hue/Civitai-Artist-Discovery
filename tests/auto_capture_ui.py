@@ -48,7 +48,15 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
             block = page.locator(".capture-preference")
             text = block.inner_text()
             assert "Save recent days" in text, text
-            assert page.locator("#captureEnabled").is_checked() is False, "must be off until asked for"
+            assert page.locator("#captureEnabled").is_checked() is True, "owner-approved default must be on"
+            assert page.locator("#prefDimSeen").is_checked()
+            assert page.locator("#highVolumeSlider").input_value()=="1"
+            assert page.locator("#cardSizeSlider").input_value()=="2"
+            assert page.locator("#updateChecks").is_checked()
+            assert page.locator("#captureCoverage").input_value()=="X"
+            assert page.locator("#captureInterval").input_value()=="12"
+            assert not page.locator("#lanEnabled").is_checked()
+            page.locator("#captureEnabled").uncheck()
             page.locator("#captureNextRun", has_text="Off").wait_for()
             assert page.locator("#captureNextRun").inner_text() == "Off"
 
@@ -85,6 +93,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
             page.locator("#galleryPreferences").click()
             page.wait_for_selector("#captureEnabled", state="visible")
             assert page.locator("#captureEnabled").is_checked() is False
+            page.set_viewport_size({"width":390,"height":844})
+            assert page.evaluate("()=>document.documentElement.scrollWidth<=innerWidth"), "Settings overflow on mobile"
+            page.screenshot(path=str(SHOTS / "mobile-settings.png"))
             page.close()
             browser.close()
     finally:
@@ -92,5 +103,5 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
         process.wait(timeout=20)
 
 print({"statesShown": ["off", "enabled", "chosen time", "back to automatic"],
-       "compactStatus": True, "offByDefault": True, "persists": True,
+       "compactStatus": True, "onByDefault": True, "persists": True,
        "screenshots": str(SHOTS)})

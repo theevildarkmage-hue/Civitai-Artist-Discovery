@@ -43,12 +43,12 @@ class AppSettings:
             check_for_updates = raw.get("checkForUpdates", True)
             if not isinstance(check_for_updates, bool):
                 check_for_updates = True
-            hide_high_volume = raw.get("hideHighVolumeCreators", False)
+            hide_high_volume = raw.get("hideHighVolumeCreators", True)
             if not isinstance(hide_high_volume, bool):
-                hide_high_volume = False
-            high_volume_threshold = raw.get("highVolumeThreshold", 100)
+                hide_high_volume = True
+            high_volume_threshold = raw.get("highVolumeThreshold", 50)
             if high_volume_threshold not in HIGH_VOLUME_THRESHOLDS:
-                high_volume_threshold = 100
+                high_volume_threshold = 50
             emerging_reaction_mode = raw.get("emergingReactionMode", "balanced")
             if emerging_reaction_mode not in EMERGING_REACTION_MODES:
                 emerging_reaction_mode = "balanced"
@@ -57,9 +57,9 @@ class AppSettings:
             emerging_reaction_limit = raw.get("emergingReactionLimit", 0)
             if emerging_reaction_limit not in EMERGING_REACTION_LIMITS:
                 emerging_reaction_limit = 0
-            auto_capture = raw.get("autoCapture", False)
+            auto_capture = raw.get("autoCapture", True)
             if not isinstance(auto_capture, bool):
-                auto_capture = False
+                auto_capture = True
             auto_capture_hours = raw.get("autoCaptureHours", 12)
             if auto_capture_hours not in AUTO_CAPTURE_INTERVALS:
                 auto_capture_hours = 12
@@ -82,15 +82,11 @@ class AppSettings:
             # you look at today permanently narrowed what tomorrow's archive could ever
             # contain. Collect widely once; filter what is shown as often as you like.
             #
-            # An install that predates this setting inherits the coverage it has been
-            # collecting at all along -- its viewing rating -- rather than the wider new
-            # default. Quietly starting to download explicit artwork onto someone's disk
-            # because they updated is not a decision an upgrade gets to make for them; a
-            # first run with no settings file at all has nothing to preserve and takes the
-            # wide default, so archives are complete from the start.
+            # Owner-approved beta defaults: unset coverage collects all ratings.
+            # Explicit saved coverage and viewing levels remain independent.
             capture_coverage = raw.get("captureCoverage")
             if capture_coverage not in CONTENT_RATINGS:
-                capture_coverage = rating if raw else "X"
+                capture_coverage = "X"
             return {"mediaType": raw.get("mediaType") if raw.get("mediaType") in ("all", "image", "video") else "all",
                     "contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),
