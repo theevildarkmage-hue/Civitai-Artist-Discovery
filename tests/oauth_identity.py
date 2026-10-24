@@ -41,6 +41,38 @@ class IdentityGrantTests(unittest.TestCase):
         with patch.object(oauth,'_load',return_value=stored),patch.object(oauth,'client_id',return_value='client'),patch.object(oauth,'_post',return_value={'access_token':'wrong','scope':917539}),patch.object(oauth,'_save',side_effect=lambda v:saved.append(copy.deepcopy(v))):
             with self.assertRaises(oauth.OAuthReauthenticationRequired):oauth.get_community_access_token()
         self.assertEqual(saved[0]['access_token'],'synthetic-write');self.assertTrue(saved[0]['community_identity']['reauth_required']);self.assertNotIn('reauth_required',saved[0])
+    def test_rotation_survives_temporary_verification_failure(self):
+        stored=self.primary();stored['community_identity']={**self.grant(),'expires_at':0};posts=[];checked=[]
+        def save(value):stored.clear();stored.update(copy.deepcopy(value))
+        def verify(value,expected):
+            checked.append(value['access_token'])
+            if len(checked)==1:raise OSError('synthetic verification outage')
+            return value
+        def post(*args):
+            posts.append(True)
+            return {'access_token':'synthetic-new-read','refresh_token':'synthetic-rotated','expires_in':3600}
+        with patch.object(oauth,'_load',side_effect=lambda:copy.deepcopy(stored)),patch.object(oauth,'client_id',return_value='client'),patch.object(oauth,'_save',side_effect=save),patch.object(oauth,'_post',side_effect=post),patch.object(oauth,'_verify_identity_grant',side_effect=verify):
+            with self.assertRaises(oauth.OAuthTemporarilyUnavailable):oauth.get_community_access_token()
+            self.assertIn('pending_refresh',stored['community_identity'])
+            self.assertEqual(stored['community_identity']['access_token'],'synthetic-read')
+            self.assertEqual(stored['community_identity']['pending_refresh']['refresh_token'],'synthetic-rotated')
+            self.assertEqual(oauth.get_community_access_token(),'synthetic-new-read')
+        self.assertEqual(posts,[True]);self.assertEqual(len(checked),2)
+        self.assertNotIn('pending_refresh',stored['community_identity'])
+        self.assertEqual(stored['access_token'],'synthetic-write')
+
+    def test_pending_rotated_scope_still_checked_before_release(self):
+        stored=self.primary();stored['community_identity']={**self.grant(),'pending_refresh':self.grant()}
+        with patch.object(oauth,'_load',return_value=stored),patch.object(oauth,'client_id',return_value='client'),patch.object(oauth,'_verify_identity_grant',side_effect=oauth.OAuthSetupError('scope mismatch')),patch.object(oauth,'_save'):
+            with self.assertRaises(oauth.OAuthReauthenticationRequired):oauth.get_community_access_token()
+
+    def test_revoked_refresh_does_not_revoke_daily_grant(self):
+        stored=self.primary();stored['community_identity']={**self.grant(),'expires_at':0};saved=[]
+        with patch.object(oauth,'_load',return_value=stored),patch.object(oauth,'client_id',return_value='client'),patch.object(oauth,'_post',side_effect=oauth.OAuthReauthenticationRequired()),patch.object(oauth,'_save',side_effect=lambda value:saved.append(copy.deepcopy(value))):
+            with self.assertRaises(oauth.OAuthReauthenticationRequired):oauth.get_community_access_token()
+        self.assertTrue(saved[-1]['community_identity']['reauth_required'])
+        self.assertNotIn('reauth_required',saved[-1])
+
     def test_provider_scope_is_checked_independently_of_token_response(self):
         for actual,expected_ok in ((33,True),(917539,False),(None,False),('33',False)):
             provider={'id':7,'tokenScope':actual,'subject':{'type':'oauth'}}
