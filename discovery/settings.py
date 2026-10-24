@@ -107,6 +107,24 @@ class AppSettings:
                     "allowLanAccess": allow_lan_access,
                     "captureCoverage": capture_coverage}
 
+    def transactional_update(self, *, effect=None, **changes) -> dict:
+        """Restore the exact prior preference file if a dependent update fails."""
+        with self.lock:
+            previous = self.path.read_bytes() if self.path.exists() else None
+            try:
+                value = self._update(**changes)
+                if effect is not None:
+                    effect(value)
+                return value
+            except Exception:
+                if previous is None:
+                    self.path.unlink(missing_ok=True)
+                else:
+                    temporary = self.path.with_suffix(".tmp")
+                    temporary.write_bytes(previous)
+                    temporary.replace(self.path)
+                raise
+
     def update(self, **changes) -> dict:
         # The entire read/modify/write must be one transaction. Locking just the
         # final replace lets concurrent filter/settings requests lose each other.

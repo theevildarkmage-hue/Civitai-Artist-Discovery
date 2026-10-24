@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict, deque
+from collections import defaultdict, deque, OrderedDict
 from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -51,7 +51,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Discovery 3.0 Beta"
-APP_VERSION = "3.0.0-beta.5"
+APP_VERSION = "3.0.0-beta.6"
 from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
 DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
@@ -784,7 +784,8 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
 # immediately, since decorate_history_artist reads that fresh on every request; only
 # their *position* waits for a new session, matching "dims now, moves to the bottom on
 # refresh" rather than shifting the list while they are actively scrolling it.
-ORDER_CACHE: dict = {}
+ORDER_CACHE_LIMIT = 64
+ORDER_CACHE: OrderedDict = OrderedDict()
 
 
 def _seen_last(key: str, order: list[str] | None, total: int | None,
@@ -823,12 +824,16 @@ def cached_day_view_order(key: str, view: str, pinned_username: str | None, sign
     with WRITE_LOCK:
         cached = ORDER_CACHE.get(cache_key)
         if cached is not None and cached[0] == session_token:
+            ORDER_CACHE.move_to_end(cache_key)
             return cached[1], cached[2]
     order, total = day_view_order(key, view, pinned_username, signals, hidden_images,
                                   hidden_creators, eligible_creators, seen, archive)
     order, total = _finish_order(key, view, order, total, hidden_images, seen, archive)
     with WRITE_LOCK:
         ORDER_CACHE[cache_key] = (session_token, order, total)
+        ORDER_CACHE.move_to_end(cache_key)
+        while len(ORDER_CACHE) > ORDER_CACHE_LIMIT:
+            ORDER_CACHE.popitem(last=False)
     return order, total
 
 
@@ -1925,12 +1930,13 @@ class Handler(BaseHTTPRequestHandler):
                 with OAUTH_LOCK: OAUTH_JOB.update({"state": "idle", "error": None})
                 self.json_response({"connected": False}); return
             if parsed.path == "/api/settings":
-                previous = SETTINGS.load()
                 content_change = ("browsingLevels" in body or "contentRating" in body)
                 gallery_change = any(name in body for name in (
                     "hideHighVolumeCreators", "highVolumeThreshold",
                     "emergingReactionMode", "emergingReactionLimit", "mediaType"))
-                value = SETTINGS.update(media_type_value=body.get("mediaType"),
+                value = SETTINGS.transactional_update(
+                                        effect=(lambda value: HISTORY.set_content_filter(value["browsingLevels"])) if content_change else None,
+                                        media_type_value=body.get("mediaType"),
                                         browsing_levels_value=body.get("browsingLevels"),
                                         content_rating_value=body.get("contentRating"),
                                         dim_seen_cards_value=body.get("dimSeenCards"),
@@ -1940,14 +1946,6 @@ class Handler(BaseHTTPRequestHandler):
                                         emerging_reaction_mode_value=body.get("emergingReactionMode"),
                                         emerging_reaction_limit_value=body.get("emergingReactionLimit"),
                                         allow_lan_access_value=body.get("allowLanAccess"))
-                if content_change:
-                    try:
-                        HISTORY.set_content_filter(value["browsingLevels"])
-                    except Exception:
-                        SETTINGS.update(browsing_levels_value=previous["browsingLevels"],
-                                        dim_seen_cards_value=previous["dimSeenCards"],
-                                        check_for_updates_value=previous["checkForUpdates"])
-                        raise
                 if content_change or gallery_change:
                     with WRITE_LOCK:
                         ORDER_CACHE.clear()
@@ -2382,7 +2380,7 @@ if __name__ == "__main__":
             main()
     except Exception:
         DATA_ROOT.mkdir(parents=True, exist_ok=True)
-        (DATA_ROOT / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
+        append_log(DATA_ROOT, traceback.format_exc())
         # The replacement helper reports through its receipt, not a blocking
         # startup dialog. Failed unattended installs must return a failing status.
         if len(sys.argv)==3 and sys.argv[1]=='--apply-update':raise SystemExit(1)
