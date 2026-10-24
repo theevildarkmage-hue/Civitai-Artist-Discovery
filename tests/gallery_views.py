@@ -15,6 +15,8 @@ sys.path.insert(0, str(ROOT))
 with tempfile.TemporaryDirectory(prefix="gallery-views-", ignore_cleanup_errors=True) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     import server
+    # Isolate ranking semantics from the owner-approved 50/day visibility default.
+    server.SETTINGS.update(hide_high_volume_creators_value=False)
     from discovery.history import HistoryArchive
 
     day = (datetime.now() - timedelta(days=1)).date().isoformat()

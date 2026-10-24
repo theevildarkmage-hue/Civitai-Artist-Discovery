@@ -26,6 +26,7 @@ import webbrowser
 import traceback
 from discovery.community import (build_community, CommunityError, ContentProfile)
 from discovery.cache import ThumbnailCache
+from discovery.lan import LanAccess, loopback, private_address
 
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
@@ -65,6 +66,7 @@ FOLLOW_CACHE = DATA_ROOT / "following.json"
 CREATOR_PROFILES = DATA_ROOT / "cache" / "creator_profiles.json"
 SETTINGS = AppSettings(DATA_ROOT / "settings.json")
 INITIAL_SETTINGS = SETTINGS.load()
+LAN = LanAccess()
 HISTORY = HistoryArchive(DATA_ROOT / "history", INITIAL_SETTINGS["contentRating"],
                          INITIAL_SETTINGS["browsingLevels"])
 TASTE = TasteStore(DATA_ROOT / "discovery")
@@ -916,6 +918,7 @@ def start_oauth_login() -> None:
     def run():
         try:
             identity=oauth_login()
+            if SETTINGS.load()["autoCapture"]:CAPTURE.start()
             REGISTRY.reauthenticated(identity)
             # Mirror the account's Content Controls straight away, so the first gallery
             # after signing in already respects them. A failure here must not fail the
@@ -1055,7 +1058,7 @@ def claim_single_instance(no_browser: bool, replacing: bool = False) -> bool:
 
 
 def is_own_address(hostname: str | None) -> bool:
-    """Production and development both bind loopback; legacy LAN settings are inert."""
+    """Loopback identities used by the local launcher, never remote peers."""
     return (hostname or '').lower().rstrip('.') in {'127.0.0.1','localhost','::1'}
 
 
@@ -1101,6 +1104,7 @@ def bind_http_server(host: str, port: int, replacing: bool) -> ThreadingHTTPServ
 
 def request_app_shutdown(server: ThreadingHTTPServer) -> None:
     """Stop background work and ask the local HTTP server to exit."""
+    CAPTURE.stop()
     HISTORY.cancel()
     TASTE.stop_sync()
     for event in SWEEP_CANCEL.values():
@@ -1130,7 +1134,31 @@ class Handler(BaseHTTPRequestHandler):
             hostname = urllib.parse.urlsplit(f"//{self.headers.get('Host') or ''}").hostname
         except ValueError:
             return False
-        return is_own_address(hostname)
+        if loopback(self.client_address[0]) and is_own_address(hostname):return True
+        return (SETTINGS.load()['allowLanAccess'] and self.server.server_address[0]=='0.0.0.0'
+                and hostname in LAN.addresses
+                and (private_address(self.client_address[0]) or loopback(self.client_address[0])))
+
+    def lan_guard(self,path,*,post=False):
+        if loopback(self.client_address[0]):return True
+        if path=='/api/lan/pair' and post:return True
+        if not post and path=='/lan-login.js':return True
+        if not post and path=='/' and not LAN.paired(self.headers):
+            try:body=(STATIC/'lan.html').read_bytes()
+            except OSError:
+                self.send_error(503);return
+            self.send_response(200)
+            self.send_header('Content-Type','text/html; charset=utf-8')
+            self.send_header('Content-Length',str(len(body)))
+            self.send_header('Cache-Control','no-store')
+            self.send_header('Referrer-Policy','no-referrer')
+            self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+            self.end_headers();self.wfile.write(body);return False
+        local_only=(path.startswith(('/api/lan/','/api/oauth/','/api/app/','/api/update/','/api/development/','/__dev/'))
+                    or path in ('/api/discovery/reset','/api/test-isolation'))
+        if local_only or not LAN.paired(self.headers):
+            self.send_error(403);return False
+        return True
 
     def internal_error(self, context: str, error: BaseException) -> None:
         log_internal_error(context, error)
@@ -1166,9 +1194,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.startswith('/') or self.path.startswith('//'):
             self.send_error(400); return
         parsed = urllib.parse.urlparse(self.path)
+        if not self.lan_guard(parsed.path):return
         query = urllib.parse.parse_qs(parsed.query)
         if getattr(sys,'frozen',False) and (parsed.path.startswith(('/__dev/','/api/community/development/')) or parsed.path in ('/api/test-isolation','/community-fixture.svg')):
             self.send_error(404);return
+        if parsed.path=='/api/lan/status':
+            self.json_response({'enabled':SETTINGS.load()['allowLanAccess'],'listening':self.server.server_address[0]=='0.0.0.0','links':LAN.links(RUNNING_PORT) if SETTINGS.load()['allowLanAccess'] else [],'busyReason':update_busy_reason()});return
         if parsed.path=='/api/community/beta':
             from discovery.community_beta import configuration
             self.json_response(configuration(DATA_ROOT));return
@@ -1224,7 +1255,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response(error.response(),error.status);return
         if parsed.path.startswith('/api/community/thumbnail/'):
             try:
-                if self.client_address[0] not in ('127.0.0.1','::1'):raise CommunityError('FORBIDDEN',403)
                 client=community_client()
                 token=None
                 if client.mode=='fixture':
@@ -1792,10 +1822,12 @@ class Handler(BaseHTTPRequestHandler):
         from discovery.community_security import authorize_test
         authorize_test(self.headers, DATA_ROOT)
         origin = self.headers.get("Origin")
+        if not origin and not loopback(self.client_address[0]):
+            raise PermissionError("Network requests require a same-origin browser")
         if origin:
             parsed = urllib.parse.urlsplit(origin)
             expected = urllib.parse.urlsplit(f"http://{self.headers.get('Host') or ''}")
-            if (parsed.scheme != "http" or not is_own_address(parsed.hostname)
+            if (parsed.scheme != "http" or not (is_own_address(parsed.hostname) or (SETTINGS.load()["allowLanAccess"] and parsed.hostname in LAN.addresses))
                     or parsed.hostname != expected.hostname or parsed.port != expected.port
                     or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
                 raise PermissionError("Request origin is not allowed")
@@ -1830,8 +1862,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.host_allowed() or not browser_request_allowed(self.headers):
             self.send_error(403); return
         parsed = urllib.parse.urlparse(self.path)
+        if not self.lan_guard(parsed.path,post=True):return
         try:
             body = self.request_json()
+            if parsed.path=='/api/lan/pair':
+                if not SETTINGS.load()['allowLanAccess'] or not LAN.accept(body.get('key')):
+                    self.send_error(403);return
+                self.json_response({'paired':True},headers={'Set-Cookie':LAN.pair_cookie()});return
             if getattr(sys,'frozen',False) and parsed.path.startswith(('/__dev/','/api/community/development/')):
                 self.send_error(404);return
             if parsed.path=='/api/community/beta':
@@ -1899,10 +1936,13 @@ class Handler(BaseHTTPRequestHandler):
                 with OAUTH_LOCK: OAUTH_JOB.update({"state": "idle", "error": None})
                 self.json_response({"connected": False}); return
             if parsed.path == "/api/settings":
+                if 'allowLanAccess' in body and not loopback(self.client_address[0]):
+                    raise PermissionError('Network sharing can only be changed on this computer')
                 content_change = ("browsingLevels" in body or "contentRating" in body)
                 gallery_change = any(name in body for name in (
                     "hideHighVolumeCreators", "highVolumeThreshold",
                     "emergingReactionMode", "emergingReactionLimit", "mediaType"))
+                previous_lan=SETTINGS.load()["allowLanAccess"]
                 value = SETTINGS.transactional_update(
                                         effect=(lambda value: HISTORY.set_content_filter(value["browsingLevels"])) if content_change else None,
                                         media_type_value=body.get("mediaType"),
@@ -1914,7 +1954,8 @@ class Handler(BaseHTTPRequestHandler):
                                         high_volume_threshold_value=body.get("highVolumeThreshold"),
                                         emerging_reaction_mode_value=body.get("emergingReactionMode"),
                                         emerging_reaction_limit_value=body.get("emergingReactionLimit"),
-                                        allow_lan_access_value=None)
+                                        allow_lan_access_value=body.get("allowLanAccess") if loopback(self.client_address[0]) else None)
+                if previous_lan!=value["allowLanAccess"]:LAN.rotate()
                 if content_change or gallery_change:
                     with WRITE_LOCK:
                         ORDER_CACHE.clear()
@@ -1956,6 +1997,9 @@ class Handler(BaseHTTPRequestHandler):
                 request_app_shutdown(self.server)
                 return
             if parsed.path == "/api/app/restart":
+                reason=update_busy_reason()
+                if reason:
+                    self.json_response({"error":reason},409);return
                 # Reuse the same port so any tab already pointed at this app (including
                 # this settings page) reconnects on its own once the new process is up,
                 # instead of being stranded on a port that no longer answers.
@@ -1987,7 +2031,7 @@ class Handler(BaseHTTPRequestHandler):
                                 auto_capture_hours_value=hours if hours is not None else None,
                                 auto_capture_minute_value=minute,
                                 capture_coverage_value=body.get("coverage"))
-                if SETTINGS.load()["autoCapture"]:
+                if SETTINGS.load()["autoCapture"] and connected_or_false():
                     CAPTURE.start()
                     if body.get("runNow"):
                         CAPTURE.trigger()
@@ -2276,11 +2320,12 @@ def main() -> None:
     args = parser.parse_args()
     from discovery.community_security import disable_test_outbound
     disable_test_outbound(DATA_ROOT)
-    bind_host = args.host or "127.0.0.1"
-    if bind_host != "127.0.0.1" or args.port in (8906, 33101, 33201):
-        raise ValueError("Discovery 3.0 development requires loopback and a separate port (default 8907)")
+    bind_host = args.host or ("0.0.0.0" if SETTINGS.load()['allowLanAccess'] else "127.0.0.1")
+    if bind_host not in ('127.0.0.1','0.0.0.0') or (bind_host=='0.0.0.0' and not SETTINGS.load()['allowLanAccess']) or args.port in (8906,33101,33201):
+        raise ValueError("Network binding requires explicit LAN sharing; use a separate Discovery 3.0 port")
     if not claim_single_instance(args.no_browser, args.replacing):
         return
+    if not SETTINGS.path.exists():SETTINGS.update()
     # The OAuth redirect is registered against one fixed port, so the app must never
     # occupy it: doing so leaves the callback listener unable to bind and Civitai's
     # redirect lands on this server, which answers 404 and strands the sign-in.
@@ -2297,7 +2342,7 @@ def main() -> None:
     save_instance_url(url)
     UPDATES.schedule_success_cleanup()
     # Only starts a worker when the preference is on; otherwise nothing runs.
-    if SETTINGS.load()["autoCapture"]:
+    if SETTINGS.load()["autoCapture"] and connected_or_false():
         CAPTURE.start()
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
