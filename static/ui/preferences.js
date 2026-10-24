@@ -1,4 +1,3 @@
-import {api} from './api.js';
 function mirrorRange(select, { id, values, labels }) {
   const wrap = document.createElement('div');
   wrap.className = 'preference-slider';
@@ -77,46 +76,6 @@ export function mountPreferences() {
   for (const preference of profileSettings.querySelectorAll('.update-preference')) {
     panel.append(preference);
   }
-  const network = document.createElement('section');
-  network.className='update-preference';network.id='lanPreference';
-  network.innerHTML='<div><strong>Local network access</strong><small>Use only on a trusted private network. Paired devices use this computer’s signed-in account. Keep the link private.</small><small id="lanStatus" role="status"></small><div id="lanLinks"></div></div><label><input id="lanEnabled" type="checkbox"> Allow LAN access</label><button id="lanRestart" type="button" hidden>Restart to apply</button>';
-  panel.append(network);
-  const lanEnabled=network.querySelector('#lanEnabled'),lanStatus=network.querySelector('#lanStatus');
-  const links=network.querySelector('#lanLinks'),restart=network.querySelector('#lanRestart');
-  async function loadNetwork() {
-    try {
-      const status=await api('/api/lan/status');
-      lanEnabled.checked=status.enabled;links.replaceChildren();
-      restart.hidden=status.enabled===status.listening;restart.disabled=!!status.busyReason;
-      lanStatus.textContent=restart.hidden?(status.enabled?'Open a private link on your other device. Links expire when the app restarts.':'Off. Only this computer can connect.'):
-        (status.enabled?'Restart the app to allow network connections.':'Network access is blocked. Restart to close the network listener.');
-      if(!restart.hidden&&status.busyReason)lanStatus.textContent+=' '+status.busyReason;
-      if(status.enabled&&status.listening)for(const url of status.links) {
-        const link=document.createElement('a');link.href=url;link.textContent=url;link.rel='noreferrer';link.style.overflowWrap='anywhere';links.append(link,document.createElement('br'));
-      }
-      if(status.enabled&&status.listening&&!status.links.length)lanStatus.textContent='No private IPv4 network address found. Connect this computer to your local network.';
-    } catch (_) {lanEnabled.disabled=true;restart.hidden=true;lanStatus.textContent='Manage network sharing on the computer running Discovery.';}
-  }
-  lanEnabled.onchange=async()=>{
-    lanEnabled.disabled=true;
-    try {await api('/api/settings',{method:'POST',body:JSON.stringify({allowLanAccess:lanEnabled.checked})});await loadNetwork();}
-    catch(error){lanEnabled.checked=!lanEnabled.checked;lanStatus.textContent=error.message;}
-    finally{lanEnabled.disabled=false;}
-  };
-  restart.onclick=async()=>{
-    try {
-      restart.disabled=true;lanStatus.textContent='Restarting...';
-      await api('/api/app/restart',{method:'POST',body:'{}'});
-      for(let attempt=0;attempt<30;attempt++) {
-        await new Promise(resolve=>setTimeout(resolve,1000));
-        try {const response=await fetch('/api/history/config',{cache:'no-store'});if(response.ok){location.reload();return;}}catch(_){}
-      }
-      throw new Error('Restart is taking longer than expected. Reopen Discovery on this computer.');
-    }
-    catch(error){lanStatus.textContent=error.message;}
-  };
-  document.getElementById('galleryPreferences').addEventListener('click',loadNetwork);
-  loadNetwork();
   panel.append(profileSettings.querySelector('.settings-reset'));
   profileSettings.remove();
   document.querySelector('.capture-preference strong').textContent = 'Save recent days';

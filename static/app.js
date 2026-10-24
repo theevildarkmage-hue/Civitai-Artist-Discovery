@@ -333,6 +333,72 @@ $("updateChecks").onchange = async () => {
 // Automatic collection reaches Civitai on a schedule with nobody watching, so the panel
 // has to answer three things at a glance: that it happens, when it happens next, and how
 // to stop it. Off until switched on.
+let allowLanAccess = false;
+function showLanAddress(addresses) {
+  const hint = $("lanAddressHint");
+  const list = Array.isArray(addresses) ? addresses : [];
+  hint.classList.toggle("hidden", !allowLanAccess || !list.length);
+  $("lanFirewallHelp").classList.toggle("hidden", !allowLanAccess);
+  if (!allowLanAccess || !list.length) return;
+  const port = window.location.port ? `:${window.location.port}` : "";
+  hint.textContent = `Open on another device: ${list.map(address => `http://${address}${port}`).join("  ·  ")}`;
+}
+function closeLanRestartDialog(revert) {
+  $("lanRestartDialog").close();
+  $("lanRestartStatus").classList.add("hidden");
+  $("lanRestartConfirm").disabled = false;
+  $("lanRestartCancel").disabled = false;
+  if (revert) { $("allowLanAccess").checked = allowLanAccess; $("allowLanAccess").disabled = false; }
+}
+$("allowLanAccess").onchange = () => {
+  const desired = $("allowLanAccess").checked;
+  $("lanRestartTitle").textContent = desired ? "Allow LAN access?" : "Turn off LAN access?";
+  $("lanRestartSummary").textContent = desired
+    ? "Restarting will make this app reachable from other devices on your network. Anyone who can reach this computer's address will be able to use the app, including follow/react actions on your account."
+    : "Restarting will stop other devices on your network from reaching this app.";
+  $("lanFirewallWarning").classList.toggle("hidden", !desired);
+  $("lanRestartDialog").showModal();
+};
+$("closeLanRestart").onclick = () => closeLanRestartDialog(true);
+$("lanRestartCancel").onclick = () => closeLanRestartDialog(true);
+$("lanRestartDialog").onclick = event => { if (event.target === $("lanRestartDialog")) closeLanRestartDialog(true); };
+$("lanRestartConfirm").onclick = async () => {
+  const desired = $("allowLanAccess").checked;
+  $("lanRestartConfirm").disabled = true;
+  $("lanRestartCancel").disabled = true;
+  const status = $("lanRestartStatus");
+  status.classList.remove("hidden");
+  status.textContent = "Restarting the app…";
+  try {
+    await api("/api/settings", { method: "POST", body: JSON.stringify({ allowLanAccess: desired }) });
+    allowLanAccess = desired;
+    await api("/api/app/restart", { method: "POST", body: "{}" });
+    // The old process is shutting down; the new one comes back on the same port, so
+    // this tab waits for it rather than navigating blindly. Once it answers, the tab
+    // moves to the address the new setting is about: turning LAN access on shows the
+    // network address that a phone can be pointed at, and turning it off returns to
+    // loopback, which is the only address still being served.
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        const current = await api("/api/settings");
+        const port = window.location.port ? `:${window.location.port}` : "";
+        const onLoopback = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(window.location.hostname);
+        const lanAddress = (current.lanAddresses || [])[0];
+        if (desired && lanAddress && onLoopback) window.location.href = `http://${lanAddress}${port}`;
+        else if (!desired && !onLoopback) window.location.href = `http://127.0.0.1${port}`;
+        else window.location.reload();
+        return;
+      } catch (_) { /* still restarting */ }
+    }
+    status.textContent = "The app is taking longer than expected to restart. Reload the page in a moment.";
+  } catch (error) {
+    status.textContent = error.message;
+    $("lanRestartConfirm").disabled = false;
+    $("lanRestartCancel").disabled = false;
+    $("allowLanAccess").checked = allowLanAccess;
+  }
+};
 let captureState = null;
 function describeNextRun(state) {
   if (!state.enabled) return "Off";
@@ -1471,7 +1537,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
 }
 async function startup() {
   const navigationAtStartup = navigationVersion;
-  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 50; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
+  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 50; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
