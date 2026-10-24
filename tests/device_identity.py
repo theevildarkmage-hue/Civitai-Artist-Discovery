@@ -40,5 +40,10 @@ console.log('PASS: Python device signature verified by WebCrypto');"""
   device=device_identity.generate();session={'member_id':7,'renewal':{'credential':'sdr_'+'r'*43,'device':device,'pending_request':'p'*43,'expires_at':2000,'absolute_expires_at':3000}}
   for member in ({'id':8},{'id':True},{}):
    with self.assertRaises(RuntimeError):cloud_identity.renew(session,send=lambda *a:{'apiVersion':2,'session':'sdc_'+'s'*43,'expiresAt':2000,'member':member},clock=lambda:1000)
+ def test_persisted_civitai_credentials_never_enter_renewal_transport(self):
+  device=device_identity.generate()
+  for change in ({'credential':'civitai_access_canary'},{'pending_request':'civitai_refresh_canary'}):
+   session={'member_id':7,'renewal':{'credential':'sdr_'+'r'*43,'device':device,'pending_request':'p'*43,'expires_at':2000,'absolute_expires_at':3000,**change}}
+   with self.assertRaises(RuntimeError):cloud_identity.renew(session,send=lambda *a:self.fail('Credential entered transport'),clock=lambda:1000)
 
 if __name__=='__main__':unittest.main()

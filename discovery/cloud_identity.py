@@ -60,6 +60,13 @@ def renew(session,*,send=None,clock=time.time):
     from .community import bounded_json
     from .device_identity import sign,digest
     renewal=session['renewal']
+    # Revalidate persisted inputs before any transport, not only at enrollment.
+    # An old/malformed profile must never route a Civitai credential into a body.
+    if (not isinstance(renewal,dict) or not isinstance(renewal.get('credential'),str)
+        or not re.fullmatch(r'sdr_[A-Za-z0-9_-]{43}',renewal['credential'])
+        or not isinstance(renewal.get('pending_request'),str)
+        or not re.fullmatch(r'[A-Za-z0-9_-]{43}',renewal['pending_request'])):
+        raise RuntimeError('Discovery renewal input rejected')
     if min(renewal['expires_at'],renewal['absolute_expires_at'])<=clock():
         raise RuntimeError('Discovery device authorization expired')
     request_id=renewal['pending_request']
