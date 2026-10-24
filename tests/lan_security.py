@@ -74,6 +74,11 @@ with tempfile.TemporaryDirectory(prefix='cad3-lan-security-') as temporary:
         assert request('/api/settings',headers=http_remote_cookie)[0]==403,'Disable/re-enable must revoke old cookie'
         server.LAN=LanAccess();server.LAN.addresses=['192.168.10.2']
         assert request('/api/settings',headers=authenticated)[0]==403,'Restart must revoke pairing'
+        listener.remote=False
+        with patch.object(server.subprocess,'Popen') as launch,patch.object(server,'request_app_shutdown') as shutdown:
+            assert request('/api/app/restart',{},headers={'Host':f'127.0.0.1:{port}'})[0]==200
+            launch.assert_called_once();shutdown.assert_called_once_with(listener)
+        listener.remote=True
         server.SETTINGS.update(allow_lan_access_value=False)
         assert request('/')[0]==403,'Disable must block immediately'
         assert all(not private_address(ip) for ip in ('8.8.8.8','127.0.0.1','169.254.1.2','::1','100.64.0.1'))

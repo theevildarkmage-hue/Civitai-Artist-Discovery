@@ -1199,7 +1199,7 @@ class Handler(BaseHTTPRequestHandler):
         if getattr(sys,'frozen',False) and (parsed.path.startswith(('/__dev/','/api/community/development/')) or parsed.path in ('/api/test-isolation','/community-fixture.svg')):
             self.send_error(404);return
         if parsed.path=='/api/lan/status':
-            self.json_response({'enabled':SETTINGS.load()['allowLanAccess'],'listening':self.server.server_address[0]=='0.0.0.0','links':LAN.links(RUNNING_PORT) if SETTINGS.load()['allowLanAccess'] else [],'busyReason':update_busy_reason()});return
+            self.json_response({'enabled':SETTINGS.load()['allowLanAccess'],'listening':self.server.server_address[0]=='0.0.0.0','links':LAN.links(RUNNING_PORT) if SETTINGS.load()['allowLanAccess'] else []});return
         if parsed.path=='/api/community/beta':
             from discovery.community_beta import configuration
             self.json_response(configuration(DATA_ROOT));return
@@ -1997,9 +1997,6 @@ class Handler(BaseHTTPRequestHandler):
                 request_app_shutdown(self.server)
                 return
             if parsed.path == "/api/app/restart":
-                reason=update_busy_reason()
-                if reason:
-                    self.json_response({"error":reason},409);return
                 # Reuse the same port so any tab already pointed at this app (including
                 # this settings page) reconnects on its own once the new process is up,
                 # instead of being stranded on a port that no longer answers.
