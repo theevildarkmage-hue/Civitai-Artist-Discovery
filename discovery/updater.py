@@ -252,6 +252,19 @@ def _wait_for_process(pid: int, timeout: float = 90) -> None:
     raise TimeoutError("The running application did not close in time")
 
 
+def _replace_with_retry(source: Path, target: Path, timeout: float = 8) -> None:
+    """Allow briefly retained Windows runtime locks to clear before rollback."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if os.name != 'nt' or time.monotonic() >= deadline:
+                raise
+            time.sleep(.2)
+
+
 def _copy_entry(source: Path, target: Path) -> None:
     if source.is_dir():
         shutil.copytree(source, target)
@@ -318,7 +331,7 @@ def apply_staged_update(config_path: Path, *, launch: bool = True,
                 # Same-volume rename either preserves the whole old entry or
                 # fails. Recursive deletion could remove half a locked runtime
                 # before raising, leaving it absent from the rollback journal.
-                target.replace(backup)
+                _replace_with_retry(target, backup)
             changed.append(source.name)
             _copy_entry(source, target)
         result = {"state": "installed", "version": config.get("version"),
