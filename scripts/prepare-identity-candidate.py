@@ -39,15 +39,49 @@ end$$;
     return migration,source,bundle
 
 
+def include_access_policy(bundle):
+    path=ROOT/'supabase/beta-migrations/202610240004_community_access_policy.sql'
+    source=path.read_text(encoding='utf-8')
+    assert '$community_policy_migration$' not in source
+    body='\n'.join(line for line in source.splitlines() if line not in ('begin;','commit;'))
+    # Compare all original configuration fields; only the new default is excluded.
+    return bundle.rsplit('commit;',1)[0]+body+"""
+do $$declare r record;n bigint;h text;projection text;begin
+ for r in select * from identity_preservation_before loop
+  projection:=case when r.relation='community_private.configuration' then 'to_jsonb(t)-''access_mode''' else 'to_jsonb(t)' end;
+  execute 'select count(*),md5(coalesce(jsonb_agg('||projection||' order by ('||projection||')::text)::text,''[]'')) from '||r.relation||' t' into n,h;
+  if n<>r.rows or h<>r.digest then raise exception 'Existing record integrity mismatch after access policy';end if;
+ end loop;
+ if (select access_mode from community_private.configuration where singleton)<>'invite_only' then raise exception 'Unexpected policy activation';end if;
+end$$;
+"""+"insert into supabase_migrations.schema_migrations(version,name,statements) values('202610240004','community_access_policy',array[$community_policy_migration$"+source+"$community_policy_migration$]);\nnotify pgrst,'reload schema';\ncommit;\n"
+
+
+def include_device_renewal(bundle):
+    source=(ROOT/'supabase/beta-migrations/202610240005_device_session_renewal.sql').read_text(encoding='utf-8')
+    assert '$device_renewal_migration$' not in source
+    body='\n'.join(line for line in source.splitlines() if line not in ('begin;','commit;'))
+    # Reuse the already-reviewed original-row comparison after the last migration.
+    preservation=bundle[bundle.rindex('do $$declare r record;'):bundle.rindex('end$$;')+7]
+    return bundle.rsplit('commit;',1)[0]+body+'\n'+preservation+"\ninsert into supabase_migrations.schema_migrations(version,name,statements) values('202610240005','device_session_renewal',array[$device_renewal_migration$"+source+"$device_renewal_migration$]);\nnotify pgrst,'reload schema';\ncommit;\n"
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--include-community-access',action='store_true',help='Include default-invite migration 12 in the same atomic transaction')
+    parser.add_argument('--include-device-renewal',action='store_true',help='Include rotating device renewal migration 13; requires access policy')
     parser.add_argument('--output',required=True,type=Path)
     args=parser.parse_args();out=args.output.resolve()
+    if not (args.include_device_renewal and args.include_community_access):parser.error('Current runtime requires both access policy and device renewal migrations; supply both include flags')
     if out.is_relative_to(ROOT) and not out.is_relative_to(ROOT/'reports'):parser.error('Use ignored reports or an external review directory')
     out.mkdir(parents=True,exist_ok=True)
     migration,source,bundle=build_bundle()
+    if args.include_community_access:bundle=include_access_policy(bundle)
+    if args.include_device_renewal:bundle=include_device_renewal(bundle)
     (out/'atomic-upgrade.sql').write_bytes(bundle.encode('utf-8'))
-    names=['supabase/functions/community-v1/'+name for name in ('index.ts','handler.ts','identity-handler.ts','identity.ts')]+['supabase/config.toml',str(migration.relative_to(ROOT)).replace('\\','/')]
+    names=['supabase/functions/community-v1/'+name for name in ('index.ts','handler.ts','identity-handler.ts','identity.ts','renewal.ts')]+['supabase/config.toml',str(migration.relative_to(ROOT)).replace('\\','/')]
+    if args.include_community_access:names.append('supabase/beta-migrations/202610240004_community_access_policy.sql')
+    if args.include_device_renewal:names.append('supabase/beta-migrations/202610240005_device_session_renewal.sql')
     function_dir=out/'function'/'community-v1'
     allowed={Path(name).name for name in names if name.endswith('.ts')}
     if function_dir.exists() and any(p.name not in allowed for p in function_dir.iterdir()):
@@ -61,6 +95,8 @@ def main():
       'workingTreeClean':not subprocess.check_output(['git','status','--porcelain'],cwd=ROOT).strip(),
       'expectedMigrations':BASE,'candidateMigration':VERSION,'lastReportedFunctionVersion':30,'hostedBaselineReverificationRequired':True,
       'requiredNewSecrets':['DISCOVERY_IDENTITY_CHALLENGE_KEY'],
+      'candidateMigrations':[VERSION]+(['202610240004'] if args.include_community_access else [])+(['202610240005'] if args.include_device_renewal else []),
+      'defaultAccessMode':'invite_only','publicPolicySupported':args.include_community_access,
       'verifyJWT':False,'legacyClientUpgradeRequired':True,'ownerCivitaiKeyRequired':False,'policyChanges':False,'existingRecordsMustMatch':True,'files':files,'atomicSQLSHA256':hashlib.sha256(bundle.encode()).hexdigest()}
     (out/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
     print(json.dumps({'prepared':True,'files':len(files),'connections':0,'workingTreeClean':manifest['workingTreeClean']}))

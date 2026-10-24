@@ -1,5 +1,6 @@
 import {createCommunityHandler} from './handler.ts';
 import {createCivitaiIdentityVerifier} from './identity.ts';
+import {createDeviceRenewal,deviceKey} from './renewal.ts';
 
 const audience='b9e2edf5-4bf0-4381-8823-ed01603256c5';
 const encoder=new TextEncoder();
@@ -48,11 +49,12 @@ export function createIdentityCommunityHandler({fetch:transport=globalThis.fetch
     let raw:Uint8Array<ArrayBuffer>;try {raw=decode(key);}catch {return failure('UNAVAILABLE');}
     return crypto.subtle.importKey('raw',raw,{name:'HMAC',hash:'SHA-256'},false,['sign','verify']);
   }
-  async function makeChallenge() {
+  async function makeChallenge(publicKey?:unknown) {
+    const devicePublicKey=publicKey===undefined?undefined:await deviceKey(publicKey);
     const issued=Math.floor(clock()/1000);
-    const body=b64(encoder.encode(JSON.stringify({purpose:'discovery-identity-v1',aud:audience,nonce:random(),iat:issued,exp:issued+300})));
+    const body=b64(encoder.encode(JSON.stringify({purpose:'discovery-identity-v1',aud:audience,nonce:random(),iat:issued,exp:issued+300,...(devicePublicKey?{devicePublicKey}:{})})));
     return {apiVersion:2,challenge:body+'.'+b64(await crypto.subtle.sign('HMAC',await challengeKey(),encoder.encode(body))),
-      nonce:JSON.parse(new TextDecoder().decode(decode(body))).nonce,audience,expiresAt:issued+300};
+      nonce:JSON.parse(new TextDecoder().decode(decode(body))).nonce,audience,expiresAt:issued+300,...(devicePublicKey?{devicePublicKey}:{})};
   }
   async function readChallenge(value:unknown) {
     if(typeof value!=='string'||value.length>1024)failure('AUTH_EXPIRED');
@@ -62,6 +64,14 @@ export function createIdentityCommunityHandler({fetch:transport=globalThis.fetch
     if(data.purpose!=='discovery-identity-v1'||data.aud!==audience||typeof data.nonce!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(data.nonce)
       ||!Number.isSafeInteger(data.iat)||data.iat>now+30||data.exp!==data.iat+300||data.exp<=now)failure('AUTH_EXPIRED');return data;
   }
+  async function publicUser(subject:string) {
+    const response=await transport('https://civitai.red/api/v1/users?ids='+subject,{redirect:'error',signal:AbortSignal.timeout(8000),headers:{Accept:'application/json'}});
+    if(!response.ok)failure('UNAVAILABLE');const users=await json(response);
+    const matches=users?.items?.filter((user:any)=>user?.id===Number(subject));
+    if(!Array.isArray(matches)||matches.length!==1||typeof matches[0].username!=='string'||matches[0].username.length<1||matches[0].username.length>200)failure('UNAVAILABLE');
+    return matches[0];
+  }
+  const renewal=createDeviceRenewal({rpc,env,clock,publicUser});
   const community=createCommunityHandler({fetch:transport,invitationOnly:true,galleryWindow:true,
     authenticate:async(token:string)=>{
       if(!/^sdc_[A-Za-z0-9_-]{43}$/.test(token))failure('AUTH_EXPIRED');
@@ -79,17 +89,17 @@ export function createIdentityCommunityHandler({fetch:transport=globalThis.fetch
       if(body.apiVersion===2) {
         // Identity exchange endpoints never accept an API/session bearer header.
         if(request.headers.has('Authorization'))failure('AUTH_EXPIRED');
+        if(body.operation==='identityRenew')return reply(await renewal.renew(body));
         if(env('DISCOVERY_REGISTRY_STATE')!=='enabled'&&!['enabled','read_only'].includes(env('COMMUNITY_BETA_STATE')??''))
           return reply({apiVersion:2,available:false});
-        if(body.operation==='identityChallenge'&&Object.keys(body).every(k=>['apiVersion','operation'].includes(k)))return reply(await makeChallenge());
-        if(body.operation!=='identityExchange'||Object.keys(body).some(k=>!['apiVersion','operation','challenge','identityAssertion'].includes(k)))failure('INVALID_REQUEST');
+        if(body.operation==='identityChallenge'&&Object.keys(body).every(k=>['apiVersion','operation','devicePublicKey'].includes(k)))return reply(await makeChallenge(body.devicePublicKey));
+        if(body.operation!=='identityExchange'||Object.keys(body).some(k=>!['apiVersion','operation','challenge','identityAssertion','deviceSignature'].includes(k)))failure('INVALID_REQUEST');
         const challenge=await readChallenge(body.challenge);
         const identity=await verify(body.identityAssertion,{audience,nonce:challenge.nonce});
         if(identity.issuedAt<challenge.iat-30)failure('AUTH_EXPIRED');
-        const response=await transport('https://civitai.red/api/v1/users?ids='+identity.subject,{redirect:'error',signal:AbortSignal.timeout(8000),headers:{Accept:'application/json'}});
-        if(!response.ok)failure('UNAVAILABLE');const users=await json(response);
-        const matches=users?.items?.filter((user:any)=>user?.id===Number(identity.subject));
-        if(!Array.isArray(matches)||matches.length!==1||typeof matches[0].username!=='string'||matches[0].username.length<1||matches[0].username.length>200)failure('UNAVAILABLE');
+        const user=await publicUser(identity.subject);
+        const matches=[user];
+        if(challenge.devicePublicKey)return reply(await renewal.enroll(challenge,body.challenge,body.identityAssertion,body.deviceSignature,identity,{id:Number(identity.subject),username:user.username}));
         const session='sdc_'+random();
         const result=await rpc('community_identity_exchange',{p_assertion_hash:await hash(body.identityAssertion),p_nonce_hash:await hash(challenge.nonce),
           p_session_hash:await hash(session),p_member:Number(identity.subject),p_username:matches[0].username,p_proof_expires:new Date(identity.expiresAt*1000).toISOString()});

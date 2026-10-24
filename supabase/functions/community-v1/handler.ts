@@ -302,14 +302,19 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
       && Number.isFinite(remaining) && remaining>0 && remaining<=30*60*1000;
     // In the deployed owner-only entry point, even "enabled" fails closed.
     const submissions=ownerWindow || (!ownerOnly && state==='enabled');
-    const policy={available:submissions||state==='read_only',submissions,
+    const policy:{available:boolean,submissions:boolean,reporting?:boolean,accessMode?:string}={available:submissions||state==='read_only',submissions,
       ...(invitationOnly?{reporting:submissions||state==='read_only'}:{})};
     // Global disable takes precedence over invitation status and roster lookup.
     if(invitationOnly && !policy.available) {
       if(body.operation==='status') return reply({apiVersion:1,member:{id:memberId,username},quota:null,development:false,beta:policy});
       fail('BETA_DISABLED');
     }
-    if(invitationOnly) await rpc('community_access',{p_member:memberId});
+    // Protected RPC mode covers both invite beta and future public access.
+    // The database owns audience policy; the client cannot select it.
+    if(invitationOnly) {
+      const access=await rpc('community_access',{p_member:memberId});
+      policy.accessMode=access.accessMode??'invite_only';
+    }
     if(body.operation!=='status' && !policy.available) fail('BETA_DISABLED');
     if(['recommend','verify','withdraw'].includes(body.operation) && !policy.submissions) fail('READ_ONLY');
     let result:any;

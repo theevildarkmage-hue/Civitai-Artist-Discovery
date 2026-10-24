@@ -48,6 +48,17 @@ def run():
     check(sql("select community_identity_revoke(null);",'service_role').returncode!=0)
     check(sql("select (select count(*) from community_recommendations),(select count(*) from community_audit),(select count(*) from community_submission_requests);").stdout==baseline)
     check(sql("select count(*) from pg_tables where schemaname='public' and tablename like 'community_identity_%' and rowsecurity;").stdout.strip()=='2')
+    if sql("select to_regclass('public.community_device_families') is not null;").stdout.strip()=='t':
+        for role in ('anon','authenticated','service_role'):
+            for table in ('community_device_families','community_device_proofs'):
+                for statement in (f'select * from {table};',f'insert into {table} default values;',f'update {table} set '+('revoked=true;' if table=='community_device_families' else 'expires_at=clock_timestamp();'),f'delete from {table};'):
+                    result=sql(statement,role);check(result.returncode!=0 and 'permission denied' in result.stderr)
+            result=sql("select community_private.owner_device_revoke(7,'Forged client');",role)
+            check(result.returncode!=0 and 'permission denied' in result.stderr)
+        for role in ('anon','authenticated'):
+            for statement in ("select community_device_lookup('"+'8'*64+"');", "select community_device_rotate(null,null,null,null,null,null);", "select community_device_enroll(null,null,null,null,null,null,null,null);"):
+                result=sql(statement,role);check(result.returncode!=0 and 'permission denied' in result.stderr)
+        check(json.loads(sql("select community_device_lookup('"+'8'*64+"');",'service_role').stdout)['denied'])
     print(json.dumps({'passed':passed,'nativeSQL':True,'concurrentExchangeRequests':8,'admitted':1,'historicalCountsPreserved':True,'hostedRequests':0}))
 
 if __name__=='__main__':run()

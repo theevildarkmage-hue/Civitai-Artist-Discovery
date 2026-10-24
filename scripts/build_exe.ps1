@@ -57,6 +57,10 @@ try {
   Copy-Item -LiteralPath $pythonLicense -Destination (Join-Path $licenses 'Python-LICENSE.txt')
   $installerInfo = python -c "from importlib.metadata import distribution; print(distribution('pyinstaller')._path)"
   Copy-Item -LiteralPath (Join-Path $installerInfo 'licenses\COPYING.txt') -Destination (Join-Path $licenses 'PyInstaller-COPYING.txt')
+  foreach ($dependency in @('cryptography','cffi','pycparser')) {
+    $dependencyLicense = python -c "from importlib.metadata import distribution; print(distribution('$dependency')._path / 'licenses')"
+    Copy-Item -LiteralPath $dependencyLicense -Destination (Join-Path $licenses $dependency) -Recurse
+  }
   Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $package 'LICENSE.txt')
   Copy-Item (Join-Path $root 'THIRD_PARTY_NOTICES.md') $package
   $guides = Join-Path $package 'docs'

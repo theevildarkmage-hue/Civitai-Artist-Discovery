@@ -35,7 +35,7 @@ try:
         denied()
         state['submissions']=True;page.locator('#communityRefresh').click()
         page.wait_for_function("()=>!document.querySelector('#communityRecommend').disabled")
-        page.locator('#communityRecommend').click();assert page.locator('.community-dialog[open]').count()==1
+        page.locator('#communityRecommend').click();page.locator('.community-dialog[open]').wait_for();assert page.locator('.community-dialog[open]').count()==1
         state['submissions']=False;page.evaluate('()=>window.CivitaiCommunity.load(false,true)')
         page.wait_for_function("()=>document.querySelector('#communityRecommend').disabled");denied()
         for flags in ({'submissions':True,'stale':True},{'stale':False,'missing':True},{'missing':False,'failure':True}):

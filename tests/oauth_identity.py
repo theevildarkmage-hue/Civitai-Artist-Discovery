@@ -62,9 +62,11 @@ class IdentitySessionTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):cloud_identity.exchange('h.p.s',{'expiresAt':2000,'challenge':'envelope'},7,send=lambda *args:result,clock=lambda:1000)
     def test_challenge_validates_audience_and_deadline(self):
         valid={'apiVersion':2,'nonce':'n'*43,'audience':'client','expiresAt':1300,'challenge':'envelope'}
-        self.assertEqual(cloud_identity.challenge('client',send=lambda *a:valid,clock=lambda:1000),valid)
+        def send(*args):return {**valid,'devicePublicKey':args[2]['devicePublicKey']}
+        received=cloud_identity.challenge('client',send=send,clock=lambda:1000)
+        self.assertEqual(received['audience'],'client');self.assertIn('_device',received)
         for patch_value in ({'audience':'attacker'},{'expiresAt':999},{'expiresAt':99999},{'nonce':'invalid'}):
-            with self.assertRaises(RuntimeError):cloud_identity.challenge('client',send=lambda *a:{**valid,**patch_value},clock=lambda:1000)
+            with self.assertRaises(RuntimeError):cloud_identity.challenge('client',send=lambda *a:{**valid,'devicePublicKey':a[2]['devicePublicKey'],**patch_value},clock=lambda:1000)
     def test_server_and_backend_wiring_never_use_api_provider(self):
         source=(test_safety.ROOT/'server.py').read_text(encoding='utf-8')
         self.assertIn('REGISTRY.authenticated(identity,get_community_session)',source)
