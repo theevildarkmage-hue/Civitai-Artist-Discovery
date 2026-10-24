@@ -26,6 +26,14 @@ class RegistryTests(unittest.TestCase):
         now[0]+=1;self.assertTrue(client.authenticated({'id':7},lambda:'synthetic-token'));self.idle(client)
         self.assertEqual(len(calls),2)
 
+    def test_successful_reauthentication_releases_old_failure_delay(self):
+        calls=[];client=RegistryClient('3.0.0-beta.4',send=lambda *args:(calls.append(True) or {'apiVersion':1,'registered':True}))
+        client.authenticated({'id':7},lambda:'synthetic-read');self.idle(client)
+        self.assertFalse(client.authenticated({'id':7},lambda:'synthetic-read'))
+        client.reauthenticated({'id':7})
+        self.assertTrue(client.authenticated({'id':7},lambda:'synthetic-read'));self.idle(client)
+        self.assertEqual(len(calls),2)
+
     def test_no_anonymous_or_invalid_identity_registration(self):
         client=RegistryClient('3.0.0-beta.1',send=lambda *args:self.fail('Unexpected network'))
         for identity in ({},{'id':True},{'id':0},{'id':-1},{'id':'7'}):

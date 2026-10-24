@@ -265,14 +265,13 @@ class Callback(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_): return
 
 
-def login(timeout: int = 300) -> dict:
+def _authorize_tokens(requested_scope: int, timeout: int = 300) -> dict:
     verifier = secrets.token_urlsafe(64)[:96]
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     state = secrets.token_urlsafe(32)
     # Signing in is required and the app's whole point is following and reacting, so
     # it asks for those once, on Civitai's consent screen, rather than a second
     # in-app switch the user has to find.
-    requested_scope = READ_SCOPE | USER_WRITE | COLLECTIONS_READ | COLLECTIONS_WRITE | SOCIAL_WRITE
     active = client_id()
     if not active:
         raise OAuthSetupError("No Civitai application is set up yet. Register one on Civitai "
@@ -301,11 +300,80 @@ def login(timeout: int = 300) -> dict:
     tokens = _post("token", {"grant_type": "authorization_code", "code": result["code"], "code_verifier": verifier,
         "client_id": active, "redirect_uri": REDIRECT_URI})
     tokens["expires_at"] = int(time.time()) + int(tokens.get("expires_in", 3600)); tokens["client_id"] = active
-    identity = _userinfo(tokens["access_token"])
+    return tokens
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*args,**kwargs):
+        raise OAuthSetupError('Civitai identity authorization redirected unexpectedly.')
+
+
+def _is_identity_scope(scope) -> bool:
+    # Civitai serializes OAuth scope as a singleton string array as well as a
+    # scalar. Accept only the exact read grant, never additional array entries.
+    if isinstance(scope,list):
+        if len(scope)!=1:return False
+        scope=scope[0]
+    return type(scope) in (str,int) and str(scope)==str(READ_SCOPE)
+
+
+def _verify_identity_grant(tokens: dict, expected_id: int) -> dict:
+    """Validate the separate read-only grant directly with Civitai, never Supabase."""
+    scope=tokens.get('scope')
+    if not _is_identity_scope(scope):
+        raise OAuthSetupError('Civitai did not issue the required read-only Community authorization.')
+    request=urllib.request.Request('https://civitai.com/api/v1/me',headers=HEADERS)
+    request.add_unredirected_header('Authorization','Bearer '+tokens['access_token'])
+    with urllib.request.build_opener(_NoRedirect()).open(request,timeout=20) as response:
+        raw=response.read(65537)
+        if len(raw)>65536:raise OAuthSetupError('Civitai identity response was oversized.')
+        verified=json.loads(raw)
+    identity=_userinfo(tokens['access_token'])
+    if (verified.get('tokenScope')!=READ_SCOPE or verified.get('subject',{}).get('type')!='oauth'
+        or int(verified.get('id') or 0)!=expected_id or int(identity.get('sub') or identity.get('id') or 0)!=expected_id):
+        raise OAuthSetupError('Community authorization identity or permissions did not match.')
+    tokens['scope']=READ_SCOPE
+    tokens['identity']={'id':expected_id,'username':identity.get('preferred_username') or identity.get('username')}
+    return tokens
+
+
+def login(timeout: int = 300) -> dict:
+    # Separate provider grants: write access stays local, only the read grant may
+    # leave this computer for the hosted identity/Community service.
+    tokens=_authorize_tokens(READ_SCOPE | USER_WRITE | COLLECTIONS_READ | COLLECTIONS_WRITE | SOCIAL_WRITE,timeout)
+    identity=_userinfo(tokens['access_token'])
     identity_id=int(identity.get('id') or identity.get('sub') or 0)
     if identity_id<=0:raise OAuthSetupError('Civitai did not return a verifiable account identity.')
-    tokens["identity"] = {"id": identity_id, "username": identity.get("username") or identity.get('preferred_username')}
-    _save(tokens); return tokens["identity"]
+    tokens['identity']={'id':identity_id,'username':identity.get('username') or identity.get('preferred_username')}
+    restricted=_authorize_tokens(READ_SCOPE,timeout)
+    tokens['community_identity']=_verify_identity_grant(restricted,identity_id)
+    with _REFRESH_LOCK:_save(tokens)
+    return tokens['identity']
+
+
+def get_community_access_token() -> str:
+    """Never fall back to the write-capable primary grant, including old profiles."""
+    with _REFRESH_LOCK:
+        primary=_load();grant=primary.get('community_identity');active=client_id()
+        if (primary.get('reauth_required') or not isinstance(grant,dict) or grant.get('reauth_required')
+            or not active or primary.get('client_id')!=active or grant.get('client_id')!=active
+            or grant.get('scope')!=READ_SCOPE or grant.get('identity',{}).get('id')!=primary.get('identity',{}).get('id')):
+            raise OAuthReauthenticationRequired('Sign in again to authorize the secure Community connection.')
+        if int(grant.get('expires_at',0))<=int(time.time())+120:
+            try:
+                refreshed=_post('token',{'grant_type':'refresh_token','refresh_token':grant['refresh_token'],'client_id':active})
+                candidate={**grant,**refreshed,'expires_at':int(time.time())+int(refreshed.get('expires_in',3600))}
+                # Scope must be explicit on every issuer response; no silent grant widening.
+                if not _is_identity_scope(refreshed.get('scope')):
+                    raise OAuthReauthenticationRequired('Community authorization permissions changed. Sign in again.')
+                grant=_verify_identity_grant(candidate,primary['identity']['id'])
+            except (OAuthReauthenticationRequired,OAuthSetupError):
+                primary['community_identity']={**grant,'reauth_required':True};_save(primary)
+                raise OAuthReauthenticationRequired('Sign in again to reconnect Community securely.') from None
+            except Exception:
+                raise OAuthTemporarilyUnavailable('Community identity verification is temporarily unavailable.') from None
+            primary['community_identity']=grant;_save(primary)
+        return grant['access_token']
 
 
 # Civitai rotates the refresh token: redeeming one invalidates it. The gallery makes
@@ -450,6 +518,10 @@ def disconnect() -> None:
         # it on a compliant server, but both are sent because that is not guaranteed.
         _revoke(tokens.get("refresh_token") or "", "refresh_token", client)
         _revoke(tokens.get("access_token") or "", "access_token", client)
+        restricted=tokens.get('community_identity',{})
+        if isinstance(restricted,dict) and restricted.get('client_id')==client:
+            _revoke(restricted.get('refresh_token') or '', 'refresh_token', client)
+            _revoke(restricted.get('access_token') or '', 'access_token', client)
     if _uses_dpapi():
         for path in {TOKEN_PATH, LEGACY_TOKEN_PATH}:
             if path.exists(): path.unlink()

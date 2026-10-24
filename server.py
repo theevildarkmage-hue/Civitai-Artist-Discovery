@@ -51,7 +51,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Discovery 3.0 Beta"
-APP_VERSION = "3.0.0-beta.3"
+APP_VERSION = "3.0.0-beta.4"
 from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
 DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
@@ -909,7 +909,8 @@ def start_oauth_login() -> None:
         OAUTH_JOB.update({"state": "loading", "error": None})
     def run():
         try:
-            oauth_login()
+            identity=oauth_login()
+            REGISTRY.reauthenticated(identity)
             # Mirror the account's Content Controls straight away, so the first gallery
             # after signing in already respects them. A failure here must not fail the
             # sign-in: the filter is a refinement, not the point of connecting.
@@ -1335,11 +1336,11 @@ class Handler(BaseHTTPRequestHandler):
                 # refresh it, so an idle app would sit until the authorization expired and
                 # the next action failed. The page polls this, so the session stays alive
                 # while someone is reading rather than dying underneath them.
-                from discovery.oauth import session_status, get_access_token
+                from discovery.oauth import session_status, get_community_access_token
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
                 identity=session_status()
                 if identity.get('connected') and not identity.get('needsReauthentication'):
-                    REGISTRY.authenticated(identity,get_access_token)
+                    REGISTRY.authenticated(identity,get_community_access_token)
                 self.json_response({**identity, "oauthJob": job})
             except Exception:
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)

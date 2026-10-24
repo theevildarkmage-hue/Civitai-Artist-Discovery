@@ -34,7 +34,7 @@ def run_gallery(edge,member,seed,creators,sql,scratch,output,get_service,start_s
         except urllib.error.HTTPError as error:
             value=json.load(error);raise CommunityError(value.get('code','UNAVAILABLE'),error.code)
         except OSError:raise CommunityError('UNAVAILABLE',503)
-    client.backend=SupabaseCommunityBackend('https://local-test.supabase.co/functions/v1/community-v1',fetch=transport)
+    client.backend=SupabaseCommunityBackend('https://local-test.supabase.co/functions/v1/community-v1',fetch=transport,identity_token_provider=lambda:member(70,expired=expired))
     server.COMMUNITY=client
     http=ThreadingHTTPServer(('127.0.0.1',0),server.Handler);server.RUNNING_PORT=http.server_port
     base=f'http://127.0.0.1:{http.server_port}'

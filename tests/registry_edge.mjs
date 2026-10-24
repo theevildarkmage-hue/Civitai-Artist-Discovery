@@ -1,3 +1,4 @@
+import {identityTransport} from './community_identity_transport.mjs';
 // Real Edge handler with bounded synthetic upstream; native tests cover real SQL.
 import assert from 'node:assert/strict';
 import {createCommunityHandler} from '../supabase/functions/community-v1/handler.ts';
@@ -10,8 +11,8 @@ const transport=async(url,options)=>{
  if(name==='community_registry_upsert')return Response.json({apiVersion:1,registered:true});
  throw Error('Unexpected Community RPC');
 };
-const ordinary=createCommunityHandler({invitationOnly:true,fetch:transport});
-const restricted=createCommunityHandler({invitationOnly:true,ownerOnly:true,fetch:transport});
+const ordinary=createCommunityHandler({invitationOnly:true,fetch:identityTransport(transport)});
+const restricted=createCommunityHandler({invitationOnly:true,ownerOnly:true,fetch:identityTransport(transport)});
 async function call(extra={},operation='register'){
  const response=await (ownerMode?restricted:ordinary)(new Request('https://fixture.invalid',{method:'POST',headers:{Authorization:'Bearer synthetic','Content-Type':'application/json'},body:JSON.stringify({apiVersion:1,operation,...(operation==='register'?{appVersion:'3.0.0-beta.1',platform:'Linux'}:{}),...extra})}));return response.json();
 }

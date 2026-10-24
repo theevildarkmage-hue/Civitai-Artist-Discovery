@@ -12,6 +12,11 @@ class RegistryClient:
         self.version=version
         self.clock=clock;self.send=send;self.lock=threading.Lock();self.due={};self.active=False
 
+    def reauthenticated(self,identity):
+        # A newly obtained restricted grant can repair an earlier auth failure.
+        # SQL still enforces the12h write interval; this only releases local retry delay.
+        with self.lock:self.due.pop(identity.get('id'),None)
+
     def authenticated(self,identity,token_provider):
         # A background launch alone never enters this path. This ID only scopes
         # the local retry budget; the hosted handler independently verifies it.

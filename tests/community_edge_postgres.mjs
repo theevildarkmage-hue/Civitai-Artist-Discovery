@@ -1,3 +1,4 @@
+import {identityTransport} from './community_identity_transport.mjs';
 // Real handler + real PostgreSQL RPCs via a narrow test SQL adapter.
 // Civitai UserInfo/artwork transport is synthetic; no PostgREST/Deno deployment claim.
 import assert from 'node:assert/strict';
@@ -62,6 +63,7 @@ globalThis.fetch=async(url,options={})=>{
 // Exercise multi-member database invariants through the shared handler. The
 // deployed entry point intentionally allows only the staging owner; its hardcoded
 // boundary is covered independently by community_owner_gate.mjs.
+globalThis.fetch=identityTransport(globalThis.fetch);
 const {createCommunityHandler}=await import('../supabase/functions/community-v1/handler.ts');
 handler=createCommunityHandler();
 async function request(operation,fields={},token='isolated-member-0') {

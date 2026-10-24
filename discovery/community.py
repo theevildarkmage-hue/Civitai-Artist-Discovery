@@ -173,7 +173,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def bounded_json(url, token=None, body=None):
-    headers = {"Accept": "application/json", "User-Agent": "CivitaiDiscoveryBeta/3.0.0-beta.3"}
+    headers = {"Accept": "application/json", "User-Agent": "CivitaiDiscoveryBeta/3.0.0-beta.4"}
     if token:
         if not isinstance(token, str) or len(token) > 8192 or any(c.isspace() for c in token):
             raise CommunityError("AUTH_EXPIRED", 401)
@@ -469,14 +469,20 @@ class LocalCommunityBackend:
 
 
 class SupabaseCommunityBackend:
-    def __init__(self, url, fetch=bounded_json):
+    def __init__(self, url, fetch=bounded_json, *, identity_token_provider=None):
         if not re.fullmatch(r"https://[a-z0-9-]+\.supabase\.co/functions/v1/community-v1", url or ""):
             raise ValueError("Use the HTTPS community-v1 Edge Function URL")
         self.url, self.fetch = url, fetch
+        self.identity_token_provider = identity_token_provider
 
     def request(self, operation, token, payload):
         try:
-            value = self.fetch(self.url, token, {"apiVersion": 1, "operation": operation, **payload})
+            if self.identity_token_provider is None:raise CommunityError('AUTH_REQUIRED',401)
+            from .oauth import OAuthReauthenticationRequired,OAuthTemporarilyUnavailable
+            try:restricted=self.identity_token_provider()
+            except OAuthReauthenticationRequired:raise CommunityError('AUTH_EXPIRED',401) from None
+            except OAuthTemporarilyUnavailable:raise CommunityError('UNAVAILABLE',503) from None
+            value = self.fetch(self.url, restricted, {"apiVersion": 1, "operation": operation, **payload})
         except CommunityError:
             raise
         if not isinstance(value, dict) or value.get("apiVersion") != 1:
@@ -677,7 +683,8 @@ def build_community(data_root, profile_provider, token_provider):
         verifier.live_verifier=CivitaiVerifier(token_provider=token_provider)
     if mode == "supabase":
         from .community_beta import BETA_ENDPOINT
-        backend = SupabaseCommunityBackend(BETA_ENDPOINT if getattr(sys,'frozen',False) else os.environ.get("CAD_COMMUNITY_URL"))
+        from .oauth import get_community_access_token
+        backend = SupabaseCommunityBackend(BETA_ENDPOINT if getattr(sys,'frozen',False) else os.environ.get("CAD_COMMUNITY_URL"),identity_token_provider=get_community_access_token)
     else:
         backend = LocalCommunityBackend(Path(data_root) / "community" / ("fixtures.sqlite3" if fixture else "local.sqlite3"), verifier)
         if fixture:

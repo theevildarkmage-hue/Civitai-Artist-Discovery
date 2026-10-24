@@ -56,7 +56,7 @@ def transport(url,token,payload):
     except OSError:raise CommunityError('UNAVAILABLE',503)
 identity=config['creator']
 verifier=CivitaiVerifier(fetch=metadata,token_provider=access)
-client=CommunityClient(SupabaseCommunityBackend(os.environ['CAD_COMMUNITY_URL'],fetch=transport),verifier,access,
+client=CommunityClient(SupabaseCommunityBackend(os.environ['CAD_COMMUNITY_URL'],fetch=transport,identity_token_provider=access),verifier,access,
     lambda token:ContentProfile(levels=frozenset(server.SETTINGS.load()['browsingLevels'])))
 client.mode='supabase';client.identity_provider=lambda:identity['id']
 client.store=MetadataCache(data/'cache/community-metadata.sqlite3')

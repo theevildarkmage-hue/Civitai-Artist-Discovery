@@ -1,3 +1,4 @@
+import {identityTransport} from './community_identity_transport.mjs';
 // Node 24: node --experimental-transform-types tests/community_edge.mjs
 // Executes the real Edge handler with isolated upstream/DB transport fixtures.
 import assert from 'node:assert/strict';
@@ -35,6 +36,7 @@ globalThis.fetch = async (url, options={}) => {
   throw Error('Unexpected network destination');
 };
 // Retained bounded-owner contract; invitation entry point has separate tests.
+globalThis.fetch=identityTransport(globalThis.fetch);
 const {createCommunityHandler}=await import('../supabase/functions/community-v1/handler.ts');
 handler=createCommunityHandler({ownerOnly:true});
 async function request(body, token='synthetic-test-token') {
