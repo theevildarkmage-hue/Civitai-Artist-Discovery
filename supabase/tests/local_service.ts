@@ -12,6 +12,7 @@ for(const value of [issuer,database]) {
 const transport:typeof fetch=(input,options)=>{
   const url=String(input);
   if(url==='https://auth.civitai.com/api/auth/oauth/userinfo') return fetch(live?url:issuer+'/userinfo',options);
+  if(url==='https://civitai.com/api/v1/me')return fetch(live?url:issuer+'/api/v1/me',options);
   if(url.startsWith('https://civitai.red/api/')) return fetch(live?url:issuer+new URL(url).pathname+new URL(url).search,options);
   if(url.startsWith(database+'/rest/v1/rpc/')) return fetch(url.replace('/rest/v1/','/'),options);
   throw Error('Unapproved test transport destination');

@@ -1,10 +1,11 @@
+import {identityTransport} from './community_identity_transport.mjs';
 // Local adversarial transport fixtures; no live identity or database claims.
 import assert from 'node:assert/strict';
 import {createCommunityHandler} from '../supabase/functions/community-v1/handler.ts';
 let settings={}, member=7, invalid=false, rpc=[];
 globalThis.Deno={env:{get:n=>({SUPABASE_URL:'https://fixture.invalid',
   SUPABASE_SERVICE_ROLE_KEY:'synthetic-only',COMMUNITY_ALLOWED_RATINGS:'1,2',...settings}[n])}};
-const handler=createCommunityHandler({ownerOnly:true,ipLimit:1000,fetch:async(url,options)=>{
+const handler=createCommunityHandler({ownerOnly:true,ipLimit:1000,fetch:identityTransport(async(url,options)=>{
   if(url.includes('/rpc/')) {
     const name=url.split('/').at(-1);rpc.push({name,args:JSON.parse(options.body)});
     if(name==='community_take_rate')return new Response(null,{status:204});
@@ -14,7 +15,7 @@ const handler=createCommunityHandler({ownerOnly:true,ipLimit:1000,fetch:async(ur
   if(url.includes('/api/v1/images'))return Response.json({items:[{id:123,type:'image',username:'Artist',browsingLevel:1,url:'https://image.civitai.com/test.jpeg'}]});
   if(url.includes('/image.get'))return Response.json({result:{data:{json:{id:123,user:{id:42,username:'Artist'},availability:'Public',ingestion:'Scanned',publishedAt:'2026-01-01T00:00:00Z',nsfwLevel:1}}}});
   throw Error('Unexpected fixture destination');
-}});
+})});
 const valid=()=>({COMMUNITY_BETA_STATE:'owner_test',COMMUNITY_TEST_OWNER_ID:'7',COMMUNITY_OWNER_TEST_EXPIRES_AT:new Date(Date.now()+20*60*1000).toISOString()});
 let checks=0;
 async function check(expected,{operation='recommend',extra={},headers={},query='',auth=true}={}) {

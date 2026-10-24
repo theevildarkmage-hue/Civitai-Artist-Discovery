@@ -1,3 +1,4 @@
+import {identityTransport} from './community_identity_transport.mjs';
 // Actual candidate entry point, synthetic Civitai/SQL transport only.
 import assert from 'node:assert/strict';
 let handler,member=7,state='enabled',admitted=true,blocked=false,invalid=false,candidates=[],calls=[],fault='';
@@ -24,6 +25,7 @@ globalThis.fetch=async(url,options={})=>{
   if(url.includes('/image.get'))return Response.json({result:{data:{json:{id:123,user:{id:fault==='owner'?43:42,username:'Artist'},availability:'Public',ingestion:'Scanned',publishedAt:'2026-01-01T00:00:00Z',nsfwLevel:fault==='rating'?16:1}}}});
   throw Error('Unexpected transport');
 };
+globalThis.fetch=identityTransport(globalThis.fetch);
 await import('../supabase/functions/community-v1/index.ts');
 let checks=0;
 async function check(expected,operation='status',extra={},headers={}) {

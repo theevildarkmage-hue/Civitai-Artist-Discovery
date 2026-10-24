@@ -9,7 +9,7 @@ from discovery.community import CommunityError, SupabaseCommunityBackend
 def run():
     if os.environ.get('CAD_ALLOW_ISOLATED_EDGE_TESTS')!='1':
         print('SKIP: isolated Edge Function and Civitai test-account credentials required');return
-    backend=SupabaseCommunityBackend(os.environ.get('CAD_TEST_COMMUNITY_URL'))
+    backend=SupabaseCommunityBackend(os.environ.get('CAD_TEST_COMMUNITY_URL'),identity_token_provider=lambda:os.environ['CAD_TEST_CIVITAI_TOKEN'])
     token=os.environ.get('CAD_TEST_CIVITAI_TOKEN')
     if not token:raise RuntimeError('Provide a test-account access token through the environment')
     status=backend.request('status',token,{})

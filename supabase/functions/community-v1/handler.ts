@@ -151,14 +151,6 @@ async function artwork(image: number, token: string): Promise<number> {
 return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
   let admitted=false;
   try {
-    const now=Date.now(), peer=info?.remoteAddr?.hostname || 'unknown';
-    for(const [key,value] of ingress) if(now-value.started>=ipWindowMs) ingress.delete(key);
-    let bucket=ingress.get(peer);
-    if(!bucket) {
-      if(ingress.size>=2048) fail('RATE_LIMITED');
-      bucket={started:now,count:0}; ingress.set(peer,bucket);
-    }
-    if(++bucket.count>ipLimit) fail('RATE_LIMITED');
     // No browser OAuth transport. Peer identity comes from the runtime, never XFF.
     if(request.headers.has('Origin')) fail('FORBIDDEN');
     if(active>=maxConcurrent) fail('UNAVAILABLE');
@@ -171,11 +163,19 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     if(length && (!/^\d+$/.test(length) || Number(length)>8192)) fail('INVALID_REQUEST');
     const body=await readJSON(new Response(request.body),8192);
     if(!body || typeof body!=='object' || Array.isArray(body) || body.apiVersion!==1 || typeof body.operation!=='string') fail('INVALID_REQUEST');
-    // Shared PostgreSQL bucket bounds upstream amplification across instances.
-    // It does not cap billed Edge invocations or replace provider usage alerts.
-    if(distributedLimit) await rpc('community_take_rate',{p_key:'project:community'});
+    // No attacker-chargeable project quota: unverified callers must not exhaust
+    // another member's budget. Concurrency and per-credential admission bound work.
     const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token));
     const digest=Array.from(new Uint8Array(hash),n=>n.toString(16).padStart(2,'0')).join('');
+    const now=Date.now();
+    for(const [key,value] of ingress) if(now-value.started>=ipWindowMs)ingress.delete(key);
+    let bucket=ingress.get(digest);
+    if(!bucket) {
+      // Eviction bounds memory; a full map must never lock out unrelated credentials.
+      if(ingress.size>=2048)ingress.delete(ingress.keys().next().value!);
+      bucket={started:now,count:0};ingress.set(digest,bucket);
+    }
+    if(++bucket.count>ipLimit)fail('RATE_LIMITED');
     await rpc('community_take_rate',{p_key:`token:${digest}`});
     // No session cache: revocation and expiration take effect on the next request.
     const member=await upstream('https://auth.civitai.com/api/auth/oauth/userinfo',token);
@@ -184,6 +184,9 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     catch {return reply({apiVersion:1,code:'AUTH_EXPIRED',error:messages.AUTH_EXPIRED},401);}
     const username=member.preferred_username||member.username;
     if(typeof username!=='string' || username.length<1 || username.length>200) fail('AUTH_EXPIRED');
+    // Independently confirm least privilege; caller-supplied scope/identity is ignored.
+    const grant=await upstream('https://civitai.com/api/v1/me',token);
+    if(grant?.tokenScope!==33 || grant?.subject?.type!=='oauth' || id(grant?.id)!==memberId)fail('AUTH_EXPIRED');
     await rpc('community_take_rate',{p_key:`member:${memberId}`});
 
     // The staging entry point fixes this option in code, never in a request.

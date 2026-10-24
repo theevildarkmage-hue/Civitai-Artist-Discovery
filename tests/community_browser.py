@@ -2,6 +2,7 @@
 
 import test_safety  # Fail closed before any test network request.
 import json
+import re
 import os
 from pathlib import Path
 import socket
@@ -41,7 +42,7 @@ def run(mode):
                 try:request('/api/history/config');break
                 except OSError as error:last_error=error;time.sleep(.1)
             else:raise AssertionError(f'Server readiness failed: {last_error}')
-            assert request('/api/history/config')['version']==__import__('server').APP_VERSION
+            assert request('/api/history/config')['version']==re.search(r'^APP_VERSION = "([^"]+)"',(ROOT/'server.py').read_text(encoding='utf-8'),re.M).group(1)
             assert request('/api/auth-status')['connected'] is False
             if mode=='offline':
                 try:request('/api/community/status');raise AssertionError('offline accepted')
