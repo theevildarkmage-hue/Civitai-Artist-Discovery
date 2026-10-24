@@ -55,7 +55,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
             assert page.locator("#updateChecks").is_checked()
             assert page.locator("#captureCoverage").input_value()=="X"
             assert page.locator("#captureInterval").input_value()=="12"
-            assert not page.locator("#lanEnabled").is_checked()
+            assert not page.locator("#allowLanAccess").is_checked()
+            page.locator("#allowLanAccess").check()
+            page.locator("#lanRestartDialog").wait_for(state="visible")
+            page.locator("#lanRestartCancel").click()
+            assert not page.locator("#allowLanAccess").is_checked()
+            assert page.locator("#lanLinks").count()==0
             page.locator("#captureEnabled").uncheck()
             page.locator("#captureNextRun", has_text="Off").wait_for()
             assert page.locator("#captureNextRun").inner_text() == "Off"

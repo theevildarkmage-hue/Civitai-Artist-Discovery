@@ -26,7 +26,6 @@ import webbrowser
 import traceback
 from discovery.community import (build_community, CommunityError, ContentProfile)
 from discovery.cache import ThumbnailCache
-from discovery.lan import LanAccess, loopback, private_address
 
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
@@ -66,7 +65,6 @@ FOLLOW_CACHE = DATA_ROOT / "following.json"
 CREATOR_PROFILES = DATA_ROOT / "cache" / "creator_profiles.json"
 SETTINGS = AppSettings(DATA_ROOT / "settings.json")
 INITIAL_SETTINGS = SETTINGS.load()
-LAN = LanAccess()
 HISTORY = HistoryArchive(DATA_ROOT / "history", INITIAL_SETTINGS["contentRating"],
                          INITIAL_SETTINGS["browsingLevels"])
 TASTE = TasteStore(DATA_ROOT / "discovery")
@@ -1057,9 +1055,41 @@ def claim_single_instance(no_browser: bool, replacing: bool = False) -> bool:
     return False
 
 
+def lan_addresses() -> list[str]:
+    """Return this computer's own network addresses, for reaching the app from a phone.
+
+    The route lookup is asked first and answered alone when it succeeds: a machine with
+    virtual adapters (VMware, Hyper-V, WSL) also owns addresses no other device on the
+    network can reach, and listing those alongside the real one only invites typing the
+    wrong one. Nothing is sent; connecting a UDP socket just resolves the route.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 53))  # Reserved documentation address.
+            address = probe.getsockname()[0]
+        if not address.startswith("127."):
+            return [address]
+    except OSError:
+        pass
+    try:
+        found = {entry[4][0] for entry in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
+    except (OSError, UnicodeError):
+        return []
+    return sorted(value for value in found if not value.startswith("127."))
+
+
 def is_own_address(hostname: str | None) -> bool:
-    """Loopback identities used by the local launcher, never remote peers."""
-    return (hostname or '').lower().rstrip('.') in {'127.0.0.1','localhost','::1'}
+    """Decide whether a Host or Origin header names this computer.
+
+    Both the DNS-rebinding guard and the cross-site guard ask this one question, so they
+    cannot drift apart and leave one of them accepting an address the other refuses.
+    Enabling LAN access widens it to this computer's own network addresses and no
+    further: a name that merely resolves to one of them is still a stranger.
+    """
+    host = (hostname or "").lower().rstrip(".")
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return True
+    return bool(host) and SETTINGS.load()["allowLanAccess"] and host in set(lan_addresses())
 
 
 def is_own_app_url(url: str) -> bool:
@@ -1072,7 +1102,7 @@ def is_own_app_url(url: str) -> bool:
     host = (parsed.hostname or "").lower()
     if parsed.scheme != "http" or not port:
         return False
-    return is_own_address(host)
+    return host in {"127.0.0.1", "localhost", "::1"} or host in set(lan_addresses())
 
 
 def save_instance_url(url: str) -> None:
@@ -1134,31 +1164,7 @@ class Handler(BaseHTTPRequestHandler):
             hostname = urllib.parse.urlsplit(f"//{self.headers.get('Host') or ''}").hostname
         except ValueError:
             return False
-        if loopback(self.client_address[0]) and is_own_address(hostname):return True
-        return (SETTINGS.load()['allowLanAccess'] and self.server.server_address[0]=='0.0.0.0'
-                and hostname in LAN.addresses
-                and (private_address(self.client_address[0]) or loopback(self.client_address[0])))
-
-    def lan_guard(self,path,*,post=False):
-        if loopback(self.client_address[0]):return True
-        if path=='/api/lan/pair' and post:return True
-        if not post and path=='/lan-login.js':return True
-        if not post and path=='/' and not LAN.paired(self.headers):
-            try:body=(STATIC/'lan.html').read_bytes()
-            except OSError:
-                self.send_error(503);return
-            self.send_response(200)
-            self.send_header('Content-Type','text/html; charset=utf-8')
-            self.send_header('Content-Length',str(len(body)))
-            self.send_header('Cache-Control','no-store')
-            self.send_header('Referrer-Policy','no-referrer')
-            self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
-            self.end_headers();self.wfile.write(body);return False
-        local_only=(path.startswith(('/api/lan/','/api/oauth/','/api/app/','/api/update/','/api/development/','/__dev/'))
-                    or path in ('/api/discovery/reset','/api/test-isolation'))
-        if local_only or not LAN.paired(self.headers):
-            self.send_error(403);return False
-        return True
+        return is_own_address(hostname)
 
     def internal_error(self, context: str, error: BaseException) -> None:
         log_internal_error(context, error)
@@ -1194,12 +1200,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.startswith('/') or self.path.startswith('//'):
             self.send_error(400); return
         parsed = urllib.parse.urlparse(self.path)
-        if not self.lan_guard(parsed.path):return
         query = urllib.parse.parse_qs(parsed.query)
         if getattr(sys,'frozen',False) and (parsed.path.startswith(('/__dev/','/api/community/development/')) or parsed.path in ('/api/test-isolation','/community-fixture.svg')):
             self.send_error(404);return
-        if parsed.path=='/api/lan/status':
-            self.json_response({'enabled':SETTINGS.load()['allowLanAccess'],'listening':self.server.server_address[0]=='0.0.0.0','links':LAN.links(RUNNING_PORT) if SETTINGS.load()['allowLanAccess'] else []});return
         if parsed.path=='/api/community/beta':
             from discovery.community_beta import configuration
             self.json_response(configuration(DATA_ROOT));return
@@ -1352,7 +1355,7 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response({**SETTINGS.load(), "siteOrigin": SITE_ORIGIN,
                 "ratings": ["Soft", "Mature", "X"],
                 "browsingLevelOptions": [1, 2, 4, 8, 16],
-                "lanAddresses": []})
+                "lanAddresses": lan_addresses()})
             return
         if parsed.path == "/api/update/status":
             enabled = SETTINGS.load()["checkForUpdates"]
@@ -1822,12 +1825,10 @@ class Handler(BaseHTTPRequestHandler):
         from discovery.community_security import authorize_test
         authorize_test(self.headers, DATA_ROOT)
         origin = self.headers.get("Origin")
-        if not origin and not loopback(self.client_address[0]):
-            raise PermissionError("Network requests require a same-origin browser")
         if origin:
             parsed = urllib.parse.urlsplit(origin)
             expected = urllib.parse.urlsplit(f"http://{self.headers.get('Host') or ''}")
-            if (parsed.scheme != "http" or not (is_own_address(parsed.hostname) or (SETTINGS.load()["allowLanAccess"] and parsed.hostname in LAN.addresses))
+            if (parsed.scheme != "http" or not is_own_address(parsed.hostname)
                     or parsed.hostname != expected.hostname or parsed.port != expected.port
                     or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
                 raise PermissionError("Request origin is not allowed")
@@ -1862,13 +1863,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.host_allowed() or not browser_request_allowed(self.headers):
             self.send_error(403); return
         parsed = urllib.parse.urlparse(self.path)
-        if not self.lan_guard(parsed.path,post=True):return
         try:
             body = self.request_json()
-            if parsed.path=='/api/lan/pair':
-                if not SETTINGS.load()['allowLanAccess'] or not LAN.accept(body.get('key')):
-                    self.send_error(403);return
-                self.json_response({'paired':True},headers={'Set-Cookie':LAN.pair_cookie()});return
             if getattr(sys,'frozen',False) and parsed.path.startswith(('/__dev/','/api/community/development/')):
                 self.send_error(404);return
             if parsed.path=='/api/community/beta':
@@ -1936,13 +1932,10 @@ class Handler(BaseHTTPRequestHandler):
                 with OAUTH_LOCK: OAUTH_JOB.update({"state": "idle", "error": None})
                 self.json_response({"connected": False}); return
             if parsed.path == "/api/settings":
-                if 'allowLanAccess' in body and not loopback(self.client_address[0]):
-                    raise PermissionError('Network sharing can only be changed on this computer')
                 content_change = ("browsingLevels" in body or "contentRating" in body)
                 gallery_change = any(name in body for name in (
                     "hideHighVolumeCreators", "highVolumeThreshold",
                     "emergingReactionMode", "emergingReactionLimit", "mediaType"))
-                previous_lan=SETTINGS.load()["allowLanAccess"]
                 value = SETTINGS.transactional_update(
                                         effect=(lambda value: HISTORY.set_content_filter(value["browsingLevels"])) if content_change else None,
                                         media_type_value=body.get("mediaType"),
@@ -1954,8 +1947,7 @@ class Handler(BaseHTTPRequestHandler):
                                         high_volume_threshold_value=body.get("highVolumeThreshold"),
                                         emerging_reaction_mode_value=body.get("emergingReactionMode"),
                                         emerging_reaction_limit_value=body.get("emergingReactionLimit"),
-                                        allow_lan_access_value=body.get("allowLanAccess") if loopback(self.client_address[0]) else None)
-                if previous_lan!=value["allowLanAccess"]:LAN.rotate()
+                                        allow_lan_access_value=body.get("allowLanAccess"))
                 if content_change or gallery_change:
                     with WRITE_LOCK:
                         ORDER_CACHE.clear()
@@ -2335,7 +2327,8 @@ def main() -> None:
     actual_port = server.server_address[1]
     global RUNNING_PORT
     RUNNING_PORT = actual_port
-    url = f"http://127.0.0.1:{actual_port}"
+    addresses = lan_addresses() if bind_host == "0.0.0.0" else []
+    url = f"http://{addresses[0]}:{actual_port}" if addresses else f"http://127.0.0.1:{actual_port}"
     save_instance_url(url)
     UPDATES.schedule_success_cleanup()
     # Only starts a worker when the preference is on; otherwise nothing runs.
@@ -2343,6 +2336,10 @@ def main() -> None:
         CAPTURE.start()
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
+    if bind_host == "0.0.0.0":
+        print(f"LAN access is ON: other devices on your network can reach this app at {url}. "
+              "Anyone who can reach that address can use the app, including follow/react "
+              "actions. Turn this off in Settings if you do not want that.")
     tray = None
     if not args.no_browser:
         try:
