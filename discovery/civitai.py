@@ -79,16 +79,22 @@ class RequestLane:
         self.lock = threading.RLock()
         self.pacer = AdaptivePacer()
         self.last_request = 0.0
+        self.not_before = 0.0
 
     def wait(self, minimum_interval: float | None = None) -> float:
         """Sleep until the lane is free to send again; returns how long that took."""
         interval = max(self.pacer.interval, minimum_interval or 0.0)
-        remaining = interval - (time.monotonic() - self.last_request)
+        remaining = max(self.last_request + interval, self.not_before) - time.monotonic()
         if remaining > 0:
             started = time.monotonic()
             time.sleep(remaining)
             return time.monotonic() - started
         return 0.0
+
+    def defer(self, seconds: float) -> None:
+        """Share a bounded upstream 429 pause without owning all retry sleeps."""
+        with self.lock:
+            self.not_before=max(self.not_before,time.monotonic()+max(0,min(602,seconds)))
 
 
 # Shared by the collection engine and every background sweep in this process.

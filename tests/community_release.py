@@ -173,7 +173,9 @@ def run(*,sql,env,output,api,register):
     sql('delete from community_private.discovery_users where civitai_id=8890000010;')
     from owner_quota_postgres import run as owner_quota_acceptance
     owner_quota=owner_quota_acceptance(sql,output)
-    result={'passed':True,'checks':checks,'realPostgREST':True,'ownerAdministration':True,'hostedVerified':False,'ownerQuota':owner_quota}
+    from gallery_window_postgres import run as gallery_window_acceptance
+    gallery_window=gallery_window_acceptance(sql,output)
+    result={'passed':True,'checks':checks,'realPostgREST':True,'ownerAdministration':True,'hostedVerified':False,'ownerQuota':owner_quota,'galleryWindow':gallery_window}
     (output/'release-checks.json').write_text(json.dumps(result,indent=2));return {'passed':True,'checks':len(checks),'ownerAdministration':True}
 
 if __name__=='__main__':print('SKIP: run through owned native private-beta runner')

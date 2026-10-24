@@ -21,6 +21,7 @@ BASE_VERSIONS={'202610140001','202610150001','202610210001','202610220001'}
 def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_definitions=None):
     """No inference/auto-detection: requesting candidate always requires its objects."""
     if model not in ('baseline','candidate','release','automatic'):raise ValueError('Explicit catalog model required')
+    review_window=bool(migrations and any(m.get('version')=='202610240002' for m in migrations))
     candidate=model!='baseline';release=model in ('release','automatic');automatic=model=='automatic';checks=[]
     def check(name,value):checks.append({'name':name,'passed':bool(value)})
     def objects(kind):return matrix.get(kind) or []
@@ -69,6 +70,8 @@ def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_de
         expected['community_private.assert_member']='bigint, boolean'
     if release:expected.update({'public.community_registry_upsert':'bigint, text, text, text' if automatic else 'bigint, text, text, text, text',
                                'community_private.owner_admin':'text, bigint, text, timestamp with time zone'})
+    if review_window:
+        expected.update({'public.community_prepare_gallery':'bigint, bigint, integer','community_private.gallery_window':'bigint, integer'})
     check('exact routine inventory',{key(r) for r in objects('rpcs')}==set(expected) and len(objects('rpcs'))==len(expected))
     for row in objects('rpcs'):
         name=key(row);path=[c.replace(' ','') for c in row.get('configuration') or []]
@@ -77,7 +80,7 @@ def validate_catalog(matrix,model,*,owner='postgres',migrations=None,expected_de
         def permitted(role,field):
             if release and name=='public.community_registry_upsert':return role=='service_role'
             if name=='public.community_operator':return candidate and not release and role=='community_operator'
-            return role=='service_role' and name.startswith('public.') and row.get('name') in (RUNTIME_CANDIDATE if candidate else BASE_RPC)
+            return role=='service_role' and name.startswith('public.') and row.get('name') in ((RUNTIME_CANDIDATE|({'community_prepare_gallery'} if review_window else set())) if candidate else BASE_RPC)
         access(row,('execute',),permitted)
     schemas=objects('schemas')
     check('exact schema presence',{r.get('name') for r in schemas}==({'public','community_private'} if candidate else {'public'}) and len(schemas)==1+int(candidate))

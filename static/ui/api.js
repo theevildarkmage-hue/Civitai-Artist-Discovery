@@ -8,13 +8,18 @@ if (controlsChannel) controlsChannel.onmessage = ({data}) => {
     if (data.artistHidden) window.dispatchEvent(new Event('shared-artist-hidden'));
   }
 };
+export function finishControlChange(settings=null, artistHidden=false) {
+  controlsChannel?.postMessage({phase:'changed',settings,artistHidden});
+  window.dispatchEvent(new Event('community-controls-changed'));
+  if(artistHidden)window.dispatchEvent(new Event('shared-artist-hidden'));
+}
 export async function api(url, options = {}) {
   const controlChange = options.method === 'POST' && ['/api/settings', '/api/oauth/disconnect', '/api/oauth/client', '/api/content-controls/hide-artist', '/api/community/development/member'].includes(url);
   if (controlChange) {
     window.dispatchEvent(new Event('content-controls-changing'));
     controlsChannel?.postMessage({phase:'changing'});
   }
-  const { signal, timeoutMs = String(url).startsWith('/api/history/image?') ? 90000 : 60000, ...request } = options;
+  const { controlBatch=false, signal, timeoutMs = String(url).startsWith('/api/history/image?') ? 90000 : 60000, ...request } = options;
   const controller = new AbortController();
   let timedOut = false, settings = null, succeeded = false;
   const abort = () => controller.abort(signal?.reason);
@@ -39,11 +44,9 @@ export async function api(url, options = {}) {
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
-    if (controlChange) {
+    if (controlChange && !controlBatch) {
       const artistHidden = succeeded && url === '/api/content-controls/hide-artist';
-      controlsChannel?.postMessage({phase:'changed',settings,artistHidden});
-      window.dispatchEvent(new Event('community-controls-changed'));
-      if (artistHidden) window.dispatchEvent(new Event('shared-artist-hidden'));
+      finishControlChange(settings,artistHidden);
     }
   }
 }

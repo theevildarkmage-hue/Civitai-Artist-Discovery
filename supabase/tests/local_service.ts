@@ -20,7 +20,7 @@ const transport:typeof fetch=(input,options)=>{
 // A shortened ingress window keeps bounded stress tests fast. SQL member/token
 // counters and the production concurrency/body/timeout defaults are unchanged.
 const handler=createCommunityHandler({fetch:transport,ipLimit:200,ipWindowMs:1000,
-  invitationOnly:Deno.env.get('CAD_TEST_PRIVATE_BETA')==='1',distributedLimit:Deno.env.get('CAD_TEST_DISTRIBUTED_LIMIT')==='1'});
+  invitationOnly:Deno.env.get('CAD_TEST_PRIVATE_BETA')==='1',galleryWindow:Deno.env.get('CAD_TEST_GALLERY_WINDOW')==='1',distributedLimit:Deno.env.get('CAD_TEST_DISTRIBUTED_LIMIT')==='1'});
 Deno.serve({hostname:'127.0.0.1',port,onListen:()=>{}},async(request,info)=>{
   if(live) {
     const body=await request.clone().json().catch(()=>null);

@@ -148,6 +148,9 @@ def conservative_eta_range(seconds: float | None) -> tuple[int, int] | None:
 
 
 class CentralTime(tzinfo):
+    def __str__(self):
+        return "America/Chicago"
+
     def _transition(self, year: int, month: int, occurrence: int) -> datetime:
         first = datetime(year, month, 1)
         first_sunday = 1 + (6 - first.weekday()) % 7
@@ -157,7 +160,10 @@ class CentralTime(tzinfo):
         if value is None:
             return timedelta(0)
         naive = value.replace(tzinfo=None)
-        return timedelta(hours=1) if self._transition(value.year, 3, 2) <= naive < self._transition(value.year, 11, 1) else timedelta(0)
+        end = self._transition(value.year, 11, 1)
+        if end-timedelta(hours=1) <= naive < end and value.fold:
+            return timedelta(0)
+        return timedelta(hours=1) if self._transition(value.year, 3, 2) <= naive < end else timedelta(0)
 
     def utcoffset(self, value: datetime | None) -> timedelta:
         return timedelta(hours=-6) + self.dst(value)
@@ -172,14 +178,14 @@ class CentralTime(tzinfo):
         start_utc = start_local + timedelta(hours=6)
         end_utc = end_local + timedelta(hours=5)
         offset = timedelta(hours=-5 if start_utc <= naive_utc < end_utc else -6)
-        return (naive_utc + offset).replace(tzinfo=self)
+        return (naive_utc + offset).replace(tzinfo=self, fold=int(end_utc <= naive_utc < end_utc+timedelta(hours=1)))
 
 
 LOCAL_ZONE = CentralTime()
 
 
-def previous_local_day() -> str:
-    return (datetime.now().date() - timedelta(days=1)).isoformat()
+def previous_local_day(now=None) -> str:
+    return (((now.astimezone(LOCAL_ZONE) if now is not None else datetime.now(LOCAL_ZONE))).date() - timedelta(days=1)).isoformat()
 
 
 def parse_day(value: str) -> date:
@@ -699,6 +705,7 @@ class HistoryArchive:
                       segment: str, requested_content_rating: str | None) -> dict:
         key = self.archive_key(value, segment)
         start, end = parse_bounds(value, start_utc, end_utc)
+        self._assert_same_bounds(key,start,end)
         requested_rating = content_rating(requested_content_rating or self.content_rating)
         current = self.status(key, requested_rating)
         if current["complete"] or current["state"] == "loading":
@@ -803,8 +810,20 @@ class HistoryArchive:
                 "measured": True, "fixedBenchmark": True}
 
     def rebuild(self, value: str, start_utc: str, end_utc: str, timezone_name: str, segment: str = "all") -> dict:
+        with self.lock:
+            return self._rebuild_locked(value,start_utc,end_utc,timezone_name,segment)
+
+    def _assert_same_bounds(self,key,start,end):
+        with self.connect() as db:
+            existing=db.execute('SELECT start_utc,end_utc FROM days WHERE day=?',(key,)).fetchone()
+        if existing and existing['start_utc'] and existing['end_utc']:
+            if (parse_timestamp(existing['start_utc']),parse_timestamp(existing['end_utc']))!=(start,end):
+                raise ValueError('This saved archive uses different time boundaries. It was preserved; do not resume or rebuild it under a new calendar.')
+
+    def _rebuild_locked(self, value: str, start_utc: str, end_utc: str, timezone_name: str, segment: str = "all") -> dict:
         key = self.archive_key(value, segment)
         start, end = parse_bounds(value, start_utc, end_utc)
+        self._assert_same_bounds(key,start,end)
         current = self.status(key)
         if not current["archiveComplete"]:
             raise ValueError("Build this day before rebuilding it")
@@ -970,13 +989,13 @@ class HistoryArchive:
         """
         request = urllib.request.Request(f"{API_URL}?{urllib.parse.urlencode(params)}",
             headers={"Accept": "application/json", "Accept-Encoding": "gzip", "User-Agent": USER_AGENT})
-        with self.api_lock:
-            attempt = 0
-            last_failure = None
-            while True:
-                if cancel_event and cancel_event.is_set():
-                    raise CollectionCancelled()
-                try:
+        attempt = 0
+        last_failure = None
+        while True:
+            if cancel_event and cancel_event.is_set():
+                raise CollectionCancelled()
+            try:
+                with self.api_lock:
                     paced = self._wait_api_lane(minimum_interval)
                     if on_timing and paced:
                         on_timing("pace", paced)
@@ -996,51 +1015,52 @@ class HistoryArchive:
                     payload = json.loads(raw)
                     self.thumbnail_hints.capture(payload, params.get("browsingLevel"))
                     return payload, len(raw)
-                except urllib.error.HTTPError as error:
-                    if on_timing:
-                        on_timing("response", time.monotonic() - started)
-                    try:
-                        error_body = error.read(API_FAILURE_BODY_BYTES + 1)
-                    except Exception:
-                        error_body = b""
-                    last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
-                    self._record_api_failure(params, "http", status=error.code,
-                        reason=error.reason, headers=error.headers, body=error_body)
-                    if error.code != 429 and error.code < 500:
-                        raise
-                    reason = "rate_limited" if error.code == 429 else "service_retry"
-                    self.api_pacer.failure(reason)
-                    retry = error.headers.get("Retry-After")
-                    backoff_attempt = attempt % RATE_LIMIT_RETRIES
-                    requested_wait = retry_after_seconds(retry)
-                    if requested_wait is not None and requested_wait > 600:
-                        raise RetryBudgetExhausted(reason, attempt + 1, 'Upstream requested a wait beyond the safe retry window')
-                    if error.code == 429:
-                        wait = max(60.0, requested_wait) if requested_wait is not None else min(600.0, 60.0 * (2**backoff_attempt))
-                    else: wait = min(60.0, 2.0**backoff_attempt)
-                    delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
-                except (TimeoutError, urllib.error.URLError) as error:
-                    if on_timing:
-                        on_timing("response", time.monotonic() - started)
-                    self.api_pacer.failure("network_retry")
-                    reason = "network_retry"
-                    last_failure = f"{type(error).__name__}: {error}"
-                    self._record_api_failure(params, "network", reason=error)
-                    wait = min(60, 2**(attempt % RATE_LIMIT_RETRIES))
-                    delay = wait + random.uniform(0, 1)
-                attempts = request_attempts or (CHECKPOINTED_RETRY_ATTEMPTS
-                            if cancel_event and reason != "rate_limited"
-                            else RATE_LIMIT_RETRIES)
-                attempt += 1
-                if attempt >= attempts:
-                    raise RetryBudgetExhausted(reason, attempts, last_failure)
-                if on_delay:
-                    on_delay(reason, delay, attempt, attempts)
-                if cancel_event:
-                    if cancel_event.wait(delay):
-                        raise CollectionCancelled()
-                else:
-                    time.sleep(delay)
+            except urllib.error.HTTPError as error:
+                if on_timing:
+                    on_timing("response", time.monotonic() - started)
+                try:
+                    error_body = error.read(API_FAILURE_BODY_BYTES + 1)
+                except Exception:
+                    error_body = b""
+                last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
+                self._record_api_failure(params, "http", status=error.code,
+                    reason=error.reason, headers=error.headers, body=error_body)
+                if error.code != 429 and error.code < 500:
+                    raise
+                reason = "rate_limited" if error.code == 429 else "service_retry"
+                self.api_pacer.failure(reason)
+                retry = error.headers.get("Retry-After")
+                backoff_attempt = attempt % RATE_LIMIT_RETRIES
+                requested_wait = retry_after_seconds(retry)
+                if requested_wait is not None and requested_wait > 600:
+                    raise RetryBudgetExhausted(reason, attempt + 1, 'Upstream requested a wait beyond the safe retry window')
+                if error.code == 429:
+                    wait = max(60.0, requested_wait) if requested_wait is not None else min(600.0, 60.0 * (2**backoff_attempt))
+                else: wait = min(60.0, 2.0**backoff_attempt)
+                delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
+                if reason == "rate_limited":self.api_lane.defer(delay)
+            except (TimeoutError, urllib.error.URLError) as error:
+                if on_timing:
+                    on_timing("response", time.monotonic() - started)
+                self.api_pacer.failure("network_retry")
+                reason = "network_retry"
+                last_failure = f"{type(error).__name__}: {error}"
+                self._record_api_failure(params, "network", reason=error)
+                wait = min(60, 2**(attempt % RATE_LIMIT_RETRIES))
+                delay = wait + random.uniform(0, 1)
+            attempts = request_attempts or (CHECKPOINTED_RETRY_ATTEMPTS
+                        if cancel_event and reason != "rate_limited"
+                        else RATE_LIMIT_RETRIES)
+            attempt += 1
+            if attempt >= attempts:
+                raise RetryBudgetExhausted(reason, attempts, last_failure)
+            if on_delay:
+                on_delay(reason, delay, attempt, attempts)
+            if cancel_event:
+                if cancel_event.wait(delay):
+                    raise CollectionCancelled()
+            else:
+                time.sleep(delay)
 
     def _search_request(self, body: dict,
                         on_delay: Callable[[str, float, int, int], None] | None = None,
@@ -1055,14 +1075,14 @@ class HistoryArchive:
             "Content-Type": "application/json", "User-Agent": USER_AGENT,
         })
         diagnostic = {**body, "backend": "browser-search"}
-        with self.api_lock:
-            attempt = 0
-            last_failure = None
-            while True:
-                if cancel_event and cancel_event.is_set():
-                    raise CollectionCancelled()
-                started = time.monotonic()
-                try:
+        attempt = 0
+        last_failure = None
+        while True:
+            if cancel_event and cancel_event.is_set():
+                raise CollectionCancelled()
+            started = time.monotonic()
+            try:
+                with self.api_lock:
                     paced = self._wait_api_lane(.25)
                     if on_timing and paced:
                         on_timing("pace", paced)
@@ -1083,52 +1103,53 @@ class HistoryArchive:
                     if not isinstance(payload, dict):
                         raise SearchBackendUnavailable("Civitai search returned an invalid response")
                     return payload, len(raw)
-                except urllib.error.HTTPError as error:
-                    if on_timing:
-                        on_timing("response", time.monotonic() - started)
-                    try:
-                        error_body = error.read(API_FAILURE_BODY_BYTES + 1)
-                    except Exception:
-                        error_body = b""
-                    last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
-                    self._record_api_failure(diagnostic, "search_http", status=error.code,
-                        reason=error.reason, headers=error.headers, body=error_body)
-                    if error.code in {400, 401, 403, 404}:
-                        raise SearchBackendUnavailable(
-                            f"Civitai browser search rejected the app (HTTP {error.code})") from error
-                    if error.code != 429 and error.code < 500:
-                        raise
-                    reason = "rate_limited" if error.code == 429 else "service_retry"
-                    self.api_pacer.failure(reason)
-                    retry = error.headers.get("Retry-After")
-                    backoff_attempt = attempt % RATE_LIMIT_RETRIES
-                    requested_wait = retry_after_seconds(retry)
-                    if requested_wait is not None and requested_wait > 600:
-                        raise RetryBudgetExhausted(reason, attempt + 1, 'Upstream requested a wait beyond the safe retry window')
-                    if error.code == 429:
-                        wait = max(30.0, requested_wait) if requested_wait is not None else min(300.0, 30.0 * 2**backoff_attempt)
-                    else:
-                        wait = min(60.0, 2.0**backoff_attempt)
-                    delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
-                except (TimeoutError, urllib.error.URLError) as error:
-                    if on_timing:
-                        on_timing("response", time.monotonic() - started)
-                    self.api_pacer.failure("network_retry")
-                    reason = "network_retry"
-                    last_failure = f"{type(error).__name__}: {error}"
-                    self._record_api_failure(diagnostic, "search_network", reason=error)
-                    delay = min(60, 2**(attempt % RATE_LIMIT_RETRIES)) + random.uniform(0, 1)
-                attempt += 1
-                attempts = CHECKPOINTED_RETRY_ATTEMPTS if cancel_event else RATE_LIMIT_RETRIES
-                if attempt >= attempts:
-                    raise RetryBudgetExhausted(reason, attempts, last_failure)
-                if on_delay:
-                    on_delay(reason, delay, attempt, attempts)
-                if cancel_event:
-                    if cancel_event.wait(delay):
-                        raise CollectionCancelled()
+            except urllib.error.HTTPError as error:
+                if on_timing:
+                    on_timing("response", time.monotonic() - started)
+                try:
+                    error_body = error.read(API_FAILURE_BODY_BYTES + 1)
+                except Exception:
+                    error_body = b""
+                last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
+                self._record_api_failure(diagnostic, "search_http", status=error.code,
+                    reason=error.reason, headers=error.headers, body=error_body)
+                if error.code in {400, 401, 403, 404}:
+                    raise SearchBackendUnavailable(
+                        f"Civitai browser search rejected the app (HTTP {error.code})") from error
+                if error.code != 429 and error.code < 500:
+                    raise
+                reason = "rate_limited" if error.code == 429 else "service_retry"
+                self.api_pacer.failure(reason)
+                retry = error.headers.get("Retry-After")
+                backoff_attempt = attempt % RATE_LIMIT_RETRIES
+                requested_wait = retry_after_seconds(retry)
+                if requested_wait is not None and requested_wait > 600:
+                    raise RetryBudgetExhausted(reason, attempt + 1, 'Upstream requested a wait beyond the safe retry window')
+                if error.code == 429:
+                    wait = max(30.0, requested_wait) if requested_wait is not None else min(300.0, 30.0 * 2**backoff_attempt)
                 else:
-                    time.sleep(delay)
+                    wait = min(60.0, 2.0**backoff_attempt)
+                delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
+                if reason == "rate_limited":self.api_lane.defer(delay)
+            except (TimeoutError, urllib.error.URLError) as error:
+                if on_timing:
+                    on_timing("response", time.monotonic() - started)
+                self.api_pacer.failure("network_retry")
+                reason = "network_retry"
+                last_failure = f"{type(error).__name__}: {error}"
+                self._record_api_failure(diagnostic, "search_network", reason=error)
+                delay = min(60, 2**(attempt % RATE_LIMIT_RETRIES)) + random.uniform(0, 1)
+            attempt += 1
+            attempts = CHECKPOINTED_RETRY_ATTEMPTS if cancel_event else RATE_LIMIT_RETRIES
+            if attempt >= attempts:
+                raise RetryBudgetExhausted(reason, attempts, last_failure)
+            if on_delay:
+                on_delay(reason, delay, attempt, attempts)
+            if cancel_event:
+                if cancel_event.wait(delay):
+                    raise CollectionCancelled()
+            else:
+                time.sleep(delay)
 
     @staticmethod
     def _search_checkpoint(start: datetime, end: datetime, offset: int, expected: int) -> str:

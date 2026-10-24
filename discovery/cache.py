@@ -1,4 +1,4 @@
-"""Persistent, bounded metadata and thumbnail caches. No OAuth credentials."""
+"""Persistent metadata and budgeted disposable thumbnails. No OAuth credentials."""
 from contextlib import contextmanager
 from dataclasses import asdict
 import hashlib
@@ -7,6 +7,9 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
+import re
+import math
+import weakref
 
 FRESH_SECONDS = 24 * 60 * 60
 THUMBNAIL_LANE=threading.BoundedSemaphore(3)
@@ -115,11 +118,52 @@ def thumbnail_source(url,width=512):
 
 
 class ThumbnailCache:
-    def __init__(self,root,fetch=None,*,allow_downscale=False):
+    def __init__(self,root,fetch=None,*,allow_downscale=False,max_bytes=512*1024*1024,max_entries=2048,max_refreshes=6):
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True)
         self.fetch=fetch or (lambda url:self._fetch(url,allow_downscale=allow_downscale))
         self.lock=threading.Lock();self.pending=set()
-        self.first_locks={}
+        # Weak references retain a lock only while a downloader/waiter uses it.
+        self.first_locks=weakref.WeakValueDictionary()
+        self.max_bytes,self.max_entries=max_bytes,max_entries
+        self.max_refreshes=max_refreshes
+        self.last_prune=0
+        if max_bytes<1 or max_entries<1 or max_refreshes<1:raise ValueError("Positive thumbnail budgets required")
+
+    def _first_lock(self,key):
+        with self.lock:
+            return self.first_locks.setdefault(key,threading.RLock())
+
+    def _prune_locked(self):
+        # Only disposable files with this cache's SHA-256 names are eligible.
+        # Profiles, SQLite stores, unknown files and active refreshes are excluded.
+        rows=[]
+        for data in self.root.glob('*.image'):
+            if not re.fullmatch(r'[0-9a-f]{64}',data.stem):continue
+            try:
+                stat=data.stat();meta=data.with_suffix('.json')
+                size=stat.st_size+(meta.stat().st_size if meta.exists() else 0)
+                rows.append((stat.st_mtime,data,meta,size))
+            except OSError:continue
+        total=sum(row[3] for row in rows);count=len(rows)
+        for _,data,meta,size in sorted(rows,key=lambda row:row[0]):
+            if total<=self.max_bytes and count<=self.max_entries:break
+            if data.stem in self.pending:continue
+            try:
+                data.unlink(missing_ok=True);meta.unlink(missing_ok=True)
+                total-=size;count-=1
+            except OSError:continue  # A Windows file lock must not fail browsing.
+        self.last_prune=time.time()
+
+    def _read_locked(self,data,meta):
+        try:
+            with meta.open(encoding='utf-8') as stream:info=json.loads(stream.read(4097))
+            stamp=info.get('cachedAt');kind=info.get('contentType')
+            if type(stamp) not in (int,float) or not math.isfinite(stamp):return None
+            if kind not in ('image/jpeg','image/png','image/webp','image/avif'):return None
+            with data.open('rb') as stream:body=stream.read(2_097_153)
+            if not body or len(body)>2_097_152:return None
+            return body,kind,info
+        except (OSError,ValueError,KeyError,TypeError,AttributeError):return None
 
     @staticmethod
     def _fetch(url,*,allow_downscale=False):
@@ -178,25 +222,36 @@ class ThumbnailCache:
         key=hashlib.sha256(source.encode()).hexdigest()
         data=self.root/(key+'.image');meta=self.root/(key+'.json')
         def download():
-            with THUMBNAIL_LANE:body,kind=self.fetch(source)
-            temporary=data.with_suffix('.tmp');temporary.write_bytes(body);temporary.replace(data)
-            metadata=meta.with_suffix('.tmp');metadata.write_text(json.dumps({'contentType':kind,'cachedAt':time.time()}));metadata.replace(meta)
-            return body,kind
-        if data.exists() and meta.exists():
-            info=json.loads(meta.read_text())
-            if time.time()-info['cachedAt']>=FRESH_SECONDS:
+            with self._first_lock(key):
+                with THUMBNAIL_LANE:body,kind=self.fetch(source)
                 with self.lock:
-                    if key not in self.pending:
-                        self.pending.add(key)
-                        def refresh():
-                            try:download()
-                            except Exception:pass
-                            finally:
-                                with self.lock:self.pending.discard(key)
-                        threading.Thread(target=refresh,daemon=True).start()
-            return data.read_bytes(),info['contentType']
+                    temporary=data.with_suffix('.tmp');temporary.write_bytes(body);temporary.replace(data)
+                    metadata=meta.with_suffix('.tmp');metadata.write_text(json.dumps({'contentType':kind,'cachedAt':time.time()}));metadata.replace(meta)
+                    self._prune_locked()
+                return body,kind
+        with self.lock:
+            if time.time()-self.last_prune>=60:self._prune_locked()
+        cached=None
+        with self.lock:
+            entry=self._read_locked(data,meta)
+            if entry:
+                body,kind,info=entry;cached=(body,kind)
+                try:
+                    if time.time()-data.stat().st_mtime>=3600:data.touch()
+                except OSError:pass
+            if cached and time.time()-info.get('cachedAt',0)>=FRESH_SECONDS and key not in self.pending and len(self.pending)<self.max_refreshes:
+                self.pending.add(key)
+                def refresh():
+                    try:download()
+                    except Exception:pass
+                    finally:
+                        with self.lock:self.pending.discard(key)
+                threading.Thread(target=refresh,daemon=True).start()
+        if cached:return cached
         # Serialize first fetches so simultaneous cards don't download twice.
-        with self.lock:first_lock=self.first_locks.setdefault(key,threading.Lock())
+        first_lock=self._first_lock(key)
         with first_lock:
-            if data.exists() and meta.exists():return data.read_bytes(),json.loads(meta.read_text())['contentType']
+            with self.lock:
+                entry=self._read_locked(data,meta)
+                if entry:return entry[0],entry[1]
             return download()

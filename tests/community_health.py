@@ -6,7 +6,7 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('health',test_safety.ROOT/'scripts/community-health-readonly.py')
 health=importlib.util.module_from_spec(spec);spec.loader.exec_module(health)
 class HealthTests(unittest.TestCase):
-    def run_health(self,registry=None,expiry='2000-01-01T00:00:00Z',migrations=8,version=24,jwt=False,community='disabled',expected_migrations=8,expected_community='disabled',expected_registry='disabled',owner_exception=True):
+    def run_health(self,registry=None,expiry='2000-01-01T00:00:00Z',migrations=8,version=24,jwt=False,community='disabled',expected_migrations=8,expected_community='disabled',expected_registry='disabled',owner_exception=True,gallery_window=True):
         def response(request,**kwargs):
             path=request.full_url
             if path.endswith('/functions'):data=[dict(slug='community-v1',version=version,status='ACTIVE',verify_jwt=jwt)]
@@ -16,7 +16,7 @@ class HealthTests(unittest.TestCase):
                 data=[{'name':k,'value':hashlib.sha256(v.encode()).hexdigest()} for k,v in values.items()]
             elif path.endswith('/database/query/read-only'):
                 query=json.loads(request.data)['query'];self.assertTrue(query.lstrip().lower().startswith('select'))
-                data=[dict(recommendations=3,audits=3,replay_records=3,registry_records=1,migrations=migrations,member_overcaps=0,artist_overcaps=0,audit_mismatches=0,credential_requests_last_bucket=0,member_requests_last_bucket=0,owner_exception_active=owner_exception)]
+                data=[dict(recommendations=3,audits=3,replay_records=3,registry_records=1,migrations=migrations,member_overcaps=0,artist_overcaps=0,audit_mismatches=0,credential_requests_last_bucket=0,member_requests_last_bucket=0,owner_exception_active=owner_exception,gallery_window_active=gallery_window)]
             else:data=dict(id=health.REF,region='us-west-2',status='ACTIVE_HEALTHY')
             return io.BytesIO(json.dumps(data).encode())
         with tempfile.TemporaryDirectory(prefix='cad3-health-test-') as directory:
@@ -37,5 +37,9 @@ class HealthTests(unittest.TestCase):
     def test_explicit_live_owner_configuration(self):
         self.assertEqual(self.run_health(registry='enabled',community='enabled',migrations=9,expected_migrations=9,expected_community='enabled',expected_registry='enabled')[0],0)
         self.assertEqual(self.run_health(registry='enabled',community='enabled',migrations=9,expected_migrations=9,expected_community='enabled',expected_registry='enabled',owner_exception=False)[0],1)
+    def test_explicit_tenth_migration_requires_gallery_window(self):
+        self.assertEqual(self.run_health(migrations=10,expected_migrations=10)[0],0)
+        self.assertEqual(self.run_health(migrations=10,expected_migrations=10,gallery_window=False)[0],1)
+        self.assertEqual(self.run_health(migrations=10,expected_migrations=10,owner_exception=False)[0],1)
     def test_migration_drift_not_silently_accepted(self):self.assertEqual(self.run_health(migrations=9)[0],1)
 if __name__=='__main__':unittest.main()
