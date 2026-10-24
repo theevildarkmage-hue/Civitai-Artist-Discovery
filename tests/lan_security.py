@@ -1,7 +1,7 @@
 """2.2.1 direct-IP LAN behavior with Host/Origin and Civitai boundaries intact."""
 import test_safety
 import http.client,json,os,tempfile,threading
-from unittest.mock import patch
+from unittest.mock import patch,Mock
 with tempfile.TemporaryDirectory(prefix='cad3-direct-lan-') as temporary:
  os.environ['CIVITAI_HISTORY_DATA_DIR']=temporary
  import server
@@ -30,6 +30,16 @@ with tempfile.TemporaryDirectory(prefix='cad3-direct-lan-') as temporary:
    assert request('/api/settings',{'dimSeenCards':False},headers={'Origin':'http://evil.example'})[0]==403
    assert request('/api/settings',{'dimSeenCards':False},headers={'Origin':'http://'+host})[0]==200
    assert request('/api/community/recommend',{'artwork':123},headers={'Origin':'http://'+host})[0] in (401,403)
+   # A genuine, already-verified host session may use Community over LAN;
+   # simulator identities remain loopback-only even if LAN is enabled.
+   fake=Mock();fake.request.return_value={'allowed':True};fake.mode='supabase'
+   with patch.object(server.Handler,'require_community_session'),patch.object(server,'community_client',return_value=fake),patch('discovery.community_beta.require_enabled'):
+    assert request('/api/community/status')[0]==200
+    fake.request.assert_called_once()
+    fake.request.reset_mock()
+    with patch('discovery.community_security.test_identity',return_value='isolated-fixture'):
+     assert request('/api/community/status')[0]==403
+     fake.request.assert_not_called()
    assert request('/api/lan/pair',{'key':'obsolete'},headers={'Origin':'http://'+host})[0] != 200
    assert request('/api/lan/status')[0]==404
    assert server.is_own_app_url('http://'+host)
