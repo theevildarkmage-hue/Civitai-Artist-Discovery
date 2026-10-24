@@ -23,9 +23,7 @@
 #communityRecommend { padding:10px 14px; }
 .community-credit a { color:var(--accent); }
 .community-view .segment-toolbar > :not(#filterToggle):not(.active-filters) { display:none !important; }
-.community-view .active-filters > * { display:none !important; }
-.community-view #filterPanel .model-search, .community-view #filterPanel #modelMenu, .community-view #filterPanel .model-more { display:none !important; }
-.community-view #filterPanel .media-filter { display:none !important; }
+.community-view .active-filters > #summary { display:none !important; }
 .development-diagnostics-output { max-height:32rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }
 .community-member { display:flex; align-items:center; gap:8px; color:var(--muted); }
 .community-member select { background:var(--panel); color:var(--text); border:1px solid var(--line); padding:8px; border-radius:8px; }

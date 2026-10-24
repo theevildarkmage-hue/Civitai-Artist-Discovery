@@ -1402,6 +1402,7 @@ async function ensureViewData(kind) {
   } catch (error) { showSweepFailure(note, kind, { job: { error: error.message } }); }
 }
 async function reloadView() {
+  if(currentView==='community') {dailyControlsStale=true;window.CivitaiCommunity?.applyFilters();return;}
   const token = ++activeLoadToken;
   // Cancel stale browser work immediately. The new view must not wait (formerly up to
   // eight seconds) for an irrelevant page to finish before requesting its own results.
@@ -1655,7 +1656,7 @@ async function setGalleryMedia(value, reload = true) {
     saveFeedState();
     window.updateGalleryFilters?.();
     await refreshModelMenu();
-    if (reload && dayBuilt) await reloadView();
+    if (reload && (dayBuilt || currentView==='community')) await reloadView();
   } catch (error) { toast(error.message); window.updateGalleryFilters?.(); }
 }
 window.setGalleryMedia = setGalleryMedia;
@@ -1664,7 +1665,7 @@ async function removeGalleryModel(model) {
   $("modelFilter").textContent = modelButtonLabel();
   saveFeedState();
   refreshModelMenu();
-  if (dayBuilt) await reloadView();
+  if (dayBuilt || currentView==='community') await reloadView();
 }
 async function resetGalleryFilters() {
   await setGalleryMedia("all", false);
@@ -1681,11 +1682,16 @@ function modelButtonLabel() {
 async function refreshModelMenu() {
   const menu = $("modelMenu");
   try {
-    const data = await api(`/api/history/models?date=${selectedDate}&segment=${selectedSegment}&media=${selectedMedia}`);
-    const models = data.models || [];
-    if (!models.length) { menu.innerHTML = '<p class="filter-empty">No model information for this day.</p>'; return; }
+    const community=currentView==='community';
+    const data = community ? {models:window.CivitaiCommunity?.filterModels(selectedMedia)||[]}
+      : await api(`/api/history/models?date=${selectedDate}&segment=${selectedSegment}&media=${selectedMedia}`);
+    if(community!==(currentView==='community'))return;
+    const models = [...(data.models || [])];
+    for(const name of selectedModels)if(!models.some(entry=>entry.model===name))models.push({model:name,images:0});
+    if (!models.length) { menu.innerHTML = '<p class="filter-empty">'+(community ? 'No model information in loaded recommendations for this media type.' : 'No model information for this day.')+'</p>'; return; }
     menu.innerHTML = `<div class="filter-head"><strong>Generation model</strong><button id="modelClear" class="quiet-button">Clear</button></div>` +
       models.map(entry => `<label class="filter-row"><input type="checkbox" value="${escapeHtml(entry.model)}"${selectedModels.has(entry.model) ? " checked" : ""}><span>${escapeHtml(entry.model)}</span><em>${displayCount(entry.images)}</em></label>`).join("");
+    if(community)menu.insertAdjacentHTML('afterbegin','<p class="filter-empty">Models in loaded recommendations. More options appear as you scroll.</p>');
     menu.querySelectorAll("input[type=checkbox]").forEach(box => {
       box.onchange = () => {
         box.checked ? selectedModels.add(box.value) : selectedModels.delete(box.value);
@@ -1705,6 +1711,9 @@ async function refreshModelMenu() {
     window.applyGalleryModelSearch?.();
   } catch (error) { menu.innerHTML = `<p class="filter-empty">${escapeHtml(error.message)}</p>`; }
 }
+window.addEventListener('community-model-catalog-changed',()=>{
+  if(currentView==='community' && document.getElementById('filterToggle')?.getAttribute('aria-expanded')==='true')refreshModelMenu();
+});
 async function followFromDashboard(row) {
   const button = row.querySelector(".follow-button");
   return window.CivitaiUI.toggleCreatorFollow(button, {

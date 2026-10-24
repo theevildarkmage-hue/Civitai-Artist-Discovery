@@ -1780,6 +1780,14 @@ class Handler(BaseHTTPRequestHandler):
             if operation == 'status':
                 result = {**result, 'viewSession':COMMUNITY_VIEW_SESSION}
             if operation == 'gallery':
+                # Enrich admitted artwork from existing local metadata only. No
+                # extra provider requests or scan of the Community ledger.
+                from discovery.models import normalize_base_model,base_labels
+                for row in result['items']:
+                    art=row['artwork'];store=image_store(int(art['id']))
+                    if store and art.get('baseModel','Unknown')=='Unknown':
+                        art['baseModel']=normalize_base_model(store.detail(int(art['id'])).get('baseModel'))
+                        art['modelLabels']=base_labels(art['baseModel'])
                 client.remember_presented(result['items'], self.community_viewer(token))
             if operation == 'detail':
                 result = {**result, **community_detail_metadata(client, result)}
