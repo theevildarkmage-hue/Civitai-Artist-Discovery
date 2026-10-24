@@ -1,7 +1,7 @@
 // Exact production factory; all tokens/provider/SQL responses are synthetic.
 import assert from 'node:assert/strict';
 import {createCommunityHandler} from '../supabase/functions/community-v1/handler.ts';
-let projectCalls=0, writes=0, meScope=33, meId=7, invalid=false, keys=[],userinfoCalls=0;
+let projectCalls=0, writes=0, meScope=33, meId=7, invalid=false, keys=[],userinfoCalls=0,outage=false;
 globalThis.Deno={env:{get:name=>({SUPABASE_URL:'https://isolated.invalid',SUPABASE_SERVICE_ROLE_KEY:'synthetic',COMMUNITY_BETA_STATE:'enabled',DISCOVERY_REGISTRY_STATE:'enabled',COMMUNITY_ALLOWED_RATINGS:'1,2'}[name])}};
 const buckets=new Map();
 const transport=async(url,options)=>{
@@ -18,7 +18,7 @@ const transport=async(url,options)=>{
   if(name==='community_registry_upsert'){writes++;return Response.json({apiVersion:1,registered:true});}
   throw Error('Unexpected SQL operation');
  }
- if(url.endsWith('/userinfo')) {userinfoCalls++;return invalid?Response.json({},{status:401}):Response.json({sub:'7',id:7,username:'Verified'});}
+ if(url.endsWith('/userinfo')) {userinfoCalls++;if(outage)return Response.json({},{status:503});return invalid?Response.json({},{status:401}):Response.json({sub:'7',id:7,username:'Verified'});}
  if(url==='https://civitai.com/api/v1/me')return Response.json({id:meId,username:'Verified',tokenScope:meScope,subject:{type:'oauth'}});
  throw Error('Unexpected network');
 };
@@ -27,11 +27,13 @@ async function request(token,operation='status',extra={},headers={}) {
  const r=await handler(new Request('https://isolated.invalid',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...headers},body:JSON.stringify({apiVersion:1,operation,...extra})}));
  return {status:r.status,...await r.json()};
 }
-invalid=true;
+invalid=true;const beforeInvalidKeys=keys.length;
 for(let n=0;n<60;n++)assert.equal((await request('invalid-'+n)).code,'AUTH_EXPIRED');
+assert.equal(keys.length,beforeInvalidKeys,'invalid identities must create zero SQL buckets');
 invalid=false;assert.equal((await request('valid-after-flood')).status,200);assert.equal(projectCalls,0);
-invalid=true;
-for(let n=0;n<35;n++)assert.equal((await request('repeated-invalid')).code,n<30?'AUTH_EXPIRED':'RATE_LIMITED');
+invalid=true;const beforeRepeat=userinfoCalls,repeatKeys=keys.length;
+for(let n=0;n<35;n++)assert.equal((await request('repeated-invalid')).code,'AUTH_EXPIRED');
+assert.equal(userinfoCalls-beforeRepeat,1,'repeated denial cached without positive identity caching');assert.equal(keys.length,repeatKeys);
 invalid=false;assert.equal((await request('different-valid')).status,200);
 // Filling bounded ingress bookkeeping must not impose a global lockout either.
 invalid=true;for(let n=0;n<2050;n++)await request('map-fill-'+n);
@@ -45,3 +47,10 @@ meId=7;assert.equal((await request('valid-read','register',{appVersion:'3.0.0-be
 assert.equal((await request('forged-scope','register',{appVersion:'3.0.0-beta.4',platform:'Windows',scope:33})).code,'INVALID_REQUEST');
 assert.equal((await request('browser','status',{}, {Origin:'https://untrusted.invalid'})).code,'FORBIDDEN');
 console.log(JSON.stringify({passed:true,invalidDistinctRequests:60,repeatedInvalidRequests:35,ingressMapFillRequests:2050,validUsersAfterEach:3,globalProjectCharges:projectCalls,wideOrMissingScopeRejected:5,scopeMismatchRejected:true,readOnlyRegistryAccepted:true,hostedNetworkRequests:0}));
+
+const outageBefore=userinfoCalls,outageKeys=keys.length;outage=true;
+for(let n=0;n<2;n++)assert.equal((await request('transient-same-grant')).code,'UNAVAILABLE');
+assert.equal(userinfoCalls-outageBefore,2);assert.equal(keys.length,outageKeys);
+outage=false;assert.equal((await request('transient-same-grant')).status,200);
+invalid=true;assert.equal((await request('valid-read')).code,'AUTH_EXPIRED');invalid=false;
+console.log(JSON.stringify({transientOutagesNotCached:true,noPositiveIdentityCache:true,invalidSQLCharges:0}));

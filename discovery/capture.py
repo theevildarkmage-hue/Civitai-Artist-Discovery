@@ -142,7 +142,7 @@ class AutoCapture:
         except OSError:
             pass   # Logging must never be the reason a capture fails.
 
-    def run_once(self) -> dict:
+    def run_once(self, *, record_empty=True) -> dict:
         """Capture every pending block, in order. Returns what it did."""
         started = self._now()
         captured, failed, skipped, details = [], [], [], []
@@ -202,7 +202,8 @@ class AutoCapture:
                   "blocks": details}
         with self.lock:
             self.last_run, self.last_result = result["at"], result
-        self._log(result)
+        if record_empty or captured or failed or skipped:
+            self._log(result)
         return result
 
     def seconds_until_next(self, settings: dict | None = None) -> float:
@@ -248,9 +249,14 @@ class AutoCapture:
         return self._with_recovery_time(now + timedelta(seconds=period - elapsed), settings, now)
 
     def _with_recovery_time(self, scheduled: datetime, settings: dict, now: datetime) -> datetime:
-        retry = self.recovery.next_retry_at() if self.recovery and settings["autoCapture"] else None
-        if retry is not None:
-            return min(scheduled, datetime.fromtimestamp(max(now.timestamp() + 1, retry), now.tzinfo))
+        retries = self.recovery.entries() if self.recovery and settings["autoCapture"] else {}
+        for key,row in retries.items():
+            retry=row["next_retry_at"]
+            # A reserved collector already owns this block. Recheck in a minute,
+            # without a 1 Hz empty-run loop or changing its persistent retry entry.
+            if retry<=now.timestamp() and self.archive.status(key)["state"]=="loading":
+                retry=now.timestamp()+60
+            scheduled=min(scheduled,datetime.fromtimestamp(max(now.timestamp()+1,retry),now.tzinfo))
         return scheduled
 
     def _worker(self) -> None:
@@ -258,7 +264,7 @@ class AutoCapture:
             settings = self.settings.load()
             if settings["autoCapture"]:
                 try:
-                    self.run_once()
+                    self.run_once(record_empty=False)
                 except Exception:  # noqa: BLE001
                     # A capture failure must never take the app down with it; the next
                     # interval simply tries again.

@@ -1,3 +1,4 @@
+import { requestKey as secureRequestKey } from './request-key.js';
 import { api } from './api.js';
 import { bindDialog } from './dialog.js';
 import { showGallerySkeleton } from './feedback.js';
@@ -71,6 +72,7 @@ export function mountCommunity() {
     el('communitySentinel').hidden=['INVITE_ONLY','INVITE_REVOKED','INVITE_EXPIRED',
       'SUBMITTER_BLOCKED','BETA_DISABLED','AUTH_REQUIRED','AUTH_EXPIRED','FORBIDDEN'].includes(error.code);
   }
+  let reviewPending=false;
   let cursor = null, generation = 0, busy = false, draftVersion = 0, requestKey = null, requestValue = null;
   const quota = value => { if (value) {
     if (value.unlimited === true) {
@@ -79,7 +81,7 @@ export function mountCommunity() {
       return;
     }
     el('communityQuota').textContent = `${value.remaining} left this week`;
-    el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week Â· ${value.remaining} remaining`;
+    el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week · ${value.remaining} remaining`;
   } };
   let initialized = false, firstPage = true, refreshPage = false, metadataTimer = null, metadataRetries = 0, viewSession = null;
   // Background probes never change the rendered feed or its pagination cursor.
@@ -91,6 +93,7 @@ export function mountCommunity() {
     visible:()=>authorized && !section.classList.contains('hidden'),
     hasMore:()=>!initialized || firstPage || !!cursor,
     load:fetchPage,
+    exhausted:()=>reviewPending?"Artwork checks are still running. Refresh to retry.":"You're caught up for this view.",
     onError:accessError,
   });
   const artists = new Map(), recommendations = new Map();
@@ -175,6 +178,7 @@ export function mountCommunity() {
       }
       const result = await api(`/api/community/gallery?refresh=${refreshPage ? '1' : '0'}${pageCursor ? `&cursor=${encodeURIComponent(pageCursor)}` : ''}`, {signal});
       if (id !== generation || signal.aborted) return;
+      reviewPending=result.reviewPending===true;
       const next = result.nextCursor;
       if (next && (next === pageCursor || requestedCursors.has(next))) throw new Error('The service repeated a page. Refresh the gallery to try again.');
       if (pageCursor) requestedCursors.add(pageCursor);
@@ -273,10 +277,11 @@ export function mountCommunity() {
     event.preventDefault();
     if (busy || !authorized || !submissions) return;
     const value = el('communityLink').value.trim(), version = draftVersion;
-    if (requestValue !== value || !requestKey) { requestKey = crypto.randomUUID(); requestValue = value; }
+    try {if(requestValue!==value||!requestKey){requestKey=secureRequestKey();requestValue=value;}}
+    catch(error){el('communityDialogMessage').textContent=error.message;return;}
     busy = true;
     el('communitySubmit').disabled = true; el('communityLink').readOnly = true;
-    el('communitySubmit').textContent = 'Submitting?';
+    el('communitySubmit').textContent = 'Submitting\u2026';
     el('communityForm').setAttribute('aria-busy', 'true');
     el('communityDialogMessage').textContent = 'Verifying artwork and submitting recommendation?';
     try {
