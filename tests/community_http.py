@@ -66,7 +66,7 @@ else:
         def do_GET(self):
             global fault
             path=urlsplit(self.path);status=200
-            if path.path=='/userinfo':
+            if path.path in ('/userinfo','/api/v1/me'):
                 try:
                     bearer=self.headers.get('Authorization','').removeprefix('Bearer ')
                     head,payload,signature=bearer.split('.')
@@ -78,7 +78,8 @@ else:
                     if public_active:
                         assert int(claims['sub']) in public_members and claims.get('aud')=='cad3-local-lab' and claims.get('simulated') is True
                     data={'sub':claims['sub'],'id':int(claims['sub']),
-                        'username':public_members[int(claims['sub'])]['username'] if public_active else 'SignedMember'+claims['sub']}
+                        'username':public_members[int(claims['sub'])]['username'] if public_active else 'SignedMember'+claims['sub'],
+                        'tokenScope':33,'subject':{'type':'oauth','id':'synthetic-client'}}
                 except Exception:status=401;data={}
             elif fault in ('unavailable','limited','missing','private'):
                 status={'unavailable':503,'limited':429,'missing':404,'private':403}[fault];data={}
@@ -125,7 +126,7 @@ else:
     def start_edge(live=False,state='enabled',private_beta=False,port_override=None,rest_override=None,registry_state='disabled',distributed_limit=False):
         return launch('deno',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
             '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_PRIVATE_BETA,DISCOVERY_REGISTRY_STATE,CAD_TEST_DISTRIBUTED_LIMIT',
-            '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
+            '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red,civitai.com' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
             'SUPABASE_URL':rest_override or rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2' if private_beta else '1,2,4,8,16',
             # The shared handler reads this even outside owner-only mode. Pin an
             # expired synthetic value; never inherit an interactive write window.
@@ -175,11 +176,10 @@ else:
         for n in range(35):
             bearer=token({'sub':str(8900000000+n),'exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
             statuses.append(request(urls[n%2],{'apiVersion':1,'operation':'status'},auth='Bearer '+bearer)[0])
-        assert statuses==[200]*30+[429]*5,statuses
-        # Rejected RPCs roll back their attempted increment. The bucket records
-        # admitted calls, while the HTTP evidence records all 35 attempts.
-        assert sql("select requests=30 from community_rate_buckets where key='project:community';")=='t'
-        evidence={'passed':True,'instances':2,'requests':35,'accepted':30,'rateLimited':5,'billedInvocationCap':False,'newCommunityRecords':0}
+        assert statuses==[200]*35,statuses
+        # Distinct verified members do not share an attacker-chargeable project quota.
+        assert sql("select count(*)=0 from community_rate_buckets where key='project:community';")=='t'
+        evidence={'passed':True,'instances':2,'requests':35,'accepted':35,'rateLimited':0,'billedInvocationCap':False,'newCommunityRecords':0}
         (output/'distributed-limit.json').write_text(json.dumps(evidence,indent=2));result['distributedLimit']=evidence
         return result
     def legacy_probe(owner,owner_token):
@@ -393,12 +393,15 @@ else:
             scenarios.append({'scenario':'pool-pressure','sent':10,'responses':{str(s):sum(x==s for x,_ in results) for s,_ in results}})
         finally:
             if holder.poll() is None:holder.terminate();holder.wait()
-        # Local IP ingress ceiling is tested with forged forwarding headers.
+        # Untrusted forwarding headers and malformed auth cannot poison a shared peer quota.
         time.sleep(1.05)
         results=[request(edge,{},headers={'X-Forwarded-For':f'192.0.2.{n%250}'},method='POST') for n in range(205)]
-        assert any(s==429 for s,_ in results)
+        assert all(s==401 for s,_ in results),results
+        invalid=[request(edge,{'apiVersion':1,'operation':'status'},auth='Bearer synthetic-invalid-'+str(n))[0] for n in range(35)]
+        assert invalid==[401]*35,invalid
+        assert sql("select count(*)=0 from community_rate_buckets where key='project:community';")=='t'
         time.sleep(1.05);assert call(n=300)[0]==200
-        # Per-member counters are separate from peer ingress and use real SQL.
+        # Per-member counters remain isolated and enforced by real SQL.
         results=[call(n=301) for _ in range(31)];assert results[-1][1]['code']=='RATE_LIMITED'
         # Shared gallery client is exercised by a helper while infrastructure is alive.
         sys.path.insert(0,str(ROOT/'tests'))

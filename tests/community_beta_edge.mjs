@@ -1,3 +1,4 @@
+import {identityTransport} from './community_identity_transport.mjs';
 import assert from 'node:assert/strict';
 import {createCommunityHandler} from '../supabase/functions/community-v1/handler.ts';
 let state, ratings, commits=0;
@@ -13,7 +14,7 @@ const transport=async url=>{
   if(url.includes('/image.get'))return value({result:{data:{json:{id:123,user:{id:42,username:'Artist'},availability:'Public',ingestion:'Scanned',publishedAt:'2026-01-01T00:00:00Z',nsfwLevel:8}}}});
   throw Error('Unexpected transport');
 };
-const handler=createCommunityHandler({fetch:transport});
+const handler=createCommunityHandler({fetch:identityTransport(transport)});
 async function call(operation,extra={}){
   const r=await handler(new Request('https://owned.invalid',{method:'POST',headers:{Authorization:'Bearer local-test','Content-Type':'application/json'},body:JSON.stringify({apiVersion:1,operation,...extra})}));
   return [r.status,await r.json()];
