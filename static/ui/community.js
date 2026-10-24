@@ -5,7 +5,7 @@ import { showGallerySkeleton } from './feedback.js';
 import { createInfinitePager } from './pagination.js';
 
 const post = (artwork, idempotencyKey) => api('/api/community/recommend', {method:'POST', body:JSON.stringify({artwork, idempotencyKey})});
-const disabledNotice = 'Community Beta is invite-only at this time and is currently disabled or under maintenance. Your Daily Gallery still works.';
+const disabledNotice = 'Community is currently disabled or under maintenance. Your Daily Gallery still works.';
 // Temporarily remove the reporting entry point; backend moderation stays intact.
 const reportingUiEnabled = false;
 

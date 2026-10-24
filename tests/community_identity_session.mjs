@@ -10,7 +10,7 @@ globalThis.Deno={env:{get:name=>env[name]}};
 const native=process.env.CAD_TEST_IDENTITY_NATIVE==='1';
 if(native && (process.env.CAD_ALLOW_ISOLATED_DB_TESTS!=='1'||process.env.PGHOST!=='127.0.0.1'||!process.env.CAD_TEST_PG_SYSTEM_IDENTIFIER))throw Error('Owned native cluster required');
 let clock=native?Date.now():1800000000000,sql=0,registers=0,providerCalls=0,invited=true,metadataAssetStatus=200;
-const sessionHashes=new Map(),replays=new Set(),wire=[];
+const sessionHashes=new Map(),replays=new Set(),wire=[],families=[],attempts=new Set();
 const pair=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
 const jwk={...await crypto.subtle.exportKey('jwk',pair.publicKey),kid:'synthetic',alg:'ES256',use:'sig'};
 const b64=x=>Buffer.from(x).toString('base64url');
@@ -39,26 +39,42 @@ async function transport(url,options={}) {
  wire.push({url,options});
  if(url.includes('/rpc/')) {
   sql++;const name=url.split('/').at(-1),body=JSON.parse(options.body);
-  if(native&&['community_identity_exchange','community_identity_resolve','community_identity_revoke'].includes(name)) {
+  if(native&&['community_identity_exchange','community_identity_resolve','community_identity_revoke','community_device_enroll','community_device_lookup','community_device_rotate'].includes(name)) {
    const args=Object.entries(body).map(([key,value])=>{
-    assert.match(key,/^p_[a-z_]+$/);assert(['string','number'].includes(typeof value));
+    assert.match(key,/^p_[a-z_]+$/);if(key==='p_device_key')return key+"=>'"+JSON.stringify(value).replaceAll("'","''")+"'::jsonb";
+    assert(['string','number'].includes(typeof value));
     return key+'=>'+(typeof value==='number'?String(value):"'"+value.replaceAll("'","''")+"'");
    }).join(',');
    const result=await nativeSQL('select public.'+name+'('+args+');');
    return result.code===0?Response.json(JSON.parse(result.stdout)):Response.json({message:result.authExpired?'AUTH_EXPIRED':'UNAVAILABLE'},{status:400});
   }
-  if(name==='community_identity_exchange') {
+  if(name==='community_identity_exchange'||name==='community_device_enroll') {
    for(const field of ['p_assertion_hash','p_nonce_hash','p_session_hash'])assert.match(body[field],/^[0-9a-f]{64}$/);
    if(replays.has(body.p_assertion_hash)||replays.has(body.p_nonce_hash))return Response.json({message:'AUTH_EXPIRED'},{status:400});
    replays.add(body.p_assertion_hash);replays.add(body.p_nonce_hash);
    const expiresAt=Math.floor(clock/1000)+43200;sessionHashes.set(body.p_session_hash,{id:body.p_member,username:body.p_username,expiresAt});
+   if(name==='community_device_enroll') {
+    const family={current:body.p_refresh_hash,key:body.p_device_key,id:body.p_member,revoked:false,idleUntil:clock+30*86400000,absoluteUntil:clock+90*86400000};families.push(family);
+    sessionHashes.get(body.p_session_hash).family=family;
+    return Response.json({expiresAt,refreshExpiresAt:Math.floor(clock/1000)+30*86400,absoluteExpiresAt:Math.floor(clock/1000)+90*86400});
+   }
    return Response.json({expiresAt});
+  }
+  if(name==='community_device_lookup'||name==='community_device_rotate') {
+   const family=families.find(f=>f.current===body.p_refresh_hash||f.previous===body.p_refresh_hash);
+   if(!family||family.revoked||family.idleUntil<=clock||family.absoluteUntil<=clock)return Response.json({denied:true});
+   if(name==='community_device_lookup')return Response.json({memberId:family.id,deviceKey:family.key});
+   if(attempts.has(body.p_attempt_hash))return Response.json({denied:true});attempts.add(body.p_attempt_hash);
+   if(family.current===body.p_refresh_hash) {family.previous=family.current;family.current=body.p_next_refresh_hash;family.request=body.p_request_hash;}
+   else if(family.request!==body.p_request_hash||family.current!==body.p_next_refresh_hash){family.revoked=true;return Response.json({denied:true});}
+   const expiresAt=Math.floor(clock/1000)+43200;sessionHashes.set(body.p_session_hash,{id:family.id,username:'Verified',expiresAt,family});
+   return Response.json({expiresAt,refreshExpiresAt:Math.floor(clock/1000)+30*86400,absoluteExpiresAt:Math.floor(clock/1000)+90*86400});
   }
   if(name==='community_identity_resolve') {
    const identity=sessionHashes.get(body.p_session_hash);
-   return identity&&identity.expiresAt>clock/1000?Response.json(identity):Response.json({message:'AUTH_EXPIRED'},{status:400});
+   return identity&&!identity.family?.revoked&&identity.expiresAt>clock/1000?Response.json(identity):Response.json({message:'AUTH_EXPIRED'},{status:400});
   }
-  if(name==='community_identity_revoke'){sessionHashes.delete(body.p_session_hash);return Response.json({revoked:true});}
+  if(name==='community_identity_revoke'){const family=sessionHashes.get(body.p_session_hash)?.family;if(family)family.revoked=true;sessionHashes.delete(body.p_session_hash);return Response.json({revoked:true});}
   if(name==='community_take_rate')return new Response(null,{status:204});
   if(name==='community_access')return invited?Response.json({invited:true}):Response.json({message:'INVITE_ONLY'},{status:400});
   if(name==='community_registry_upsert'){registers++;return Response.json({apiVersion:1,registered:true});}
@@ -150,6 +166,78 @@ await check('concurrent exchanges admit exactly one session',async()=>{
  const responses=await Promise.all([first,second].map(handler=>call(handler,{apiVersion:2,operation:'identityExchange',challenge:next.challenge,identityAssertion:token})));
  assert.deepEqual(responses.map(x=>x.status).sort(),[200,401]);
 });
+
+if(!native||process.env.CAD_TEST_DEVICE_RENEWAL==='1') {
+ const devicePair=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+ const exported=await crypto.subtle.exportKey('jwk',devicePair.publicKey);
+ const device={kty:exported.kty,crv:exported.crv,x:exported.x,y:exported.y};
+ const digest=async x=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(x))).toString('hex');
+ const sign=async message=>b64(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},devicePair.privateKey,new TextEncoder().encode(message)));
+ const challenge=await call(first,{apiVersion:2,operation:'identityChallenge',devicePublicKey:device});
+ const idProof=await assertion(challenge);
+ const deviceSignature=await sign('discovery-enroll-v1\n'+challenge.challenge+'\n'+await digest(idProof));
+ let deviceSession;
+ await check('fresh verified identity enrolls a device-bound renewal family',async()=>{
+  deviceSession=await call(first,{apiVersion:2,operation:'identityExchange',challenge:challenge.challenge,identityAssertion:idProof,deviceSignature});
+  assert.equal(deviceSession.status,200);assert.match(deviceSession.renewal.credential,/^sdr_[A-Za-z0-9_-]{43}$/);
+ });
+ const original=deviceSession.renewal.credential,requestId=b64(crypto.getRandomValues(new Uint8Array(32)));
+ async function renewalBody(credential=original,request=requestId) {
+  const attemptNonce=b64(crypto.getRandomValues(new Uint8Array(32))),issuedAt=Math.floor(clock/1000);
+  const signature=await sign('discovery-renew-v1\n'+await digest(credential)+'\n'+request+'\n'+attemptNonce+'\n'+issuedAt);
+  return {apiVersion:2,operation:'identityRenew',credential,requestId:request,attemptNonce,issuedAt,signature};
+ }
+ const body=await renewalBody();let rotated;
+ await check('silent renewal rotates credential without Civitai API token',async()=>{
+  rotated=await call(first,body);assert.equal(rotated.status,200);assert.notEqual(rotated.renewal.credential,original);
+  assert.equal(rotated.member.id,7);
+ });
+ await check('exact proof replay is denied',async()=>assert.equal((await call(second,body)).status,401));
+ await check('lost reply recovers same rotation with fresh proof on another instance',async()=>{
+  const retry=await call(second,await renewalBody());assert.equal(retry.status,200);
+  assert.equal(retry.renewal.credential,rotated.renewal.credential);assert.notEqual(retry.session,rotated.session);
+ });
+ await check('clock skew is transient and does not revoke the device',async()=>{
+  const request=await renewalBody(rotated.renewal.credential,b64(crypto.getRandomValues(new Uint8Array(32))));
+  request.issuedAt-=120;assert.equal((await call(first,request)).status,503);
+ });
+ await check('forged device proof rejected before rotate',async()=>{
+  const forged=await renewalBody(rotated.renewal.credential,b64(crypto.getRandomValues(new Uint8Array(32))));
+  forged.signature=b64(crypto.getRandomValues(new Uint8Array(64)));
+  assert.equal((await call(first,forged)).status,401);
+ });
+ await check('renewal cannot choose another member',async()=>assert.equal((await call(first,{...await renewalBody(),memberId:8})).status,401));
+ await check('old credential reuse with a different operation revokes the family',async()=>{
+  assert.equal((await call(first,await renewalBody(original,b64(crypto.getRandomValues(new Uint8Array(32)))))).status,401);
+  assert.equal((await call(first,{apiVersion:1,operation:'status'},rotated.session)).status,401);
+  assert.equal((await call(first,await renewalBody(rotated.renewal.credential))).status,401);
+ });
+ async function enrollDevice() {
+  const c=await call(first,{apiVersion:2,operation:'identityChallenge',devicePublicKey:device}),a=await assertion(c);
+  const signature=await sign('discovery-enroll-v1\n'+c.challenge+'\n'+await digest(a));
+  const result=await call(first,{apiVersion:2,operation:'identityExchange',challenge:c.challenge,identityAssertion:a,deviceSignature:signature});
+  assert.equal(result.status,200);return result;
+ }
+ await check('sign-out revokes device renewal and its access session',async()=>{
+  const current=await enrollDevice();
+  assert.equal((await call(second,{apiVersion:1,operation:'identityLogout'},current.session)).revoked,true);
+  assert.equal((await call(first,await renewalBody(current.renewal.credential))).status,401);
+  assert.equal((await call(first,{apiVersion:1,operation:'status'},current.session)).status,401);
+ });
+ for(const field of ['idle_until','absolute_until']) await check('device '+field+' expires independently',async()=>{
+  const current=await enrollDevice(),digestValue=await digest(current.renewal.credential);
+  if(native) {
+   const result=await nativeSQL("update community_device_families set "+field+"=clock_timestamp()-interval '1 second' where current_hash='"+digestValue+"';",false);assert.equal(result.code,0);
+  } else {
+   const family=families.find(f=>f.current===digestValue);family[field==='idle_until'?'idleUntil':'absoluteUntil']=clock-1;
+  }
+  assert.equal((await call(first,await renewalBody(current.renewal.credential))).status,401);
+ });
+ await check('cloud renewal never forwards Civitai credentials',()=>{
+  for(const request of wire.filter(x=>x.url.startsWith('https://civitai')||x.url.startsWith('https://auth.civitai')))assert.equal(request.options.headers?.Authorization,undefined);
+ });
+}
+
 await check('expired challenge rejected',async()=>{
  clock+=301000;const before=providerCalls;
  assert.equal((await call(first,{apiVersion:2,operation:'identityExchange',challenge:challenge.challenge,identityAssertion:proof})).status,401);assert.equal(providerCalls,before);

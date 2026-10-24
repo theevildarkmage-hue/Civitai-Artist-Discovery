@@ -345,19 +345,77 @@ def login(timeout: int = 300) -> dict:
     return tokens['identity']
 
 
+_CLOUD_REFRESH_LOCK=threading.Lock()
+_CLOUD_RETRY={}
+
+
 def get_community_session() -> str:
-    """No API-token fallback or background browser launch. Reauthenticate at expiry."""
+    """Renew Discovery authorization independently; never clear/refresh Civitai here."""
     from .cloud_identity import SESSION
-    with _REFRESH_LOCK:
-        primary=_load();session=primary.get('discovery_session');active=client_id()
+    from . import cloud_identity
+    def load():
+        with _REFRESH_LOCK:primary=_load()
+        active=client_id();session=primary.get('discovery_session')
         if (primary.get('reauth_required') or not active or primary.get('client_id')!=active
             or not isinstance(session,dict) or not isinstance(session.get('session'),str)
-            or not SESSION.fullmatch(session['session'])
-            or type(session.get('expires_at')) is not int or session['expires_at']<=time.time()+30
-            or type(session.get('member_id')) is not int
-            or session['member_id']!=primary.get('identity',{}).get('id')):
-            raise OAuthReauthenticationRequired('Sign in again to reconnect Community securely.')
-        return session['session']
+            or not SESSION.fullmatch(session['session']) or type(session.get('expires_at')) is not int
+            or type(session.get('member_id')) is not int or session['member_id']!=primary.get('identity',{}).get('id')):
+            raise OAuthReauthenticationRequired('Reconnect Community securely; your local Civitai login is preserved.')
+        return primary,session
+    primary,session=load();now=time.time()
+    if session['expires_at']>now+300:return session['session']
+    renewal=session.get('renewal')
+    if (session.get('renewal_revoked') or not isinstance(renewal,dict)
+        or min(renewal.get('expires_at',0),renewal.get('absolute_expires_at',0))<=now):
+        if session['expires_at']>now+30:return session['session']
+        raise OAuthReauthenticationRequired('Community device authorization needs renewal; your Civitai login is preserved.')
+    marker=(session['member_id'],renewal.get('credential'))
+    retry=_CLOUD_RETRY.get(marker,{})
+    if retry.get('after',0)>now:
+        if session['expires_at']>now+30:return session['session']
+        raise OAuthTemporarilyUnavailable('Community renewal is temporarily unavailable. Daily Gallery still works.')
+    if not _CLOUD_REFRESH_LOCK.acquire(blocking=False):
+        if session['expires_at']>now+30:return session['session']
+        # Startup registry and gallery can arrive together. Join the one bounded
+        # cloud renewal without taking the independent Civitai refresh lock.
+        if _CLOUD_REFRESH_LOCK.acquire(timeout=16):
+            _CLOUD_REFRESH_LOCK.release()
+            _,fresh=load()
+            if fresh['expires_at']>time.time()+30:return fresh['session']
+        raise OAuthTemporarilyUnavailable('Community renewal is temporarily unavailable. Daily Gallery still works.')
+    try:
+        primary,session=load()
+        if session['expires_at']>time.time()+300:return session['session']
+        # Persist the operation ID BEFORE sending. A crash/lost reply can retry
+        # the same rotation with a fresh device signature, even after restart.
+        session=json.loads(json.dumps(session));renewal=session['renewal']
+        renewal.setdefault('pending_request',secrets.token_urlsafe(32))
+        with _REFRESH_LOCK:
+            current=_load()
+            if current.get('identity',{}).get('id')!=session['member_id']:raise OAuthReauthenticationRequired('Community account changed.')
+            _save({**current,'discovery_session':session})
+        try:
+            renewed=cloud_identity.renew(session)
+        except Exception as error:
+            from .community import CommunityError
+            if isinstance(error,CommunityError) and error.code in ('AUTH_EXPIRED','AUTH_REQUIRED'):
+                with _REFRESH_LOCK:
+                    current=_load();stored=current.get('discovery_session',{})
+                    if stored.get('session')==session['session']:_save({**current,'discovery_session':{**stored,'renewal_revoked':True}})
+                raise OAuthReauthenticationRequired('Community device authorization was revoked. Local Civitai login is preserved.') from None
+            failures=min(5,retry.get('failures',0)+1)
+            _CLOUD_RETRY.clear();_CLOUD_RETRY[marker]={'after':time.time()+min(300,20*2**(failures-1)),'failures':failures}
+            if session['expires_at']>time.time()+30:return session['session']
+            raise OAuthTemporarilyUnavailable('Community renewal is temporarily unavailable. Daily Gallery still works.') from None
+        with _REFRESH_LOCK:
+            current=_load()
+            if (current.get('identity',{}).get('id')!=session['member_id']
+                or current.get('discovery_session',{}).get('session')!=session['session']):
+                raise OAuthReauthenticationRequired('Community account changed during renewal.')
+            _save({**current,'discovery_session':renewed})
+        _CLOUD_RETRY.clear()
+        return renewed['session']
+    finally:_CLOUD_REFRESH_LOCK.release()
 
 
 def get_community_access_token() -> str:
