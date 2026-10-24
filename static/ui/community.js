@@ -99,16 +99,34 @@ export function mountCommunity() {
     onError:accessError,
   });
   const artists = new Map(), recommendations = new Map();
-  function clearCards() {
+  function clearCards(keepRecommendations=false) {
     for (const card of el('communityGrid').children) window.DiscoveryGallery.releaseCard(card);
-    artists.clear(); recommendations.clear(); el('communityGrid').replaceChildren();
+    artists.clear(); if(!keepRecommendations)recommendations.clear(); el('communityGrid').replaceChildren();
   }
-  function appendRecommendations(rows) {
+  const modelLabels=art=>Array.isArray(art.modelLabels) && art.modelLabels.length
+    ? art.modelLabels : String(art.baseModel||'Unknown').split(' | ');
+  function filterModels(media='all') {
+    const counts=new Map();
+    for(const {artwork:art} of recommendations.values()) {
+      if(media!=='all' && (art.type||'image')!==media)continue;
+      for(const name of new Set(modelLabels(art)))counts.set(name,(counts.get(name)||0)+1);
+    }
+    return [...counts].map(([model,images])=>({model,images})).sort((a,b)=>b.images-a.images||a.model.localeCompare(b.model));
+  }
+  function applyFilters() {
+    clearCards(true);appendRecommendations([...recommendations.values()],false);
+    const count=el('communityGrid').children.length;
+    message(count ? '' : cursor ? 'No loaded recommendations match. Scroll to check more recommendations.' : 'No recommendations match your filters.');
+  }
+  function appendRecommendations(rows,remember=true) {
     const addedArtists = [], addedCards = [], artworks = [];
     for (const row of rows) {
       const id = String(row.artwork.id);
-      if (recommendations.has(id)) continue;
-      recommendations.set(id, row);
+      if (remember && recommendations.has(id)) continue;
+      if(remember)recommendations.set(id, row);
+      const filters=window.galleryFilterState();
+      if(filters.media!=='all' && (row.artwork.type||'image')!==filters.media)continue;
+      if(filters.models.length && !modelLabels(row.artwork).some(name=>filters.models.includes(name)))continue;
       const art = {...row.artwork, community:true, civitaiUrl:row.artwork.imageUrl};
       const key = art.creatorId ? `id:${art.creatorId}` : `name:${art.username.toLowerCase()}`;
       artworks.push(art);
@@ -149,6 +167,7 @@ export function mountCommunity() {
       card.append(credit); artists.set(key, card); el('communityGrid').append(card);
       addedArtists.push(artist); addedCards.push(card);
     }
+    if(remember)window.dispatchEvent(new Event('community-model-catalog-changed'));
     window.DiscoveryGallery.enrichCards(addedArtists, addedCards);
     window.DiscoveryGallery.hydrateReactionStates(artworks).catch(error => console.warn('Reaction history could not be loaded', error));
   }
@@ -197,7 +216,7 @@ export function mountCommunity() {
       const cached = result.cache;
       if (result.counts) el('communityCounts').textContent = `This page: ${result.counts.acceptedPage} records; ${result.counts.contentControls} filtered; ${result.counts.returned} returned. More pages: ${cursor ? 'yes' : 'no'}.`;
       if (first && cached) el('communityMode').textContent += ` \u00b7 ${cached.state === 'stale' ? 'Cached results - refresh pending' : 'Metadata cached'} \u00b7 ${new Date(cached.verifiedAt * 1000).toLocaleString()}`;
-      message(recommendations.size ? '' : cursor ? 'Checking more recommendations against your content controls as you scroll.' : 'No recommendations match your content controls yet. Spotlight an artist to get things started.');
+      message(artists.size ? '' : cursor ? 'Checking more recommendations against your content controls as you scroll.' : 'No recommendations match your content controls yet. Spotlight an artist to get things started.');
       // Recheck an initially empty cache only a bounded number of times. Never reset
       // an already-rendered feed or its scroll position during background hydration.
       if (!recommendations.size && !cursor && (result.metadataRefreshing || cached?.refreshing) && metadataRetries++ < 2) {
@@ -373,6 +392,6 @@ export function mountCommunity() {
     if (!section.classList.contains('hidden')) activate();
   });
   window.addEventListener('content-controls-changing', invalidate);
-  window.CivitaiCommunity = Object.freeze({load, recommend, activate, deactivate});
+  window.CivitaiCommunity = Object.freeze({load, recommend, activate, deactivate, filterModels, applyFilters});
   setInterval(()=>{if(policyControlled&&authorized&&!document.hidden&&!section.classList.contains('hidden'))activate();},60000);
 }

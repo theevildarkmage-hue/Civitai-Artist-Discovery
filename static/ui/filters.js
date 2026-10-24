@@ -78,7 +78,7 @@ export function mountFilters(actions) {
     position();
     button.setAttribute('aria-expanded', 'true');
     search.disabled = true;
-    if (!document.body.classList.contains('community-view')) await actions.refreshModels();
+    await actions.refreshModels();
     search.disabled = false;
     applyModelSearch();
   };

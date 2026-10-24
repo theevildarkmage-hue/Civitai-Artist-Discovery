@@ -38,6 +38,13 @@ class CommunityTests(unittest.TestCase):
     def used(self, member=1):
         return self.backend.request('status', f'fixture:{member}', {})['quota']['used']
 
+    def test_model_projection_and_old_cache_compatibility(self):
+        legacy={'id':1,'creator_id':2,'username':'Synthetic','rating':1,'preview':'https://image.civitai.com/example'}
+        self.assertEqual(Artwork(**legacy).browser()['baseModel'],'Unknown')
+        projected=Artwork(**legacy,base_model='Flux.1 D | YuE2-3B').browser()
+        self.assertEqual(projected['modelLabels'],('Flux.1 D','YuE2-3B'))
+        self.assertEqual(projected['type'],'image')
+
     def test_valid_and_preview_does_not_consume(self):
         self.request(1001, operation='verify'); self.assertEqual(0,self.used())
         self.assertEqual(1,self.request(1001)['quota']['used'])

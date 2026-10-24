@@ -21,6 +21,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .models import base_labels, normalize_base_model
+
 MESSAGES = {
     "INVITE_ONLY": "Community Beta is Invite Only",
     "INVITE_REVOKED": "Your Community Beta invitation has been revoked.",
@@ -97,13 +99,15 @@ class Artwork:
     tag_ids: tuple[int, ...] = ()
     tags_known: bool = True
     owner_verified: bool = True
+    base_model: str = "Unknown"
 
     def browser(self):
         return {"id": self.id, "creatorId": self.creator_id if self.owner_verified else None, "username": self.username,
                 "browsingLevel": self.rating, "thumbnailUrl": self.preview,
                 "url": self.preview, "imageUrl": f"https://civitai.red/images/{self.id}",
                 "profileUrl": f"https://civitai.red/user/{urllib.parse.quote(self.username, safe='')}",
-                "type": "image"}
+                "type": "image", "baseModel": self.base_model,
+                "modelLabels": base_labels(self.base_model)}
 
 
 @dataclass(frozen=True)
@@ -304,7 +308,8 @@ class CivitaiVerifier:
                                             or type(t.get("id")) is not int for t in tags):
             raise CommunityError("INVALID_ARTWORK")
         return Artwork(image_id, creator, user["username"], rating, preview,
-                       tuple(t["name"].casefold() for t in tags), tuple(t["id"] for t in tags))
+                       tuple(t["name"].casefold() for t in tags), tuple(t["id"] for t in tags),
+                       base_model=normalize_base_model(item.get("baseModel")))
 
 
 # Frozen packages exclude the development implementation and its member fixtures.
