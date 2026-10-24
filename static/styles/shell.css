@@ -36,8 +36,8 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
    rating is the exception: choosing one that the stored archive does not cover is what
    raises this screen, so hiding the control here strands the reader on the one screen
    where they cannot undo the choice that brought them to it. */
-.segment-toolbar.build-mode > :not(.calendar-toggle):not(.active-filters):not(#contentMenu) { display: none !important; }
-.segment-toolbar.build-mode .active-filters > :not(#contentFilter):not(#contentMenu):not(.preferences-button) { display: none !important; }
+.segment-toolbar.build-mode > :not(.calendar-toggle):not(#filterToggle):not(.active-filters):not(#contentMenu) { display: none !important; }
+.segment-toolbar.build-mode .active-filters > :not(#contentMenu):not(.preferences-button) { display: none !important; }
 .command-bar .sweep-note.personalization-note { position: absolute; top: calc(100% + 8px); right: 20px; width: min(760px, calc(100vw - 40px)); flex: none; }
 .filter-menu { border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-popover); }
 main { padding: 18px 20px 60px; }

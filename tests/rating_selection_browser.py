@@ -28,18 +28,19 @@ try:
     else:route.fallback()
    page.route('**/api/history/day?*',day_response)
    page.goto(h.base,wait_until='networkidle');page.evaluate('(day)=>loadDay(day)',DAY)
-   page.locator('#contentFilter').click()
+   page.locator('#filterToggle').click()
    def click(levels):
-    page.evaluate('(levels)=>levels.forEach(level=>document.querySelector(`#contentPanel [data-level="${level}"]`).click())',levels)
+    page.evaluate('(levels)=>levels.forEach(level=>document.querySelector(`#contentMenu [data-level="${level}"]`).click())',levels)
    def release():
     route,value=held.pop(0);saved.update(value)
     saved['contentRating']='X' if any(n>=8 for n in saved['browsingLevels']) else 'Mature' if 4 in saved['browsingLevels'] else 'Soft'
     respond(route,saved.copy())
    before=len(days)
    click([16,4,1,8])
-   assert page.locator('#contentFilter').is_enabled()
-   assert page.locator('#contentPanel button[data-level]:disabled').count()==0
-   page.wait_for_function('()=>document.querySelector("#contentFilter").getAttribute("aria-busy")==="true"')
+   assert page.locator('#filterToggle').is_enabled()
+   assert page.locator('#contentFilter,#contentPanel').count()==0
+   assert page.locator('#contentMenu button[data-level]:disabled').count()==0
+   page.wait_for_function('()=>document.querySelector("#contentMenu").getAttribute("aria-busy")==="true"')
    for _ in range(100):
     if held:break
     page.wait_for_timeout(10)
@@ -55,12 +56,12 @@ try:
    assert set(page.evaluate('galleryFilterState().levels'))=={1,2,4}
    assert len(days)==before
    release()
-   page.wait_for_function('()=>document.querySelector("#contentFilter").getAttribute("aria-busy")==="false"')
+   page.wait_for_function('()=>document.querySelector("#contentMenu").getAttribute("aria-busy")==="false"')
    page.wait_for_timeout(500)
    assert len(days)==before+1,(days,before)
    assert set(saved['browsingLevels'])=={1,2,4}
    fail[0]=True;click([4]);page.wait_for_timeout(600)
-   page.wait_for_function('()=>document.querySelector("#contentFilter").getAttribute("aria-busy")==="false"')
+   page.wait_for_function('()=>document.querySelector("#contentMenu").getAttribute("aria-busy")==="false"')
    assert set(page.evaluate('galleryFilterState().levels'))=={1,2,4}
    # A second selection during an in-flight gallery read must cancel that
    # read and still initiate the final reload (dayBuilt is temporarily false).
@@ -80,7 +81,7 @@ try:
     if held:break
     page.wait_for_timeout(10)
    release()
-   page.wait_for_function('()=>dayBuilt && document.querySelector("#contentFilter").getAttribute("aria-busy")==="false"')
+   page.wait_for_function('()=>dayBuilt && document.querySelector("#contentMenu").getAttribute("aria-busy")==="false"')
    assert set(saved['browsingLevels'])=={1,2,4,8,16}
    assert set(page.evaluate('galleryFilterState().levels'))=={1,2,4,8,16}
    keys=page.evaluate('''async()=>{

@@ -42,6 +42,8 @@ def creator(index):
 
 
 def install_fixture(page, base_url, *, cached_tags=False):
+    # Daily-view scenarios begin from an explicitly restored Daily tab.
+    page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
     cards = [creator(i) for i in range(1, 121)]
     if cached_tags:
         for card in cards:
