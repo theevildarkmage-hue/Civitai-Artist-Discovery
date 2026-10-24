@@ -43,7 +43,7 @@ try:
             # A new server invitation takes effect on refresh, without a local toggle.
             state['code']='INVITED';page.locator('#communityRefresh').click()
             page.wait_for_function('()=>!document.querySelector("#communityRecommend").disabled')
-            page.locator('#communityRecommend').click();assert page.locator('.community-dialog[open]').count()==1
+            page.locator('#communityRecommend').click();page.locator('.community-dialog[open]').wait_for()
             page.locator('#communityCancel').click()
             state['code']='OWNER';page.locator('#communityRefresh').click()
             page.wait_for_function('()=>document.querySelector("#communityQuota").textContent.includes("Unlimited")')
