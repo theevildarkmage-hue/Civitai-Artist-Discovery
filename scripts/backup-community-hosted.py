@@ -61,7 +61,7 @@ def main():
     snapshot=api('/database/query/read-only',snapshot_query())[0]['snapshot']
     assert validate_catalog(matrix,a.schema_model,migrations=snapshot['migrations'])['passed'],'Hosted baseline drift'
     expected_count=len(json.loads(a.manifest.read_text())['files']) if a.manifest else 4
-    assert expected_count in (4,7,8,9) and len(snapshot['migrations'])==expected_count,'Unexpected migration history'
+    assert expected_count in (4,7,8,9,10) and len(snapshot['migrations'])==expected_count,'Unexpected migration history'
     functions=api('/functions');function=next(f for f in functions if f['slug']=='community-v1')
     assert function['version']==(a.expected_function_version or 10) and function['status']=='ACTIVE'
     files=sorted((ROOT/'supabase/migrations').glob('*.sql'))
@@ -131,7 +131,7 @@ def main():
         assert not mismatch,'Independent restore mismatch in sections: '+','.join(mismatch)
         checks+=['all scoped table records match','migration history and statements match','sequence state matches','foreign keys and checks enforced on restore']
         for member in snapshot['public.community_members']:
-            quota=json.loads(sql('select '+('community_quota_legacy' if a.schema_model!='baseline' else 'community_quota')+'('+str(member['civitai_id'])+');'));assert 0<=quota['used'] and (expected_count==9 and member['civitai_id']==11107642 or quota['used']<=3)
+            quota=json.loads(sql('select '+('community_quota_legacy' if a.schema_model!='baseline' else 'community_quota')+'('+str(member['civitai_id'])+');'));assert 0<=quota['used'] and (expected_count>=9 and member['civitai_id']==11107642 or quota['used']<=3)
         checks+=['restored quota RPC executes']
         if a.schema_model!='baseline':
             stats=json.loads(sql("begin;select community_private.owner_admin('registry_stats',null,'Independent restore verification');rollback;"));assert stats['users']==len(snapshot['community_private.discovery_users'])

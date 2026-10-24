@@ -154,16 +154,16 @@ with tempfile.TemporaryDirectory(prefix='cad3-content-hover-', ignore_cleanup_er
                 assert not compact.is_visible()
                 content.press('ArrowDown')
                 page.keyboard.press('Space')
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && !galleryFilterState().levels.includes(1)")
+                page.wait_for_function("() => document.querySelector('#contentFilter').getAttribute('aria-busy')!=='true' && !galleryFilterState().levels.includes(1)")
                 page.keyboard.press('Escape')
                 content.click()
                 compact.locator('[data-level="1"]').click()
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && galleryFilterState().levels.length===3")
+                page.wait_for_function("() => document.querySelector('#contentFilter').getAttribute('aria-busy')!=='true' && galleryFilterState().levels.length===3")
                 page.keyboard.press('Escape')
 
                 content.click()
                 compact.locator('[data-level="4"]').click()
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && galleryFilterState().levels.length===2")
+                page.wait_for_function("() => document.querySelector('#contentFilter').getAttribute('aria-busy')!=='true' && galleryFilterState().levels.length===2")
                 assert get(base, '/api/settings')['browsingLevels'] == [1, 2]
                 page.wait_for_function("() => document.querySelectorAll('#gallery .creator-card').length===2")
                 assert page.locator('[data-username="gamma"]').count() == 0
@@ -171,7 +171,7 @@ with tempfile.TemporaryDirectory(prefix='cad3-content-hover-', ignore_cleanup_er
                 assert full.is_visible() and not compact.is_visible()
                 assert full.locator('[data-level="4"]').get_attribute('aria-pressed') == 'false'
                 full.locator('[data-level="4"]').click()
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && galleryFilterState().levels.length===3")
+                page.wait_for_function("() => document.querySelector('#contentFilter').getAttribute('aria-busy')!=='true' && galleryFilterState().levels.length===3")
                 content.click()
                 assert compact.is_visible() and not full.is_visible()
                 assert compact.locator('[data-level="4"]').get_attribute('aria-pressed') == 'true'
@@ -219,7 +219,7 @@ with tempfile.TemporaryDirectory(prefix='cad3-content-hover-', ignore_cleanup_er
                 assert single.get_attribute('data-id') == '11'
                 filters.click()
                 full.locator('.filter-reset').click()
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && galleryFilterState().media==='all' && galleryFilterState().models.length===0 && galleryFilterState().levels.length===2")
+                page.wait_for_function("() => document.querySelector('#contentFilter').getAttribute('aria-busy')!=='true' && galleryFilterState().media==='all' && galleryFilterState().models.length===0 && galleryFilterState().levels.length===2")
                 assert get(base, '/api/settings')['browsingLevels'] == [1, 2]
                 assert get(base, '/api/settings')['mediaType'] == 'all'
                 page.keyboard.press('Escape')

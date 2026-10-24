@@ -29,6 +29,7 @@ from discovery.cache import ThumbnailCache
 
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
+from discovery.archive_calendar import build_request as archive_build_request
 from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
 from discovery.history import HistoryArchive, RetryBudgetExhausted, parse_day, previous_local_day
@@ -51,7 +52,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Discovery 3.0 Beta"
-APP_VERSION = "3.0.0-beta.6"
+APP_VERSION = "3.0.0-beta.7"
 from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
 DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
@@ -1053,41 +1054,9 @@ def claim_single_instance(no_browser: bool, replacing: bool = False) -> bool:
     return False
 
 
-def lan_addresses() -> list[str]:
-    """Return this computer's own network addresses, for reaching the app from a phone.
-
-    The route lookup is asked first and answered alone when it succeeds: a machine with
-    virtual adapters (VMware, Hyper-V, WSL) also owns addresses no other device on the
-    network can reach, and listing those alongside the real one only invites typing the
-    wrong one. Nothing is sent; connecting a UDP socket just resolves the route.
-    """
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect(("192.0.2.1", 53))  # Reserved documentation address.
-            address = probe.getsockname()[0]
-        if not address.startswith("127."):
-            return [address]
-    except OSError:
-        pass
-    try:
-        found = {entry[4][0] for entry in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
-    except (OSError, UnicodeError):
-        return []
-    return sorted(value for value in found if not value.startswith("127."))
-
-
 def is_own_address(hostname: str | None) -> bool:
-    """Decide whether a Host or Origin header names this computer.
-
-    Both the DNS-rebinding guard and the cross-site guard ask this one question, so they
-    cannot drift apart and leave one of them accepting an address the other refuses.
-    Enabling LAN access widens it to this computer's own network addresses and no
-    further: a name that merely resolves to one of them is still a stranger.
-    """
-    host = (hostname or "").lower().rstrip(".")
-    if host in {"127.0.0.1", "localhost", "::1"}:
-        return True
-    return bool(host) and SETTINGS.load()["allowLanAccess"] and host in set(lan_addresses())
+    """Production and development both bind loopback; legacy LAN settings are inert."""
+    return (hostname or '').lower().rstrip('.') in {'127.0.0.1','localhost','::1'}
 
 
 def is_own_app_url(url: str) -> bool:
@@ -1100,7 +1069,7 @@ def is_own_app_url(url: str) -> bool:
     host = (parsed.hostname or "").lower()
     if parsed.scheme != "http" or not port:
         return False
-    return host in {"127.0.0.1", "localhost", "::1"} or host in set(lan_addresses())
+    return is_own_address(host)
 
 
 def save_instance_url(url: str) -> None:
@@ -1346,14 +1315,14 @@ class Handler(BaseHTTPRequestHandler):
                     archives = bool(db.execute("SELECT 1 FROM days WHERE complete=1 LIMIT 1").fetchone())
             except Exception:
                 archives = False
-            self.json_response({"timezoneSource": "browser", "storage": "Isolated Discovery 3.0 development directory",
+            self.json_response({"timezoneSource": "America/Chicago", "archiveCalendar": "America/Chicago", "latestCompleteDay": previous_local_day(), "storage": "Isolated Discovery 3.0 development directory",
                 "hasArchives": archives, "version": APP_VERSION, "developmentDiagnostics": development_diagnostics_enabled()})
             return
         if parsed.path == "/api/settings":
             self.json_response({**SETTINGS.load(), "siteOrigin": SITE_ORIGIN,
                 "ratings": ["Soft", "Mature", "X"],
                 "browsingLevelOptions": [1, 2, 4, 8, 16],
-                "lanAddresses": lan_addresses()})
+                "lanAddresses": []})
             return
         if parsed.path == "/api/update/status":
             enabled = SETTINGS.load()["checkForUpdates"]
@@ -1945,7 +1914,7 @@ class Handler(BaseHTTPRequestHandler):
                                         high_volume_threshold_value=body.get("highVolumeThreshold"),
                                         emerging_reaction_mode_value=body.get("emergingReactionMode"),
                                         emerging_reaction_limit_value=body.get("emergingReactionLimit"),
-                                        allow_lan_access_value=body.get("allowLanAccess"))
+                                        allow_lan_access_value=None)
                 if content_change or gallery_change:
                     with WRITE_LOCK:
                         ORDER_CACHE.clear()
@@ -2006,10 +1975,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"acknowledged": True})
                 return
             if parsed.path == "/api/history/start":
-                value = str(body.get("date") or previous_local_day())
-                self.json_response(HISTORY.start(value, str(body.get("startUtc") or ""),
-                    str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"),
-                    str(body.get("segment") or "all"), body.get("contentRating")), 202)
+                self.json_response(HISTORY.start(*archive_build_request(body),body.get("contentRating")),202)
                 return
             if parsed.path == "/api/history/capture":
                 enabled = body.get("enabled")
@@ -2058,8 +2024,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"added": TIME_MACHINE.refill(name)})
                 return
             if parsed.path == "/api/history/rebuild":
-                value = str(body.get("date") or previous_local_day())
-                self.json_response(HISTORY.rebuild(value, str(body.get("startUtc") or ""), str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"), str(body.get("segment") or "all")), 202)
+                self.json_response(HISTORY.rebuild(*archive_build_request(body)),202)
                 return
             if parsed.path == "/api/history/cancel":
                 value = str(body.get("date") or "")
@@ -2311,14 +2276,9 @@ def main() -> None:
     args = parser.parse_args()
     from discovery.community_security import disable_test_outbound
     disable_test_outbound(DATA_ROOT)
-    allow_lan_access = SETTINGS.load()["allowLanAccess"]
     bind_host = args.host or "127.0.0.1"
     if bind_host != "127.0.0.1" or args.port in (8906, 33101, 33201):
         raise ValueError("Discovery 3.0 development requires loopback and a separate port (default 8907)")
-    allowed_hosts = {"127.0.0.1", "localhost", "::1"} | ({"0.0.0.0"} if allow_lan_access else set())
-    if bind_host not in allowed_hosts:
-        raise ValueError("For your privacy, this app can only listen on the local computer "
-                          "unless LAN access is turned on in settings")
     if not claim_single_instance(args.no_browser, args.replacing):
         return
     # The OAuth redirect is registered against one fixed port, so the app must never
@@ -2333,12 +2293,7 @@ def main() -> None:
     actual_port = server.server_address[1]
     global RUNNING_PORT
     RUNNING_PORT = actual_port
-    # With LAN access on, the window opens on this computer's network address rather
-    # than loopback. Both reach the same server, but only the network one can be read
-    # off the address bar and typed into a phone, which is the entire point of the
-    # setting: loopback would leave the reader to hunt for the address themselves.
-    addresses = lan_addresses() if bind_host == "0.0.0.0" else []
-    url = f"http://{addresses[0]}:{actual_port}" if addresses else f"http://127.0.0.1:{actual_port}"
+    url = f"http://127.0.0.1:{actual_port}"
     save_instance_url(url)
     UPDATES.schedule_success_cleanup()
     # Only starts a worker when the preference is on; otherwise nothing runs.
@@ -2346,10 +2301,6 @@ def main() -> None:
         CAPTURE.start()
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
-    if bind_host == "0.0.0.0":
-        print(f"LAN access is ON: other devices on your network can reach this app at {url}. "
-              f"Anyone who can reach that address can use the app, including follow/react "
-              f"actions. Turn this off in Settings if you don't want that.")
     tray = None
     if not args.no_browser:
         try:

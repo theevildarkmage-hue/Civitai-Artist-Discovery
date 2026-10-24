@@ -1,8 +1,10 @@
-// Undeployed Edge Function. No SDK dependency and no browser OAuth transport.
+// Shared deployed factory; local candidate changes require a pinned hosted rollout.
+// No SDK dependency and no browser OAuth transport.
 export function createCommunityHandler({fetch:transport=globalThis.fetch, ipLimit=120,
-  ipWindowMs=60000, maxConcurrent=16, ownerOnly=false, invitationOnly=false, distributedLimit=false} = {}) {
+  ipWindowMs=60000, maxConcurrent=16, ownerOnly=false, invitationOnly=false, distributedLimit=false, galleryWindow=false} = {}) {
 const fetch=transport;
 const ingress=new Map<string,{started:number,count:number}>();
+const denied=new Map<string,number>();
 let active=0;
 const messages: Record<string, string> = {
   INVALID_ARTWORK:"Artwork unavailable or ineligible. Use a public Civitai image URL or numeric image ID; check that it opens on Civitai.",
@@ -68,7 +70,7 @@ async function upstream(url: string, token?: string): Promise<any> {
   const response=await fetch(url, {redirect:'manual',signal:AbortSignal.timeout(8000),
     headers:{Accept:'application/json','User-Agent':'CivitaiDiscoveryBeta/3.0.0-beta.1',...(token?{Authorization:`Bearer ${token}`}:{})}});
   if(response.status===401) fail('AUTH_EXPIRED');
-  if(response.status===403) fail(url==='https://auth.civitai.com/api/auth/oauth/userinfo'?'AUTH_EXPIRED':'INVALID_ARTWORK');
+  if(response.status===403) fail((url==='https://auth.civitai.com/api/auth/oauth/userinfo'||url==='https://civitai.com/api/v1/me')?'AUTH_EXPIRED':'INVALID_ARTWORK');
   if(response.status===429) fail('RATE_LIMITED');
   if(response.status===404) fail('INVALID_ARTWORK');
   if(!response.ok || response.status>=300) fail('UNAVAILABLE');
@@ -127,10 +129,17 @@ function unwrapResult(response: any): any {
   }
   return hydrate(0);
 }
-async function artwork(image: number, token: string): Promise<number> {
-  const list=await upstream(`https://civitai.red/api/v1/images?imageId=${image}&limit=1&browsingLevel=31`,token);
+async function artwork(image: number, token: string, publicReview=false): Promise<number> {
+  const list=await upstream(`https://civitai.red/api/v1/images?imageId=${image}&limit=1&browsingLevel=31`,publicReview?undefined:token);
   const item=list?.items?.[0];
   if(!Array.isArray(list?.items) || list.items.length!==1 || item?.id!==image || item?.type!=='image') fail('INVALID_ARTWORK');
+  // Shared eligibility uses independent anonymous public visibility/rating proof.
+  // Authenticated detail remains required for numeric ownership and public flags.
+  if(publicReview) {
+    const policy=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??'1,2').split(',').map(Number);
+    if(!policy.length||policy.some(n=>![1,2,4,8,16].includes(n)))fail('UNAVAILABLE');
+    if([1,2,4,8,16].includes(item.browsingLevel)&&!policy.includes(item.browsingLevel))fail('PUBLIC_RATING');
+  }
   const input=encodeURIComponent(JSON.stringify({json:{id:image}}));
   const response=await upstream(`https://civitai.red/api/trpc/image.get?input=${input}`,token);
   const detail=unwrapResult(response);
@@ -151,7 +160,7 @@ async function artwork(image: number, token: string): Promise<number> {
 return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
   let admitted=false;
   try {
-    // No browser OAuth transport. Peer identity comes from the runtime, never XFF.
+    // No browser OAuth transport or caller-supplied peer/identity admission.
     if(request.headers.has('Origin')) fail('FORBIDDEN');
     if(active>=maxConcurrent) fail('UNAVAILABLE');
     admitted=true; active++;
@@ -176,17 +185,28 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
       bucket={started:now,count:0};ingress.set(digest,bucket);
     }
     if(++bucket.count>ipLimit)fail('RATE_LIMITED');
+    // Invalid credentials cannot create SQL buckets. Cache only verified
+    // authentication denials; never cache positive identity or provider outages.
+    for(const [key,until] of denied)if(until<=now)denied.delete(key);
+    if((denied.get(digest)??0)>now)fail('AUTH_EXPIRED');
+    let member:any,memberId:number,username:string;
+    try {
+      member=await upstream('https://auth.civitai.com/api/auth/oauth/userinfo',token);
+      try {memberId=id(member?.sub);if(member.id!=null&&id(member.id)!==memberId)fail('AUTH_EXPIRED');}
+      catch {return fail('AUTH_EXPIRED');}
+      username=member.preferred_username||member.username;
+      if(typeof username!=='string'||username.length<1||username.length>200)fail('AUTH_EXPIRED');
+      const grant=await upstream('https://civitai.com/api/v1/me',token);
+      let same=false;try {same=id(grant?.id)===memberId;}catch {fail('AUTH_EXPIRED');}
+      if(grant?.tokenScope!==33||grant?.subject?.type!=='oauth'||!same)fail('AUTH_EXPIRED');
+    } catch(error) {
+      if(error instanceof Failure&&error.code==='AUTH_EXPIRED') {
+        if(denied.size>=2048)denied.delete(denied.keys().next().value!);
+        denied.set(digest,now+60000);
+      }
+      throw error;
+    }
     await rpc('community_take_rate',{p_key:`token:${digest}`});
-    // No session cache: revocation and expiration take effect on the next request.
-    const member=await upstream('https://auth.civitai.com/api/auth/oauth/userinfo',token);
-    let memberId:number;
-    try {memberId=id(member?.sub); if(member.id!=null && id(member.id)!==memberId) fail('AUTH_EXPIRED');}
-    catch {return reply({apiVersion:1,code:'AUTH_EXPIRED',error:messages.AUTH_EXPIRED},401);}
-    const username=member.preferred_username||member.username;
-    if(typeof username!=='string' || username.length<1 || username.length>200) fail('AUTH_EXPIRED');
-    // Independently confirm least privilege; caller-supplied scope/identity is ignored.
-    const grant=await upstream('https://civitai.com/api/v1/me',token);
-    if(grant?.tokenScope!==33 || grant?.subject?.type!=='oauth' || id(grant?.id)!==memberId)fail('AUTH_EXPIRED');
     await rpc('community_take_rate',{p_key:`member:${memberId}`});
 
     // The staging entry point fixes this option in code, never in a request.
@@ -254,16 +274,22 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
         const cursor=body.cursor==null?null:id(body.cursor),limit=body.limit??24;
         if(!Number.isInteger(limit) || limit<1 || limit>50) fail('INVALID_REQUEST');
         if(invitationOnly) {
-          const candidates=await rpc('community_review_candidates',{p_member:memberId});
+          const candidates=galleryWindow
+            ? await rpc('community_prepare_gallery',{p_member:memberId,p_cursor:cursor,p_limit:limit})
+            : await rpc('community_review_candidates',{p_member:memberId});
           if(!Array.isArray(candidates) || candidates.length>3) fail('UNAVAILABLE');
           await Promise.all(candidates.map(async (candidate:any)=>{
             const image=id(candidate.imageId),creator=id(candidate.creatorId);
             let failure:string|null=null;
-            try {if(await artwork(image,token)!==creator) failure='owner';}
+            try {if(await artwork(image,token,galleryWindow)!==creator) failure=galleryWindow?'viewer':'owner';}
             catch(error) {
               const code=error instanceof Failure?error.code:'UNAVAILABLE';
-              if(code==='AUTH_EXPIRED') throw error;
-              failure=code==='CONTENT_FILTERED'?'rating':code==='INVALID_ARTWORK'||code==='UNVERIFIED_OWNER'?'unavailable':'transient';
+              if(galleryWindow) {
+                failure=code==='PUBLIC_RATING'?'rating':['UNAVAILABLE','RATE_LIMITED'].includes(code)?'transient':'viewer';
+              } else {
+                if(code==='AUTH_EXPIRED')throw error;
+                failure=code==='CONTENT_FILTERED'?'rating':code==='INVALID_ARTWORK'||code==='UNVERIFIED_OWNER'?'unavailable':'transient';
+              }
             }
             await rpc('community_record_review',{p_member:memberId,p_image:image,p_creator:creator,p_lease:candidate.lease,p_failure:failure});
           }));

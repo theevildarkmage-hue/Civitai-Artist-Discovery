@@ -173,7 +173,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def bounded_json(url, token=None, body=None):
-    headers = {"Accept": "application/json", "User-Agent": "CivitaiDiscoveryBeta/3.0.0-beta.6"}
+    headers = {"Accept": "application/json", "User-Agent": "CivitaiDiscoveryBeta/3.0.0-beta.7"}
     if token:
         if not isinstance(token, str) or len(token) > 8192 or any(c.isspace() for c in token):
             raise CommunityError("AUTH_EXPIRED", 401)
@@ -655,7 +655,7 @@ class CommunityClient:
             result['controls']={'hiddenCreators':len(profile.creators-profile.blocked_creators),
                 'blockedUsers':len(profile.blocked_creators),'hiddenArtworks':len(profile.images),'hiddenTags':len(profile.tag_ids)}
             if hasattr(self,'store'):
-                with self.store.lock:result['metadataRefreshing']=bool(self.store.pending)
+                with self.store.lock:result['metadataRefreshing']=bool(self.store.pending) or result.get('metadataRefreshing',False) or result.get('reviewPending',False)
         return result
 
 

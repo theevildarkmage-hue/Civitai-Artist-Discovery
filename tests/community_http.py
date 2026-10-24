@@ -123,15 +123,16 @@ else:
             'PGPASSWORD':password or rest_password,'PGRST_DB_SCHEMAS':'public','PGRST_DB_ANON_ROLE':'anon',
             'PGRST_JWT_SECRET':secret,'PGRST_SERVER_HOST':'127.0.0.1','PGRST_SERVER_PORT':str(port_override or rest_port),
             'PGRST_DB_POOL':'4','PGRST_DB_POOL_ACQUISITION_TIMEOUT':'1','PGRST_LOG_LEVEL':'crit'})
-    def start_edge(live=False,state='enabled',private_beta=False,port_override=None,rest_override=None,registry_state='disabled',distributed_limit=False):
+    def start_edge(live=False,state='enabled',private_beta=False,port_override=None,rest_override=None,registry_state='disabled',distributed_limit=False,gallery_window=False):
         return launch('deno',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
-            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_PRIVATE_BETA,DISCOVERY_REGISTRY_STATE,CAD_TEST_DISTRIBUTED_LIMIT',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_PRIVATE_BETA,DISCOVERY_REGISTRY_STATE,CAD_TEST_DISTRIBUTED_LIMIT,CAD_TEST_GALLERY_WINDOW',
             '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red,civitai.com' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
             'SUPABASE_URL':rest_override or rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2' if private_beta else '1,2,4,8,16',
             # The shared handler reads this even outside owner-only mode. Pin an
             # expired synthetic value; never inherit an interactive write window.
             'COMMUNITY_OWNER_TEST_EXPIRES_AT':'2000-01-01T00:00:00Z',
             'CAD_TEST_PRIVATE_BETA':'1' if private_beta else '0',
+            'CAD_TEST_GALLERY_WINDOW':'1' if gallery_window else '0',
             'DISCOVERY_REGISTRY_STATE':registry_state,
             'CAD_TEST_DISTRIBUTED_LIMIT':'1' if distributed_limit else '0',
             'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(port_override or edge_port),
@@ -165,6 +166,30 @@ else:
             bearer=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
             return request(registry_url,{'apiVersion':1,'operation':'register','appVersion':'3.0.0-beta.1','platform':'Linux',**(extra or {})},auth='Bearer '+bearer)[1]
         result=release_run(sql=sql,env=env,output=output,api=api,register=register)
+        # Exact candidate handler, real Edge/PostgREST/Postgres; provider remains synthetic.
+        gallery_port=port();gallery_url=f'http://127.0.0.1:{gallery_port}'
+        wait(gallery_url,start_edge(state='enabled',private_beta=True,port_override=gallery_port,gallery_window=True))
+        gallery_member=seed+4700000;base_image=seed+95000
+        parked=int(sql("select member_id from community_private.invitations where not revoked and expires_at>clock_timestamp() order by member_id limit 1;"))
+        # Owned test namespace only: park one fixture invitation instead of
+        # resetting counters or weakening the five-person enforcement.
+        sql(f"update community_private.invitations set revoked=true where member_id={parked};insert into community_members values({gallery_member},'SyntheticColdGallery');insert into community_private.invitations values({gallery_member},clock_timestamp()+interval '1 day',false);")
+        sql(f"insert into community_recommendations(image_id,creator_id,member_id,week) select {base_image}+n,{base_image}+n+100000,{gallery_member},date_trunc('week',clock_timestamp() at time zone 'UTC')::date from generate_series(0,59)n;insert into community_private.artwork_reviews(image_id,state,checked_at,valid_until) select {base_image}+n,'eligible',clock_timestamp()-interval '1 day',clock_timestamp()-interval '1 day' from generate_series(0,59)n;")
+        seen=[];cursor=None;cursors=[]
+        for _ in range(21):
+            code,page=request(gallery_url,{'apiVersion':1,'operation':'gallery','limit':24,'cursor':cursor},auth='Bearer '+member(4700000))
+            assert code==200,(code,page)
+            seen.extend(x['imageId'] for x in page['items'] if base_image<=x['imageId']<=base_image+59)
+            if len(seen)==60:break
+            next_cursor=page.get('nextCursor');assert next_cursor and next_cursor not in cursors,'Cold page ended early or repeated cursor'
+            cursors.append(next_cursor);cursor=int(next_cursor)
+        assert len(seen)==len(set(seen))==60 and seen==sorted(seen,reverse=True)
+        code,warm=request(gallery_url,{'apiVersion':1,'operation':'gallery','limit':24},auth='Bearer '+member(4700000))
+        assert code==200 and len(warm['items'])==24
+        for role in ('anon','authenticated'):
+            assert api(role,'community_prepare_gallery',{'p_member':gallery_member})[0] in (401,403)
+        (output/'gallery-window-http.json').write_text(json.dumps({'passed':True,'coldRows':60,'coldPages':len(cursors)+1,'warmRows':24,'realEdgePostgRESTPostgres':True,'syntheticProvider':True,'hostedMutation':False},indent=2))
+        sql(f"delete from community_private.artwork_reviews where image_id between {base_image} and {base_image+59};delete from community_recommendations where image_id between {base_image} and {base_image+59};delete from community_private.invitations where member_id={gallery_member};delete from community_members where civitai_id={gallery_member};update community_private.invitations set revoked=false where member_id={parked};")
         assert register().get('registered') is True
         restore_token=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
         result['releaseRestore']=backup_release(sql=sql,env=env,output=output,restore_http=lambda db:restored_probe(db,restore_token))
@@ -191,7 +216,7 @@ else:
         # canonical bytes were compared, and both immutable digests are recorded.
         assert digest=='f879ae189551dfed71649002c9b6f4708c4e07a6e6b0e55272d94c31c3d898eb','Pinned v10 source mismatch'
         (legacy_dir/'handler.ts').write_bytes(old)
-        launcher=(ROOT/'supabase/tests/local_service.ts').read_text().replace("../functions/community-v1/handler.ts","./handler.ts").replace("invitationOnly:Deno.env.get('CAD_TEST_PRIVATE_BETA')==='1'","ownerOnly:true")
+        launcher=(ROOT/'supabase/tests/local_service.ts').read_text().replace("../functions/community-v1/handler.ts","./handler.ts").replace("invitationOnly:Deno.env.get('CAD_TEST_PRIVATE_BETA')==='1'","ownerOnly:true").replace(",galleryWindow:Deno.env.get('CAD_TEST_GALLERY_WINDOW')==='1'","")
         (legacy_dir/'serve.ts').write_text(launcher)
         legacy_port=port();url=f'http://127.0.0.1:{legacy_port}'
         proc=launch('legacy-v10',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
@@ -280,10 +305,16 @@ else:
         edge_process.terminate();edge_process.wait(timeout=10);edge_process=start_edge();wait(edge,edge_process)
         scenarios.append({'scenario':'real-http-policy-changes','states':['read_only','disabled','enabled'],'persisted':0})
         # No Civitai credential or identity assertion is accepted from the caller.
+        invalid_rate_before=sql('select count(*) from community_rate_buckets;')
         for auth in (None,'Basic invalid','Bearer invalid','Bearer '+member(0,expired=True)):
             status,value=request(edge,{'apiVersion':1,'operation':'status'},auth=auth)
             assert status==401,(status,value)
-        fault='revoked';assert call()[1]['code']=='AUTH_EXPIRED';fault=''
+        assert sql('select count(*) from community_rate_buckets;')==invalid_rate_before,'Invalid credentials created SQL buckets'
+        revoked_bearer=member(949)
+        fault='revoked';assert request(edge,{'apiVersion':1,'operation':'status'},auth='Bearer '+revoked_bearer)[1]['code']=='AUTH_EXPIRED';fault=''
+        # The exact revoked grant stays denied; a separate valid grant is unaffected.
+        assert request(edge,{'apiVersion':1,'operation':'status'},auth='Bearer '+revoked_bearer)[1]['code']=='AUTH_EXPIRED'
+        assert call()[0]==200
         for fields in ({'memberId':seed+1},{'creatorId':42},{'owner':seed}):
             assert call('recommend',artwork=seed+10000,**fields)[1]['code']=='INVALID_REQUEST'
         assert call('moderate',artwork=seed+10000)[1]['code']=='INVALID_REQUEST'

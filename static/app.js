@@ -85,6 +85,7 @@ function showContentRating() {
     : "⚠ Mature content is enabled. Some images may be explicit.";
 }
 window.addEventListener('shared-settings-changed', async event => {
+  if(contentSelection.pending)return;
   visibleBrowsingLevels = new Set(event.detail.browsingLevels);
   contentRating = event.detail.contentRating;
   showContentRating();
@@ -166,20 +167,48 @@ async function saveGalleryPreferences(patch, reload = true) {
     showGalleryPreferences();
   }
 }
-async function chooseContentRating(nextLevels) {
-  window.dispatchEvent(new Event('content-controls-changing'));
-  const previous = contentRating, buttons = [...$("contentMenu").querySelectorAll("[data-level]")];
-  $("contentFilter").disabled = true; buttons.forEach(button => button.disabled = true);
-  try {
-    const result = await api("/api/settings", { method: "POST", body: JSON.stringify({ browsingLevels: nextLevels }) });
-    contentRating = result.contentRating; visibleBrowsingLevels = new Set(result.browsingLevels); showContentRating();
-    const lowering = ({ Soft: 0, Mature: 1, X: 2 }[contentRating] || 0) < ({ Soft: 0, Mature: 1, X: 2 }[previous] || 0);
-    toast(lowering ? `Showing ${contentButtonLabel()} from saved galleries. No download needed.`
-      : `Showing ${contentButtonLabel()}. Incomplete coverage will be marked for upgrade.`);
-    if (selectedDate && currentView === 'gallery') await loadDay(selectedDate, false, true);
-  } catch (error) { toast(error.message); }
-  finally { $("contentFilter").disabled = false; buttons.forEach(button => button.disabled = false); }
-}
+let contentReloadNeeded=false;
+const contentSelection = window.CivitaiUI.createSelectionQueue({
+  read:()=>[...visibleBrowsingLevels],
+  preview:(levels,result,error)=>{
+    visibleBrowsingLevels=new Set(levels);
+    contentRating=levels.some(level=>level>=8)?'X':levels.includes(4)?'Mature':'Soft';
+    showContentRating();
+    if(!result&&!error) {
+      contentReloadNeeded=contentReloadNeeded||dayBuilt;
+      $('contentFilter').setAttribute('aria-busy','true');
+      ++activeLoadToken;clearGallery();
+      window.dispatchEvent(new Event('content-controls-changing'));
+    }
+  },
+  save:levels=>api('/api/settings',{method:'POST',controlBatch:true,
+    body:JSON.stringify({browsingLevels:levels})}),
+  failure:error=>toast(error.message),
+  settle:async(result,error,isCurrent)=>{
+    // A transport failure can have an unknown server outcome: re-read, never
+    // replay the mutation. Later local intent takes precedence over this reply.
+    if(error) {
+      try {result=await api('/api/settings');}
+      catch(problem) {
+        if(isCurrent()&&!contentSelection.pending){$('contentFilter').setAttribute('aria-busy','false');window.CivitaiUI.finishControlChange(null);}
+        throw problem;
+      }
+    }
+    if(!isCurrent()||contentSelection.pending)return;
+    $('contentFilter').setAttribute('aria-busy','false');
+    if(result) {
+      visibleBrowsingLevels=new Set(result.browsingLevels);contentRating=result.contentRating;
+      showContentRating();
+    }
+    window.CivitaiUI.finishControlChange(result);
+    if(contentReloadNeeded&&selectedDate&&currentView==='gallery'){
+      await loadDay(selectedDate,false,true);
+      if(isCurrent()&&dayBuilt&&!contentSelection.pending)contentReloadNeeded=false;
+    }
+  },
+});
+function chooseContentRating(nextLevels) {return contentSelection.choose(nextLevels);}
+
 function toast(text) { $("toast").textContent = text; $("toast").classList.remove("hidden"); setTimeout(() => $("toast").classList.add("hidden"), 3000); }
 function updateBytes(value) {
   const bytes = Math.max(0, Number(value) || 0);
@@ -300,72 +329,6 @@ $("updateChecks").onchange = async () => {
     else await refreshUpdateStatus();
   } catch (error) { $("updateChecks").checked = updateChecksEnabled; toast(error.message); }
   finally { $("updateChecks").disabled = false; }
-};
-let allowLanAccess = false;
-function showLanAddress(addresses) {
-  const hint = $("lanAddressHint");
-  const list = Array.isArray(addresses) ? addresses : [];
-  hint.classList.toggle("hidden", !allowLanAccess || !list.length);
-  $("lanFirewallHelp").classList.toggle("hidden", !allowLanAccess);
-  if (!allowLanAccess || !list.length) return;
-  const port = window.location.port ? `:${window.location.port}` : "";
-  hint.textContent = `Open on another device: ${list.map(address => `http://${address}${port}`).join("  ·  ")}`;
-}
-function closeLanRestartDialog(revert) {
-  $("lanRestartDialog").close();
-  $("lanRestartStatus").classList.add("hidden");
-  $("lanRestartConfirm").disabled = false;
-  $("lanRestartCancel").disabled = false;
-  if (revert) { $("allowLanAccess").checked = allowLanAccess; $("allowLanAccess").disabled = false; }
-}
-$("allowLanAccess").onchange = () => {
-  const desired = $("allowLanAccess").checked;
-  $("lanRestartTitle").textContent = desired ? "Allow LAN access?" : "Turn off LAN access?";
-  $("lanRestartSummary").textContent = desired
-    ? "Restarting will make this app reachable from other devices on your network. Anyone who can reach this computer's address will be able to use the app, including follow/react actions on your account."
-    : "Restarting will stop other devices on your network from reaching this app.";
-  $("lanFirewallWarning").classList.toggle("hidden", !desired);
-  $("lanRestartDialog").showModal();
-};
-$("closeLanRestart").onclick = () => closeLanRestartDialog(true);
-$("lanRestartCancel").onclick = () => closeLanRestartDialog(true);
-$("lanRestartDialog").onclick = event => { if (event.target === $("lanRestartDialog")) closeLanRestartDialog(true); };
-$("lanRestartConfirm").onclick = async () => {
-  const desired = $("allowLanAccess").checked;
-  $("lanRestartConfirm").disabled = true;
-  $("lanRestartCancel").disabled = true;
-  const status = $("lanRestartStatus");
-  status.classList.remove("hidden");
-  status.textContent = "Restarting the app…";
-  try {
-    await api("/api/settings", { method: "POST", body: JSON.stringify({ allowLanAccess: desired }) });
-    allowLanAccess = desired;
-    await api("/api/app/restart", { method: "POST", body: "{}" });
-    // The old process is shutting down; the new one comes back on the same port, so
-    // this tab waits for it rather than navigating blindly. Once it answers, the tab
-    // moves to the address the new setting is about: turning LAN access on shows the
-    // network address that a phone can be pointed at, and turning it off returns to
-    // loopback, which is the only address still being served.
-    for (let attempt = 0; attempt < 30; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      try {
-        const current = await api("/api/settings");
-        const port = window.location.port ? `:${window.location.port}` : "";
-        const onLoopback = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(window.location.hostname);
-        const lanAddress = (current.lanAddresses || [])[0];
-        if (desired && lanAddress && onLoopback) window.location.href = `http://${lanAddress}${port}`;
-        else if (!desired && !onLoopback) window.location.href = `http://127.0.0.1${port}`;
-        else window.location.reload();
-        return;
-      } catch (_) { /* still restarting */ }
-    }
-    status.textContent = "The app is taking longer than expected to restart. Reload the page in a moment.";
-  } catch (error) {
-    status.textContent = error.message;
-    $("lanRestartConfirm").disabled = false;
-    $("lanRestartCancel").disabled = false;
-    $("allowLanAccess").checked = allowLanAccess;
-  }
 };
 // Automatic collection reaches Civitai on a schedule with nobody watching, so the panel
 // has to answer three things at a glance: that it happens, when it happens next, and how
@@ -665,7 +628,13 @@ window.DiscoveryGallery = Object.freeze({
 function displayDate(value) { return new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" }); }
 function shiftDate(value, delta) { const date = new Date(`${value}T12:00:00`); date.setDate(date.getDate() + delta); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
 function localDateString(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
-function dayRequest(value, segment = selectedSegment) { const start = new Date(`${value}T00:00:00`); if (segment === "evening") start.setHours(12); const end = new Date(start); segment === "all" ? end.setDate(end.getDate() + 1) : end.setHours(end.getHours() + 12); return { date: value, segment, startUtc: start.toISOString(), endUtc: end.toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Local" }; }
+function centralToday() {
+  const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/Chicago',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
+  const value=Object.fromEntries(parts.map(part=>[part.type,part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+function dayRequest(value,segment=selectedSegment) {return {date:value,segment,timezone:'America/Chicago'};}
+
 function friendlyDuration(seconds) { const value = Math.max(0, Math.round(Number(seconds) || 0)); if (value < 60) return "less than a minute"; const minutes = Math.round(value / 60); if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`; const hours = Math.floor(minutes / 60), remainder = minutes % 60; return `${hours} hour${hours === 1 ? "" : "s"}${remainder ? ` ${remainder} min` : ""}`; }
 function etaPoint(seconds) { const value = Math.max(0, Math.round(Number(seconds) || 0)); if (value < 120) return `${Math.max(15, Math.round(value / 15) * 15)} seconds`; const minutes = Math.max(2, Math.round(value / 60)); if (minutes < 60) return `${minutes} minutes`; return friendlyDuration(value); }
 function etaRange(low, high) { if (!Number.isFinite(Number(high))) return null; return `About ${etaPoint(high)} remaining`; }
@@ -859,8 +828,7 @@ function setNavigationBusy(busy) { $("olderDay").disabled = busy; $("newerDay").
 function galleryCalendarState() {
   // Tabs commonly stay open overnight while automatic capture builds the next
   // gallery. Recompute the selectable boundary instead of keeping launch-day time.
-  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-  const latest = localDateString(yesterday);
+  const latest = shiftDate(centralToday(),-1);
   if (newestDate !== latest) {
     newestDate = latest;
     $("newerDay").disabled = $("olderDay").disabled || selectedDate >= newestDate;
@@ -1190,11 +1158,7 @@ $("startLoading").onclick = async () => {
     // The first view should always be something the chosen collection coverage holds.
     // Afterward the normal browsing selector remains completely independent and local.
     const levels = { Soft: [1, 2], Mature: [1, 2, 4], X: [1, 2, 4, 8, 16] }[buildCoverageRating];
-    const settings = await api("/api/settings", { method: "POST",
-      body: JSON.stringify({ browsingLevels: levels }) });
-    contentRating = settings.contentRating;
-    visibleBrowsingLevels = new Set(settings.browsingLevels);
-    showContentRating();
+    if(!await chooseContentRating(levels))throw new Error("Could not save the selected ratings. Please retry.");
     selectedSegment = buildSegment; $("daySegment").value = buildSegment;
     await (buildSegment === "all" ? beginFullDay(false) : beginSelectedDay(false));
   } catch (error) { showLoadError(error); }
@@ -1399,7 +1363,7 @@ $("dayView").onchange = async () => {
   await reloadView();
   if (selectedView === "foryou") recommendationsNeedRefresh = false;
 };
-const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1); newestDate = localDateString(yesterday);
+newestDate = shiftDate(centralToday(),-1);
 // First launch runs connect, then read the account's own history, then the day. The
 // gallery's default ordering is personal, so without those two steps the app opens on a
 // view it cannot fill and looks broken rather than unconfigured.
@@ -1507,7 +1471,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
 }
 async function startup() {
   const navigationAtStartup = navigationVersion;
-  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]); dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
+  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
