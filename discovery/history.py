@@ -23,7 +23,7 @@ from .civitai import API_LANE, API_URL, USER_AGENT, AdaptivePacer as AdaptivePac
 from .recovery import SuspiciousCaptureError, volume_issue, volume_rows
 from .retry import retry_after_seconds
 from .pagination import PageProgress
-from .diagnostics import redact_sensitive
+from .diagnostics import redact_sensitive, append_log
 from .models import matches_models, normalize_base_model
 from .thumbnails import ThumbnailHints
 from .search import (SEARCH_CLIENT_KEY, SEARCH_PAGE_SIZE, SEARCH_SLICE_RESULT_LIMIT,
@@ -1414,12 +1414,7 @@ class HistoryArchive:
             with self.connect() as db:
                 db.execute("UPDATE days SET complete=0,elapsed_seconds=?,updated_at=? WHERE day=?",
                     (prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
-            try:
-                with (self.root.parent / "error.log").open("a", encoding="utf-8") as output:
-                    output.write(f"\n[{utcnow()}] Daily search collection: {type(error).__name__}\n"
-                                 f"{traceback.format_exc()}")
-            except OSError:
-                pass
+            append_log(self.root.parent, f"\n[{utcnow()}] Daily search collection: {type(error).__name__}\n{traceback.format_exc()}")
             outage = isinstance(error, RetryBudgetExhausted)
             suspicious = isinstance(error, SuspiciousCaptureError)
             configuration = isinstance(error, SearchBackendUnavailable)
@@ -1826,12 +1821,7 @@ class HistoryArchive:
             with self.connect() as db:
                 db.execute("UPDATE days SET complete=0,elapsed_seconds=?,updated_at=? WHERE day=?",
                     (prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
-            try:
-                with (self.root.parent / "error.log").open("a", encoding="utf-8") as output:
-                    output.write(f"\n[{utcnow()}] Daily history collection: {type(error).__name__}\n"
-                                 f"{traceback.format_exc()}")
-            except OSError:
-                pass
+            append_log(self.root.parent, f"\n[{utcnow()}] Daily history collection: {type(error).__name__}\n{traceback.format_exc()}")
             outage = isinstance(error, RetryBudgetExhausted)
             suspicious = isinstance(error, SuspiciousCaptureError)
             window = isinstance(error, HistoryWindowUnavailable)
