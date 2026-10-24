@@ -101,6 +101,7 @@ with tempfile.TemporaryDirectory(
                     content_type="application/json", body='{"hasData":true}'
                 ),
             )
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(base, wait_until="domcontentloaded")
             page.locator(".creator-card").first.wait_for()
             page.locator("#filterToggle").click()

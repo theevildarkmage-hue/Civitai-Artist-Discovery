@@ -13,6 +13,7 @@ import weakref
 
 FRESH_SECONDS = 24 * 60 * 60
 THUMBNAIL_LANE=threading.BoundedSemaphore(3)
+METADATA_REFRESH_LANE=threading.BoundedSemaphore(3)
 
 
 class MetadataCache:
@@ -60,6 +61,9 @@ class MetadataCache:
             if key in self.pending:return False
             prior=self.get_attempt(key)
             if background and prior and prior['error'] and self.clock()-(prior['attempt_at'] or 0)<60:return False
+            # Acquire before creating a thread: a pool with an unbounded queue
+            # would merely move the fan-out into waiting workers.
+            if background and not METADATA_REFRESH_LANE.acquire(blocking=False):return False
             self.pending.add(key)
         def work():
             try:self.put(key,loader())
@@ -68,7 +72,13 @@ class MetadataCache:
                 self.failed(key,code,unavailable=code in ('INVALID_ARTWORK','UNVERIFIED_OWNER'))
             finally:
                 with self.lock:self.pending.discard(key)
-        if background:threading.Thread(target=work,daemon=True,name='metadata-refresh').start()
+                if background:METADATA_REFRESH_LANE.release()
+        if background:
+            try:threading.Thread(target=work,daemon=True,name='metadata-refresh').start()
+            except Exception:
+                with self.lock:self.pending.discard(key)
+                METADATA_REFRESH_LANE.release()
+                return False
         else:work()
         return True
 
@@ -102,8 +112,9 @@ class ArtworkCache:
         if entry['unavailable']:raise CommunityError('INVALID_ARTWORK',404)
         if entry['stale'] or force:self.store.refresh(key,load,background=True)
         value=entry['value'];value['tags']=tuple(value.get('tags',()));value['tag_ids']=tuple(value.get('tag_ids',()))
+        with self.store.lock:refreshing=key in self.store.pending
         return Artwork(**value),{'state':'stale' if entry['stale'] else 'cached',
-            'verifiedAt':entry['verified_at'],'refreshing':entry['stale'] or force,'lastError':entry['error']}
+            'verifiedAt':entry['verified_at'],'refreshing':refreshing,'lastError':entry['error']}
 
 
 def thumbnail_source(url,width=512,*,video=False):

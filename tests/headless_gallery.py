@@ -90,6 +90,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
             page.route("**/api/history/rebuild", rebuild)
             page.route("**/api/history/start", rebuild)
             page.on("dialog", lambda dialog: dialog.accept())
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{port}", wait_until="networkidle", timeout=30000)
             try:
                 page.wait_for_selector(".creator-card")

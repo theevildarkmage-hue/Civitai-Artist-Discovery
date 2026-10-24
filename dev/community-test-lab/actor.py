@@ -48,6 +48,8 @@ def metadata(url,token=None,body=None):
         return {'result':{'data':{'json':art['tags']}}}
     raise CommunityError('FORBIDDEN',403)
 def transport(url,token,payload):
+    # Local legacy HTTP bridge only; production never substitutes credentials.
+    assert token == 'sdc_'+'l'*43
     req=urllib.request.Request(config['edge'],data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+access()})
     try:
         with urllib.request.urlopen(req,timeout=12) as response:return json.load(response)
@@ -56,7 +58,7 @@ def transport(url,token,payload):
     except OSError:raise CommunityError('UNAVAILABLE',503)
 identity=config['creator']
 verifier=CivitaiVerifier(fetch=metadata,token_provider=access)
-client=CommunityClient(SupabaseCommunityBackend(os.environ['CAD_COMMUNITY_URL'],fetch=transport,identity_token_provider=access),verifier,access,
+client=CommunityClient(SupabaseCommunityBackend(os.environ['CAD_COMMUNITY_URL'],fetch=transport,identity_token_provider=lambda:'sdc_'+'l'*43),verifier,access,
     lambda token:ContentProfile(levels=frozenset(server.SETTINGS.load()['browsingLevels'])))
 client.mode='supabase';client.identity_provider=lambda:identity['id']
 client.store=MetadataCache(data/'cache/community-metadata.sqlite3')

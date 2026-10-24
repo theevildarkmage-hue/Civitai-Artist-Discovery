@@ -52,7 +52,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Discovery 3.0 Beta"
-APP_VERSION = "3.0.0-beta.9"
+APP_VERSION = "3.0.0-beta.10"
 from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
 DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
@@ -1323,11 +1323,11 @@ class Handler(BaseHTTPRequestHandler):
                 # refresh it, so an idle app would sit until the authorization expired and
                 # the next action failed. The page polls this, so the session stays alive
                 # while someone is reading rather than dying underneath them.
-                from discovery.oauth import session_status, get_community_access_token
+                from discovery.oauth import session_status, get_community_session
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
                 identity=session_status()
                 if identity.get('connected') and not identity.get('needsReauthentication'):
-                    REGISTRY.authenticated(identity,get_community_access_token)
+                    REGISTRY.authenticated(identity,get_community_session)
                 self.json_response({**identity, "oauthJob": job})
             except Exception:
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
@@ -1786,8 +1786,13 @@ class Handler(BaseHTTPRequestHandler):
                 for row in result['items']:
                     art=row['artwork'];store=image_store(int(art['id']))
                     if store and art.get('baseModel','Unknown')=='Unknown':
-                        art['baseModel']=normalize_base_model(store.detail(int(art['id'])).get('baseModel'))
-                        art['modelLabels']=base_labels(art['baseModel'])
+                        try:
+                            art['baseModel']=normalize_base_model(store.cached_base_model(int(art['id'])))
+                            art['modelLabels']=base_labels(art['baseModel'])
+                        except Exception:
+                            # Optional model enrichment cannot fail the gallery.
+                            # In particular, never fall back to network detail().
+                            pass
                 client.remember_presented(result['items'], self.community_viewer(token))
             if operation == 'detail':
                 result = {**result, **community_detail_metadata(client, result)}

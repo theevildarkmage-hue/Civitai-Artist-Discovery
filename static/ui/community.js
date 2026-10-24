@@ -244,7 +244,7 @@ export function mountCommunity() {
       // Bound background work to four normal-size pages. A capped count is shown
       // honestly as "N+" rather than claiming to have scanned the entire feed.
       for(let page=0;page<4;page++) {
-        const result=await api(`/api/community/gallery?refresh=1${next ? `&cursor=${encodeURIComponent(next)}` : ''}`,{signal:controller.signal});
+        const result=await api(`/api/community/gallery?refresh=0${next ? `&cursor=${encodeURIComponent(next)}` : ''}`,{signal:controller.signal});
         if(id!==generation || controller.signal.aborted || !authorized || !updatesAllowed || document.hidden || section.classList.contains('hidden'))return;
         if(result.cache?.state==='stale')return;
         for(const row of result.items) {

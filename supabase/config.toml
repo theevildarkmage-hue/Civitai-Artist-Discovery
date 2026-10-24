@@ -1,4 +1,5 @@
 [functions.community-v1]
-# Civitai bearer tokens are opaque OAuth tokens, not Supabase JWTs.
-# The function independently validates every token at Civitai UserInfo.
+# Discovery sessions are opaque application credentials, not Supabase JWTs.
+# The candidate independently verifies nonce-bound Civitai identity assertions
+# and resolves hashed Discovery sessions through restricted database routines.
 verify_jwt = false

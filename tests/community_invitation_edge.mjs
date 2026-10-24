@@ -1,5 +1,6 @@
 import {identityTransport} from './community_identity_transport.mjs';
-// Actual candidate entry point, synthetic Civitai/SQL transport only.
+// Legacy business-rule factory regression. Identity-only entry acceptance is in
+// community_identity_session.mjs, including native SQL mode.
 import assert from 'node:assert/strict';
 let handler,member=7,state='enabled',admitted=true,blocked=false,invalid=false,candidates=[],calls=[],fault='';
 globalThis.Deno={env:{get:n=>({SUPABASE_URL:'https://fixture.invalid',
@@ -26,12 +27,13 @@ globalThis.fetch=async(url,options={})=>{
   throw Error('Unexpected transport');
 };
 globalThis.fetch=identityTransport(globalThis.fetch);
-await import('../supabase/functions/community-v1/index.ts');
+const {createCommunityHandler}=await import('../supabase/functions/community-v1/handler.ts');
+handler=createCommunityHandler({fetch:globalThis.fetch,invitationOnly:true});
 let checks=0;
 async function check(expected,operation='status',extra={},headers={}) {
   calls=[];
   const response=await handler(new Request('https://fixture.invalid/?memberId=7&role=community_operator',{
-    method:'POST',headers:{Authorization:'Bearer synthetic-only','Content-Type':'application/json',...headers},
+    method:'POST',headers:{Authorization:'Bearer synthetic-only-'+checks,'Content-Type':'application/json',...headers},
     body:JSON.stringify({apiVersion:1,operation,...extra})}));
   const body=await response.json();assert.equal(body.code??response.status,expected);checks++;return body;
 }
@@ -59,4 +61,4 @@ for(const [value,expected] of [['','eligible'],['owner','owner'],['rating','rati
   assert.equal(review.args.p_member,7);assert.equal(review.args.p_lease,candidates[0].lease);
 }
 candidates=Array(4).fill(candidates[0]);await check('UNAVAILABLE','gallery');
-console.log(JSON.stringify({passed:true,checks,actualCandidateEntryPoint:true,syntheticTransport:true}));
+console.log(JSON.stringify({passed:true,checks,legacyBusinessRuleFactory:true,syntheticTransport:true}));

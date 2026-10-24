@@ -81,6 +81,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
 
             page.route("**/api/reaction", reaction)
             page.route("**/api/reaction-status**", reaction_status)
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             card = page.locator(".creator-card")
             card.wait_for()

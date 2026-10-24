@@ -88,6 +88,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-foryou-status-", ignore_cleanup
             page.on("request", lambda request: artist_requests.append(request.url)
                     if "/api/history/artists" in request.url else None)
 
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="domcontentloaded")
             page.wait_for_selector(".creator-card", timeout=30000)
             banner = page.locator("#followerSweep")

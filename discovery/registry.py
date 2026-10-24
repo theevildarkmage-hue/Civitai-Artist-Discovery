@@ -33,6 +33,8 @@ class RegistryClient:
             try:
                 from .community import bounded_json
                 token=token_provider()
+                from .cloud_identity import SESSION
+                if not isinstance(token,str) or not SESSION.fullmatch(token):return
                 result=(self.send or bounded_json)(ENDPOINT,token,{'apiVersion':1,'operation':'register',
                     'appVersion':self.version,'platform':{'Windows':'Windows','Linux':'Linux','Darwin':'macOS'}.get(platform.system(),'Other')})
                 # A disabled hosted registry also asks clients to wait twelve hours.

@@ -4,7 +4,9 @@
 
 Discovery 3.0 Beta automatically records your verified Civitai account ID, public
 username, first-seen and last-seen timestamps, app version, and platform in its
-private Supabase registry after server-side identity verification. This supports
+private Supabase registry after server-side identity verification. The next security
+candidate uses a signed Civitai identity proof and a Discovery-only session; user
+Civitai API access and refresh tokens remain local. This supports
 beta usage and compatibility monitoring. Activity updates occur at most once every
 12 hours. The registry stores no OAuth tokens or browsing history, is not publicly
 searchable, and does not grant Community access. To request deletion, contact the
@@ -17,17 +19,21 @@ Later authenticated use can recreate a deleted registry entry.
 Community Beta release preparation is local and default-off. See the
 [publication gates and update channels](docs/3.0-beta-publication-checklist.md)
 and the [owner operations and recovery guide](docs/3.0-beta-operations.md).
-Private staging is deployed with Community submissions and registry collection disabled; no public beta rollout is active.
+Hosted policy is controlled separately from this source tree. Do not infer the
+current hosted collection or submission setting from these defaults. The identity-only
+security candidate has not been deployed; see [implementation status](docs/3.0-identity-only-authentication.md).
 
-## Discovery 3.0 Beta - disabled Windows candidate
+## Discovery 3.0 Beta - identity-only security candidate
 
 Use the [beta installation guide](docs/3.0-beta-README.md),
 [privacy and retention policy](docs/3.0-beta-privacy.md),
 [owner operations guide](docs/3.0-beta-operations.md), and
 [separate approval gates](docs/3.0-beta-publication-checklist.md).
-The candidate is unpublished. Hosted Community submissions and registry collection
-remain off. No tester invitation, distribution or activation is implied by source
-availability. Existing stable installations and personal profiles remain separate.
+This security candidate is unpublished; an earlier beta is already published.
+A coordinated hosted upgrade and client update are required for the new authentication
+transport. Existing published clients still use the earlier credential flow.
+No new invitation or activation is implied by source availability. Existing stable
+installations and personal profiles remain separate.
 Linux application testing is explicitly waived and Linux support remains experimental.
 The upstream feature documentation below remains available for existing users.
 

@@ -68,6 +68,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                              else {"state": "not_started", "elapsedSeconds": None})
                     route.fulfill(status=200, content_type="application/json", body=response(value))
                 page.route("**/api/history/status**", responsive_status)
+                page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
                 page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
                 page.locator("#discovery:not(.hidden)").wait_for()
                 page.locator('#tabGallery').click()
@@ -115,6 +116,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                 content_type="application/json", body=response({"collectionBackend": "v1-feed", "listingsChecked": 9000})))
             legacy.route("**/api/history/status**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body=response({"collectionBackend": "v1-feed", "listingsChecked": 9000})))
+            legacy.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             legacy.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             legacy.locator("#discovery:not(.hidden)").wait_for()
             legacy.locator('#tabGallery').click()
@@ -149,6 +151,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
 
             page.route("**/api/history/status**", status_route)
             page.route("**/api/history/cancel", cancel_route)
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.locator("#discovery:not(.hidden)").wait_for()
             page.locator('#tabGallery').click()
