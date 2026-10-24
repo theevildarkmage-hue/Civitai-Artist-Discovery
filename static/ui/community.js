@@ -6,6 +6,8 @@ import { createInfinitePager } from './pagination.js';
 const post = (artwork, idempotencyKey) => api('/api/community/recommend', {method:'POST', body:JSON.stringify({artwork, idempotencyKey})});
 const inviteOnlyNotice = 'Community Beta is invite-only at this time. Access is limited to a small group of invited Civitai members. You can continue using the Daily Gallery normally.';
 const disabledNotice = 'Community Beta is invite-only at this time and is currently disabled or under maintenance. Your Daily Gallery still works.';
+// Temporarily remove the reporting entry point; backend moderation stays intact.
+const reportingUiEnabled = false;
 
 export function mountCommunity() {
   const tab = document.createElement('button');
@@ -30,7 +32,7 @@ export function mountCommunity() {
   el('communityRecommend').disabled=true;
   el('communitySubmit').disabled=true;
   function applyPolicy(status) {
-    reporting=status?.beta?.reporting===true && status?.cache?.state!=='stale';
+    reporting=reportingUiEnabled && status?.beta?.reporting===true && status?.cache?.state!=='stale';
     section.querySelectorAll('.community-report').forEach(button=>{button.hidden=!reporting;});
     if(!reporting&&reportDialog.open)reportDialog.close();
     if(status?.beta)policyControlled=true;
@@ -109,24 +111,36 @@ export function mountCommunity() {
       const artist = {username:art.username, userId:art.creatorId, profileUrl:art.profileUrl,
         representative:art, imageCount:1, following:false};
       const credit = document.createElement('p'); credit.className = 'community-credit';
+      function updateCredit(recommendation) {
+        credit.replaceChildren();
+        if (!recommendation) return;
+        const profile = document.createElement('a');
+        profile.textContent = recommendation.recommender;
+        profile.href = `https://civitai.red/user/${encodeURIComponent(recommendation.recommender)}`;
+        profile.target = '_blank'; profile.rel = 'noopener noreferrer';
+        credit.append('Recommended by ', profile, ` \u00b7 ${new Date(recommendation.submittedAt).toLocaleDateString()}`);
+      }
       const card = window.DiscoveryGallery.createCard(artist, {
         images:[art], date:'', segment:'all', models:'',
         // Community has no Daily archive date or "seen on this day" persistence.
         seenObserver:{observe:()=>{},unobserve:()=>{}}, loadMore:async()=>{},
         onArtworkChange(image) {
           const recommendation = recommendations.get(String(image.id));
-          credit.textContent = recommendation ? `Recommended by ${recommendation.recommender} \u00b7 ${new Date(recommendation.submittedAt).toLocaleDateString()}` : '';
+          updateCredit(recommendation);
         },
       });
       card.classList.add('community-card');
-      const reportButton=document.createElement('button');reportButton.type='button';
-      reportButton.className='community-report';reportButton.textContent='Report recommendation';reportButton.hidden=!reporting;
-      reportButton.onclick=()=>{
-        if(!reporting||reportBusy)return;
-        reportTarget=card.dataset.id;el('communityReportMessage').textContent='Reports are reviewed by a moderator. Reporting does not remove artwork.';
-        reportDialog.showModal();
-      };
-      card.append(credit,reportButton); artists.set(key, card); el('communityGrid').append(card);
+      if (reportingUiEnabled) {
+        const reportButton=document.createElement('button');reportButton.type='button';
+        reportButton.className='community-report';reportButton.textContent='Report recommendation';reportButton.hidden=!reporting;
+        reportButton.onclick=()=>{
+          if(!reporting||reportBusy)return;
+          reportTarget=card.dataset.id;el('communityReportMessage').textContent='Reports are reviewed by a moderator. Reporting does not remove artwork.';
+          reportDialog.showModal();
+        };
+        card.append(reportButton);
+      }
+      card.append(credit); artists.set(key, card); el('communityGrid').append(card);
       addedArtists.push(artist); addedCards.push(card);
     }
     window.DiscoveryGallery.enrichCards(addedArtists, addedCards);
