@@ -28,7 +28,7 @@ globalThis.fetch = async (url, options={}) => {
   assert.ok(url.startsWith('https://civitai.red/api/'));
   assert.equal(options.headers.Authorization,'Bearer synthetic-test-token');
   if(url.includes('/api/v1/images')) return response({items:[{id:fault==='mismatch'?124:123,
-    type:fault==='video'?'video':'image',username:'Artist',browsingLevel:8,url:'https://image.civitai.com/test/art.jpeg'}]});
+    type:fault==='video'?'video':fault==='unsupported-media'?'audio':'image',username:'Artist',browsingLevel:8,url:'https://image.civitai.com/test/art.jpeg'}]});
   if(url.includes('/api/trpc/image.get')) return response({result:{data:{json:{id:123,
     user:fault==='missing-owner'?{}:{id:42,username:'Artist',deletedAt:null},
     availability:fault==='unlisted'?'Unsearchable':'Public',ingestion:fault==='unscanned'?'Pending':'Scanned',needsReview:fault==='review'?'review':null,
@@ -59,14 +59,17 @@ for(const value of ['https://evil.test/images/123','https://civitai.red@127.0.0.
   assert.ok(calls.every(c=>!c.url.includes('/api/v1/images')));
 }
 for(const [scenario,code] of [['expired','AUTH_EXPIRED'],['revoked','AUTH_EXPIRED'],['timeout','UNAVAILABLE'],
-  ['rate-limited','RATE_LIMITED'],['video','INVALID_ARTWORK'],['unscanned','INVALID_ARTWORK'],
+  ['rate-limited','RATE_LIMITED'],['unsupported-media','INVALID_ARTWORK'],['unscanned','INVALID_ARTWORK'],
   ['review','INVALID_ARTWORK'],['future','INVALID_ARTWORK'],['rating-mismatch','INVALID_ARTWORK'],
   ['identity-mismatch','AUTH_EXPIRED'],['mismatch','INVALID_ARTWORK'],
   ['missing-owner','UNVERIFIED_OWNER'],['unlisted','INVALID_ARTWORK']]) {
   fault=scenario; const count=commits.length;
+  handler=createCommunityHandler({ownerOnly:true}); // Each fault has independent denial-cache state.
   result=await request({operation:'recommend',artwork:123});
   assert.equal(result.body.code,code);assert.equal(commits.length,count);
 }
+fault='video';
+result=await request({operation:'verify',artwork:123});assert.equal(result.status,200);assert.equal(commits.at(-1).p_preview,true);
 fault='';
 fault='second-member';
 const beforeOtherMember=commits.length;

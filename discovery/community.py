@@ -29,7 +29,7 @@ MESSAGES = {
     "INVITE_EXPIRED": "Your Community Beta invitation has expired.",
     "BETA_DISABLED": "Community Beta is temporarily disabled.",
     "READ_ONLY": "Community Beta is read-only. Please try again later.",
-    "INVALID_ARTWORK": "Artwork unavailable or ineligible. Use a public Civitai image URL or numeric image ID; check that it opens on Civitai.",
+    "INVALID_ARTWORK": "Artwork unavailable or ineligible. Use a public Civitai artwork URL or numeric image ID; check that it opens on Civitai.",
     "UNVERIFIED_OWNER": "We couldn't verify this artwork's creator with Civitai. Please try another link.",
     "SELF_RECOMMENDATION": "You can't recommend your own artwork. Let's spotlight someone else!",
     "MEMBER_QUOTA": "You've used all three recommendations for this week. Come back Monday!",
@@ -100,14 +100,21 @@ class Artwork:
     tags_known: bool = True
     owner_verified: bool = True
     base_model: str = "Unknown"
+    media_type: str = "image"
 
     def browser(self):
-        return {"id": self.id, "creatorId": self.creator_id if self.owner_verified else None, "username": self.username,
-                "browsingLevel": self.rating, "thumbnailUrl": self.preview,
-                "url": self.preview, "imageUrl": f"https://civitai.red/images/{self.id}",
+        from .history import video_still_url, video_playback_url
+        preview = video_still_url(self.preview) if self.media_type == 'video' else self.preview
+        value = {"id": self.id, "creatorId": self.creator_id if self.owner_verified else None, "username": self.username,
+                "browsingLevel": self.rating, "thumbnailUrl": preview,
+                "url": preview, "imageUrl": f"https://civitai.red/images/{self.id}",
                 "profileUrl": f"https://civitai.red/user/{urllib.parse.quote(self.username, safe='')}",
-                "type": "image", "baseModel": self.base_model,
+                "type": self.media_type, "baseModel": self.base_model,
                 "modelLabels": base_labels(self.base_model)}
+        if self.media_type == 'video':
+            value['videoUrl'] = video_playback_url(self.preview)
+            value['detailVideoUrl'] = video_playback_url(self.preview, 768)
+        return value
 
 
 @dataclass(frozen=True)
@@ -265,11 +272,13 @@ class CivitaiVerifier:
         if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
             raise CommunityError("INVALID_ARTWORK")
         item = items[0]
-        if type(item.get("id")) is not int or item["id"] != image_id or item.get("type") != "image":
+        if type(item.get("id")) is not int or item["id"] != image_id or item.get("type") not in ("image", "video"):
             raise CommunityError("INVALID_ARTWORK")
         detail = self.query("image.get", {"id": image_id}, token)
         if not isinstance(detail, dict) or detail.get("id") != image_id:
             raise CommunityError("INVALID_ARTWORK")
+        if detail.get('type') is not None and detail['type'] != item['type']:
+            raise CommunityError('INVALID_ARTWORK')
         user = detail.get("user")
         if not isinstance(user, dict):
             raise CommunityError("UNVERIFIED_OWNER")
@@ -309,7 +318,7 @@ class CivitaiVerifier:
             raise CommunityError("INVALID_ARTWORK")
         return Artwork(image_id, creator, user["username"], rating, preview,
                        tuple(t["name"].casefold() for t in tags), tuple(t["id"] for t in tags),
-                       base_model=normalize_base_model(item.get("baseModel")))
+                       base_model=normalize_base_model(item.get("baseModel")), media_type=item['type'])
 
 
 # Frozen packages exclude the development implementation and its member fixtures.

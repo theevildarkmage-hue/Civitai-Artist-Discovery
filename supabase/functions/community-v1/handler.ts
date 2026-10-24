@@ -132,7 +132,7 @@ function unwrapResult(response: any): any {
 async function artwork(image: number, token: string, publicReview=false): Promise<number> {
   const list=await upstream(`https://civitai.red/api/v1/images?imageId=${image}&limit=1&browsingLevel=31`,publicReview?undefined:token);
   const item=list?.items?.[0];
-  if(!Array.isArray(list?.items) || list.items.length!==1 || item?.id!==image || item?.type!=='image') fail('INVALID_ARTWORK');
+  if(!Array.isArray(list?.items) || list.items.length!==1 || item?.id!==image || !['image','video'].includes(item?.type)) fail('INVALID_ARTWORK');
   // Shared eligibility uses independent anonymous public visibility/rating proof.
   // Authenticated detail remains required for numeric ownership and public flags.
   if(publicReview) {
@@ -144,6 +144,7 @@ async function artwork(image: number, token: string, publicReview=false): Promis
   const response=await upstream(`https://civitai.red/api/trpc/image.get?input=${input}`,token);
   const detail=unwrapResult(response);
   if(detail?.id!==image) fail('INVALID_ARTWORK');
+  if(detail.type!=null && detail.type!==item.type) fail('INVALID_ARTWORK');
   if(!detail.user?.id || !detail.user?.username || detail.user.deletedAt || detail.user.username!==item.username) fail('UNVERIFIED_OWNER');
   let creator: number; try {creator=id(detail.user.id);} catch {return fail('UNVERIFIED_OWNER');}
   if(detail.availability!=='Public' || detail.ingestion!=='Scanned' || detail.needsReview!=null || detail.blockedFor) fail('INVALID_ARTWORK');

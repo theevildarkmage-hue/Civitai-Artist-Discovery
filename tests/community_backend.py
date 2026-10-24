@@ -197,6 +197,22 @@ class RealVerificationTests(unittest.TestCase):
         self.assertEqual(42,self.verifier.artwork(123).creator_id)
         self.assertEqual(7,self.verifier.member('test-only').id)
 
+    def test_video_uses_same_authoritative_eligibility(self):
+        self.item.update(type='video',url='https://image.civitai.com/test/original=true/clip.mp4')
+        self.detail['type']='video'
+        art=self.verifier.artwork(123)
+        self.assertEqual('video',art.media_type)
+        value=art.browser()
+        self.assertIn('/anim=false,width=768/',value['thumbnailUrl'])
+        self.assertIn('/transcode=true,width=450,optimized=true/',value['videoUrl'])
+        self.assertIn('/transcode=true,width=768,optimized=true/',value['detailVideoUrl'])
+        for field,value in (('availability','Unsearchable'),('ingestion','Pending'),('nsfwLevel',1),('type','image')):
+            old=self.detail[field];self.detail[field]=value
+            with self.assertRaises(CommunityError):self.verifier.artwork(123)
+            self.detail[field]=old
+        self.item['type']='audio'
+        with self.assertRaises(CommunityError):self.verifier.artwork(123)
+
     def test_mismatch_missing_owner_and_unavailable(self):
         for mutate,code in ((lambda:self.item.update(id=124),'INVALID_ARTWORK'),
             (lambda:self.detail.update(user={}), 'UNVERIFIED_OWNER'),
