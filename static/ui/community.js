@@ -70,6 +70,11 @@ export function mountCommunity() {
   }
   let cursor = null, generation = 0, busy = false, draftVersion = 0, requestKey = null, requestValue = null;
   const quota = value => { if (value) {
+    if (value.unlimited === true) {
+      el('communityQuota').textContent = 'Unlimited · owner testing';
+      el('communityFormQuota').textContent = `${value.used} recommendations this week · No personal limit for owner testing. The three-per-artist weekly cap still applies.`;
+      return;
+    }
     el('communityQuota').textContent = `${value.remaining} left this week`;
     el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week Â· ${value.remaining} remaining`;
   } };
