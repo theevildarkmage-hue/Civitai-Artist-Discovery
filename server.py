@@ -51,7 +51,7 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Discovery 3.0 Beta"
-APP_VERSION = "3.0.0-beta.4"
+APP_VERSION = "3.0.0-beta.5"
 from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
 DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
@@ -1186,8 +1186,11 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self) -> None:  # noqa: N802
-        if not self.host_allowed():
+        from discovery.local_security import browser_request_allowed, static_relative_path
+        if not self.host_allowed() or not browser_request_allowed(self.headers):
             self.send_error(403); return
+        if not self.path.startswith('/') or self.path.startswith('//'):
+            self.send_error(400); return
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
         if getattr(sys,'frozen',False) and (parsed.path.startswith(('/__dev/','/api/community/development/')) or parsed.path in ('/api/test-isolation','/community-fixture.svg')):
@@ -1307,29 +1310,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", "image/svg+xml")
             self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store")
             self.end_headers(); self.wfile.write(body); return
-        if parsed.path == "/api/artists":
-            try:
-                limit = min(1000, max(1, int(query.get("limit", [500])[0])))
-                target = min(3000, max(limit, int(query.get("target", [1000])[0])))
-                refresh = query.get("refresh", ["false"])[0].lower() == "true"
-                nonce = query.get("nonce", ["0"])[0]
-                with WRITE_LOCK: state = CACHE.collect(target=target, refresh=refresh)
-                items = state.get("items", [])
-                artists = artist_gallery(items, limit, nonce)
-                try: read_only = not bool(auth_status().get("socialWrite"))
-                except Exception: read_only = True
-                self.json_response({
-                    "artists": artists,
-                    "imageCount": len(items),
-                    "artistCount": len({item["username"].casefold() for item in items}),
-                    "updatedAt": state.get("updatedAt"),
-                    "lastCollect": state.get("lastCollect"),
-                    "oauthProfileCache": CREATOR_PROFILES.exists(),
-                    "readOnly": read_only,
-                })
-            except Exception as error:
-                self.internal_error("Legacy artist feed", error)
-            return
         if parsed.path == "/api/auth-status":
             try:
                 # Renew a token that is close to lapsing. Reading the stored token does not
@@ -1730,15 +1710,26 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Image details", error)
             return
-        path = "index.html" if parsed.path == "/" else urllib.parse.unquote(parsed.path).lstrip("/")
-        target = (STATIC / path).resolve()
-        if STATIC.resolve() not in target.parents and target != STATIC.resolve():
+        try:
+            # Reject Windows UNC, drive/ADS and traversal syntax lexically. A
+            # containment check after resolve() is too late to prevent SMB access.
+            path = static_relative_path(parsed.path)
+        except (ValueError, UnicodeError):
             self.send_error(403)
             return
-        if not target.is_file():
-            self.send_error(404)
+        try:
+            root = STATIC.resolve()
+            target = (STATIC / path).resolve()
+            if root not in target.parents:
+                self.send_error(403)
+                return
+            if not target.is_file():
+                self.send_error(404)
+                return
+            body = target.read_bytes()
+        except OSError:
+            self.send_error(503)
             return
-        body = target.read_bytes()
         self.send_response(200)
         mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if mime.startswith("text/") or mime in {"application/javascript", "application/json"}: mime += "; charset=utf-8"
@@ -1861,7 +1852,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:raise CommunityError('AUTH_REQUIRED',401) from None
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self.host_allowed():
+        from discovery.local_security import browser_request_allowed
+        if not self.host_allowed() or not browser_request_allowed(self.headers):
             self.send_error(403); return
         parsed = urllib.parse.urlparse(self.path)
         try:

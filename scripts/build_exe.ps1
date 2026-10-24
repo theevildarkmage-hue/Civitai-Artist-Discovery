@@ -61,7 +61,7 @@ try {
   Copy-Item (Join-Path $root 'THIRD_PARTY_NOTICES.md') $package
   $guides = Join-Path $package 'docs'
   New-Item -ItemType Directory -Force $guides | Out-Null
-  foreach ($guide in @('3.0-beta-README.md','3.0-beta-linux.md','3.0-beta-privacy.md','3.0-beta-release-notes.md','3.0-beta-operations.md','3.0-beta-publication-checklist.md')) {
+  foreach ($guide in @('3.0-beta-README.md','3.0-beta-linux.md','3.0-beta-privacy.md','3.0-beta-release-notes.md','3.0-beta-operations.md','3.0-beta-publication-checklist.md','3.0-audit-response-2026-10-24.md','3.0-owner-quota-testing.md')) {
     Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
   python -B scripts/stamp-beta-build.py finish --record $sourceRecord --package $package

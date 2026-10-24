@@ -22,6 +22,7 @@ import urllib.error
 from .civitai import API_LANE
 from .social import CivitaiHTTPError, SocialClient, auth_status
 from .retry import retry_after_seconds
+from .pagination import PageProgress, PaginationStopped
 
 # Civitai's own reaction set. Dislike is collected so reconciliation stays complete,
 # but the dashboard only names it when the user actually has some.
@@ -50,6 +51,17 @@ TAG_BOOST_CAP = 3.0
 MIN_PAUSE = 5.0
 MAX_PAUSE = 5.8
 MAX_ATTEMPTS = 5
+
+
+class IncompleteProfileSnapshot(RuntimeError):
+    pass
+
+
+def protect_profile_snapshot(previous: int, observed: int) -> None:
+    # Empty or sharply truncated successful responses are not proof that the
+    # owner removed their history. Prefer stale local data over silent loss.
+    if previous and (observed == 0 or (previous >= 20 and observed * 2 < previous)):
+        raise IncompleteProfileSnapshot('Civitai returned an unusually small profile snapshot; cached history was kept.')
 
 
 def _retry_wait(error: CivitaiHTTPError, attempt: int) -> float:
@@ -390,6 +402,7 @@ class TasteStore:
                 sync_id = checkpoint['syncId'] if checkpoint else int(self._state(db, "sync_id", 0) or 0) + 1
                 self._set_state(db, "sync_id", sync_id)
                 self._set_state(db,'last_attempt_at',_now())
+                prior_count = db.execute('SELECT count(*) FROM reacted_images').fetchone()[0]
 
             # Tags are by far the heaviest part of a page and never change for an image
             # already stored, so a refresh asks for the listing only and fetches tags for
@@ -402,10 +415,13 @@ class TasteStore:
             pages = checkpoint['pages'] if checkpoint else 0
             total = checkpoint['total'] if checkpoint else 0
             fresh, observed = [], set()
+            progress = PageProgress(cursor, page_limit=10000)
             while not checkpoint or cursor is not None:
+                progress.before_request()
                 page = self._page(client, cursor=cursor, limit=PAGE_SIZE,
                                   reactions=ALL_REACTIONS, with_tags=not incremental)
                 items = page["items"]
+                progress.observe(page['nextCursor'], bool(items))
                 self._store_page(items, sync_id, account)
                 observed.update(item["id"] for item in items
                                 if isinstance(item, dict) and isinstance(item.get("id"), int))
@@ -427,6 +443,10 @@ class TasteStore:
             # Only a run that reached the final page may retire rows, otherwise a
             # cancelled sync would delete reactions that simply were not reached yet.
             with self.connect() as db:
+                # Count persisted markers, including earlier pages of a resumed
+                # sync. Page totals can contain duplicates and are not evidence.
+                observed_count = db.execute('SELECT count(*) FROM reacted_images WHERE last_sync=?', (sync_id,)).fetchone()[0]
+                protect_profile_snapshot(prior_count, observed_count)
                 # The observed ids are the authoritative completed snapshot. Refreshing
                 # their marker in one transaction also protects reconciliation from a
                 # status/read transaction landing precisely between two fast mock pages.
@@ -481,7 +501,10 @@ class TasteStore:
             self._progress(running=False, phase="stopped",
                            message="Stopped. Everything already read was kept.")
         except Exception as error:  # noqa: BLE001
-            with self.connect() as db:self._set_state(db,'last_sync_error','Synchronization could not finish; cached profile was kept.')
+            with self.connect() as db:
+                self._set_state(db,'last_sync_error','Synchronization could not finish; cached profile was kept.')
+                if isinstance(error, (IncompleteProfileSnapshot, PaginationStopped)):
+                    db.execute("DELETE FROM sync_state WHERE key='sync_checkpoint'")
             self._progress(running=False, phase="error", error=str(error)[:300],
                            message="Could not finish reading your reactions from Civitai.")
 
@@ -556,6 +579,8 @@ class TasteStore:
         from .social import following_ids
         ids = following_ids(client.query("user.getFollowingUsers", {}))
         with self.connect() as db:
+            previous = db.execute('SELECT count(*) FROM followed_creators').fetchone()[0]
+            protect_profile_snapshot(previous, len(ids))
             db.execute("DELETE FROM followed_creators")
             db.executemany("INSERT OR IGNORE INTO followed_creators(creator_id) VALUES(?)",
                            [(value,) for value in sorted(ids)])

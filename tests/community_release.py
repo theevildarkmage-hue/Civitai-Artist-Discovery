@@ -171,7 +171,9 @@ def run(*,sql,env,output,api,register):
         results=list(pool.map(lambda _:json.loads(sql("select community_registry_upsert(8890000010,'ConcurrentFixture','3.0.0-beta.1','Linux');")),range(12)))
     check('twelve concurrent registrations make one row and one activity write',sum(item['updated'] for item in results)==1 and sql('select count(*)=1 from community_private.discovery_users where civitai_id=8890000010;')=='t')
     sql('delete from community_private.discovery_users where civitai_id=8890000010;')
-    result={'passed':True,'checks':checks,'realPostgREST':True,'ownerAdministration':True,'hostedVerified':False}
+    from owner_quota_postgres import run as owner_quota_acceptance
+    owner_quota=owner_quota_acceptance(sql,output)
+    result={'passed':True,'checks':checks,'realPostgREST':True,'ownerAdministration':True,'hostedVerified':False,'ownerQuota':owner_quota}
     (output/'release-checks.json').write_text(json.dumps(result,indent=2));return {'passed':True,'checks':len(checks),'ownerAdministration':True}
 
 if __name__=='__main__':print('SKIP: run through owned native private-beta runner')
