@@ -1,4 +1,4 @@
-"""Default-off rollout preferences and independent server kill/rating controls."""
+"""Automatic Community connection and independent hosted security controls."""
 import test_safety
 import os
 from pathlib import Path
@@ -19,19 +19,23 @@ class BetaControls(unittest.TestCase):
                 with patch.dict(os.environ,{'CAD_COMMUNITY_MODE':mode}):
                     self.assertFalse(beta.configuration(folder)['serverPolicy'])
 
-    def test_new_and_upgraded_profiles_are_off_and_preferences_survive(self):
+    def test_fresh_and_legacy_profiles_connect_without_writing_preferences(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(beta,'production',return_value=True):
             root=Path(folder);(root/'settings.json').write_text('{"browsingLevels":[1,2]}')
             original=(root/'settings.json').read_bytes()
-            self.assertFalse(beta.configuration(root)['enabled'])
+            for legacy in (None,'{"optedIn":false}','{"optedIn":true}','invalid JSON'):
+                path=root/'community-beta.json'
+                if legacy is not None:path.write_text(legacy)
+                config=beta.configuration(root)
+                self.assertTrue(config['enabled']);self.assertTrue(config['serverPolicy'])
+                self.assertNotIn('optedIn',config)
+                beta.require_enabled(root)
+                self.assertEqual(original,(root/'settings.json').read_bytes())
+                self.assertEqual(path.read_text() if path.exists() else None,legacy)
             with patch.object(beta,'BETA_ENDPOINT',None):
-                with self.assertRaises(ValueError):beta.opt_in(root,True)
-            with patch.object(beta,'BETA_ENDPOINT','https://reviewed.supabase.co/functions/v1/community-v1'):
-                self.assertTrue(beta.opt_in(root,True)['enabled'])
-                self.assertTrue(beta.configuration(root)['optedIn'])
-                self.assertFalse(beta.opt_in(root,False)['enabled'])
-            self.assertEqual(original,(root/'settings.json').read_bytes())
-            with self.assertRaises(CommunityError):beta.require_enabled(root)
+                self.assertFalse(beta.configuration(root)['enabled'])
+                with self.assertRaises(CommunityError) as caught:beta.require_enabled(root)
+                self.assertEqual(caught.exception.code,'UNAVAILABLE')
 
     def test_frozen_cannot_enable_development_trust_with_environment(self):
         with patch.object(sys,'frozen',True,create=True),patch.dict(os.environ,{'CAD_DEVELOPMENT':'1','CAD_COMMUNITY_TESTING':'1','CAD_COMMUNITY_MODE':'fixture'}):
