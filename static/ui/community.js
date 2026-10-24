@@ -105,6 +105,11 @@ export function mountCommunity() {
   }
   const modelLabels=art=>Array.isArray(art.modelLabels) && art.modelLabels.length
     ? art.modelLabels : String(art.baseModel||'Unknown').split(' | ');
+  function matchesFilters(art) {
+    const filters=window.galleryFilterState();
+    return (filters.media==='all' || (art.type||'image')===filters.media) &&
+      (!filters.models.length || modelLabels(art).some(name=>filters.models.includes(name)));
+  }
   function filterModels(media='all') {
     const counts=new Map();
     for(const {artwork:art} of recommendations.values()) {
@@ -124,9 +129,7 @@ export function mountCommunity() {
       const id = String(row.artwork.id);
       if (remember && recommendations.has(id)) continue;
       if(remember)recommendations.set(id, row);
-      const filters=window.galleryFilterState();
-      if(filters.media!=='all' && (row.artwork.type||'image')!==filters.media)continue;
-      if(filters.models.length && !modelLabels(row.artwork).some(name=>filters.models.includes(name)))continue;
+      if(!matchesFilters(row.artwork))continue;
       const art = {...row.artwork, community:true, civitaiUrl:row.artwork.imageUrl};
       const key = art.creatorId ? `id:${art.creatorId}` : `name:${art.username.toLowerCase()}`;
       artworks.push(art);
@@ -230,7 +233,13 @@ export function mountCommunity() {
     const id=generation, controller=new AbortController(); updateRequest=controller;
     lastUpdateCheck=Date.now();
     const found=new Set(), cursors=new Set();
-    let next=null, stopped=false;
+    // Scan the loaded date range, not just the prefix before the first known ID.
+    // Older rows may reappear when an availability check recovers. If the feed
+    // was exhausted, any newly available row belongs to that observed range.
+    const dates=[...recommendations.values()].map(row=>Date.parse(row.submittedAt)).filter(Number.isFinite);
+    const oldestShown=cursor && dates.length ? Math.min(...dates) : -Infinity;
+    const lastLoaded=cursor ? [...recommendations.keys()].at(-1) : null;
+    let next=null, stopped=false, restored=false;
     try {
       // Bound background work to four normal-size pages. A capped count is shown
       // honestly as "N+" rather than claiming to have scanned the entire feed.
@@ -240,8 +249,10 @@ export function mountCommunity() {
         if(result.cache?.state==='stale')return;
         for(const row of result.items) {
           const key=String(row.artwork.id), date=Date.parse(row.submittedAt);
-          if(recommendations.has(key) || (newestShown!==null && date<newestShown)) {stopped=true;break;}
-          if(Number.isFinite(date))found.add(key);
+          if(key===lastLoaded || (Number.isFinite(date) && date<oldestShown)) {stopped=true;break;}
+          if(recommendations.has(key) || !Number.isFinite(date) || !matchesFilters(row.artwork))continue;
+          found.add(key);
+          if(newestShown!==null && date<=newestShown)restored=true;
         }
         next=result.nextCursor;
         if(stopped || !next)break;
@@ -249,7 +260,8 @@ export function mountCommunity() {
         cursors.add(next);
       }
       const count=found.size, capped=!!next && !stopped;
-      el('communityUpdates').textContent=count ? `${count}${capped?'+':''} new recommendation${count===1&&!capped?'':'s'} \u2014 Refresh to Show` : '';
+      const noun=`recommendation${count===1&&!capped?'':'s'}`;
+      el('communityUpdates').textContent=count ? `${count}${capped?'+':''} ${restored ? noun+' available' : 'new '+noun} \u2014 Refresh to Show` : '';
     } catch(error) {
       if(id!==generation || controller.signal.aborted)return;
       // A transient probe failure must not replace cards, scroll or foreground

@@ -27,9 +27,10 @@ try:
    page.route('**/api/community/beta',lambda r:reply(r,{'production':True,'serverPolicy':True,'enabled':True}))
    page.route('**/api/community/status*',lambda r:reply(r,{'member':{'id':42},'quota':{'remaining':3,'used':0,'limit':3},'beta':{'available':True,'submissions':True}}))
    original=[row(10000+i) for i in range(60)]
+   restored=[]
    def gallery(route):
     q=parse_qs(urlsplit(route.request.url).query);offset=int(q.get('cursor',['0'])[0]);calls.append(offset)
-    data=state['new']+original;response={'items':data[offset:offset+24],'nextCursor':str(offset+24) if offset+24<len(data) else None}
+    data=state['new']+original[:2]+restored+original[2:];response={'items':data[offset:offset+24],'nextCursor':str(offset+24) if offset+24<len(data) else None}
     if state['hold']:state['hold']=False;held.append((route,response));return
     if state['fail']:return reply(route,{'code':'UNAVAILABLE','error':'Synthetic outage'},503)
     reply(route,response)
@@ -41,7 +42,10 @@ try:
    saved=page.evaluate('scrollY');before=page.locator('#communityGrid').inner_html()
    state['new']=[row(20003,True),row(20003,True),row(20002,True),row(20001,True)]
    page.clock.fast_forward(60000)
-   page.wait_for_function('()=>document.querySelector("#communityUpdates").textContent.startsWith("3 new recommendations")')
+   try:page.wait_for_function('()=>document.querySelector("#communityUpdates").textContent.startsWith("3 new recommendations")',timeout=10000)
+   except Exception:
+    print({'calls':calls,'errors':errors,'browser':page.evaluate('()=>({notice:document.querySelector("#communityUpdates").textContent,message:document.querySelector("#communityMessage").textContent,filters:galleryFilterState()})')},flush=True)
+    raise
    assert page.locator('#communityUpdates').inner_text()=='3 new recommendations \u2014 Refresh to Show'
    assert page.locator('#communityGrid').inner_html()==before
    assert abs(page.evaluate('scrollY')-saved)<2
@@ -68,6 +72,16 @@ try:
     except Exception:pass
    held.clear();page.wait_for_timeout(50);assert page.locator('#communityUpdates').inner_text()==''
    assert page.locator('#communityGrid .community-card[data-id="20003"]').count()==1
+   # An older recommendation becomes available again behind known head rows.
+   # It must announce availability, without changing the existing cards/scroll.
+   recovered=row(15000);recovered['submittedAt']='2026-10-24T12:00:00Z'
+   restored.append(recovered)
+   before=page.locator('#communityGrid').inner_html();saved=page.evaluate('scrollY')
+   page.clock.fast_forward(60000)
+   page.wait_for_function('()=>document.querySelector("#communityUpdates").textContent.startsWith("1 recommendation available")')
+   assert page.locator('#communityGrid').inner_html()==before
+   assert abs(page.evaluate('scrollY')-saved)<2
+   restored.clear()
    # A large burst uses bounded reads and an honest lower-bound count.
    state['new']=[row(30000+i,True) for i in range(120)]+state['new']
    # Make the burst strictly newer than the displayed recommendations.
