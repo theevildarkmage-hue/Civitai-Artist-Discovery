@@ -4,6 +4,8 @@ import { showGallerySkeleton } from './feedback.js';
 import { createInfinitePager } from './pagination.js';
 
 const post = (artwork, idempotencyKey) => api('/api/community/recommend', {method:'POST', body:JSON.stringify({artwork, idempotencyKey})});
+const inviteOnlyNotice = 'Community Beta is invite-only at this time. Access is limited to a small group of invited Civitai members. You can continue using the Daily Gallery normally.';
+const disabledNotice = 'Community Beta is invite-only at this time and is currently disabled or under maintenance. Your Daily Gallery still works.';
 
 export function mountCommunity() {
   const tab = document.createElement('button');
@@ -23,7 +25,7 @@ export function mountCommunity() {
   document.body.append(reportDialog);
   bindDialog(reportDialog,{labelledBy:'communityReportTitle',closeButtons:[reportDialog.querySelector('#communityReportClose')]});
   const el = id => document.getElementById(id);
-  let productionBeta=false, policyControlled=true, submissions=false;
+  let productionBeta=false, policyControlled=true, submissions=false, connectorEnabled=null;
   let reporting=false,reportTarget=null,reportBusy=false;
   el('communityRecommend').disabled=true;
   el('communitySubmit').disabled=true;
@@ -37,10 +39,10 @@ export function mountCommunity() {
     el('communityRecommend').disabled=!submissions;
     el('communitySubmit').disabled=busy||!submissions;
     if(!submissions&&dialog.open)dialog.close();
-    if(!submissions)message(status?.beta?.available ? 'Community Beta is read-only. Your personal galleries still work.' : 'Community Beta is temporarily disabled or under maintenance. Your Daily Gallery still works.');
+    if(!submissions)message(status?.beta?.available ? 'Community Beta is read-only. Your personal galleries still work.' : disabledNotice);
   }
   async function configureBeta() {
-    const beta=await api('/api/community/beta');productionBeta=beta.production===true;
+    const beta=await api('/api/community/beta');productionBeta=beta.production===true;connectorEnabled=beta.enabled;
     policyControlled=productionBeta||beta.serverPolicy===true;
     tab.hidden=false;tab.classList.remove('hidden');
     if(!policyControlled){submissions=true;el('communityRecommend').disabled=false;el('communitySubmit').disabled=false;}
@@ -50,7 +52,7 @@ export function mountCommunity() {
     const check=document.createElement('input');check.type='checkbox';check.checked=beta.optedIn;check.disabled=!beta.available;
     label.append(check,document.createTextNode(beta.available?' Opt in to Community Beta':' Community Beta is not available yet.'));
     document.getElementById('discovery').append(label);
-    check.onchange=async()=>{check.disabled=true;try{const result=await api('/api/community/beta',{method:'POST',body:JSON.stringify({optedIn:check.checked})});if(!result.enabled){invalidate();document.getElementById('tabGallery').click();}}catch(error){check.checked=!check.checked;}finally{check.disabled=false;}};
+    check.onchange=async()=>{check.disabled=true;try{const result=await api('/api/community/beta',{method:'POST',body:JSON.stringify({optedIn:check.checked})});connectorEnabled=result.enabled;if(!result.enabled){invalidate();document.getElementById('tabGallery').click();}}catch(error){check.checked=!check.checked;}finally{check.disabled=false;}};
   }
   configureBeta().catch(()=>{tab.hidden=false;tab.classList.remove('hidden');});
   const message = value => { el('communityMessage').setAttribute('role','status'); el('communityMessage').textContent = value; };
@@ -61,11 +63,18 @@ export function mountCommunity() {
       INVITE_REVOKED:'Your Community Beta invitation was revoked. Your Daily Gallery still works.',
       INVITE_EXPIRED:'Your Community Beta invitation expired. Your Daily Gallery still works.',
       SUBMITTER_BLOCKED:'This account is blocked from Community participation. Contact the beta owner for review.',
-      BETA_DISABLED:'Community Beta is temporarily disabled or under maintenance. Your Daily Gallery still works.',
+      BETA_DISABLED:disabledNotice,
       UNAVAILABLE:'Community is temporarily unavailable. Please retry later. Your Daily Gallery still works.',
       AUTH_REQUIRED:'Sign in to Civitai to use Community.',AUTH_EXPIRED:'Please sign in to Civitai again.',
     };
-    message(states[error.code]||error.message);
+    // A local connector-off denial does not establish this account's invitation
+    // status. Explain the feature's access model without claiming a roster lookup.
+    const connectorOff=productionBeta && connectorEnabled===false && error.code==='FORBIDDEN';
+    message(connectorOff ? inviteOnlyNotice : states[error.code]||error.message);
+    // Access decisions are not failed pagination. Keep retry UI for transient
+    // failures; an explicit refresh can recheck a changed policy or invitation.
+    el('communitySentinel').hidden=['INVITE_ONLY','INVITE_REVOKED','INVITE_EXPIRED',
+      'SUBMITTER_BLOCKED','BETA_DISABLED','AUTH_REQUIRED','AUTH_EXPIRED','FORBIDDEN'].includes(error.code);
   }
   let cursor = null, generation = 0, busy = false, draftVersion = 0, requestKey = null, requestValue = null;
   const quota = value => { if (value) {
@@ -125,6 +134,7 @@ export function mountCommunity() {
   }
   async function load(more = false, refresh = false) {
     if (more) return pages.request(true);
+    el('communitySentinel').hidden=false;
     ++generation; clearTimeout(metadataTimer); pages.reset();
     cursor = null; firstPage = true; refreshPage = refresh; initialized = true;
     requestedCursors.clear(); clearCards();
