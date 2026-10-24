@@ -3,7 +3,7 @@ let selectedModels = new Set();
 let contentRating = "Soft";
 let visibleBrowsingLevels = new Set([1, 2]);
 let dimSeenCards = true;
-let hideHighVolumeCreators = false, highVolumeThreshold = 100;
+let hideHighVolumeCreators = true, highVolumeThreshold = 50;
 let emergingReactionMode = "balanced", emergingReactionLimit = 0;
 let updateChecksEnabled = true, updateState = null, updatePollTimer = 0;
 // Which tab is open. Async work that finishes late must not reveal another view's chrome.
@@ -144,7 +144,7 @@ async function saveGalleryPreferences(patch, reload = true) {
     const settings = await api("/api/settings", { method: "POST", body: JSON.stringify(patch) });
     dimSeenCards = settings.dimSeenCards !== false;
     hideHighVolumeCreators = settings.hideHighVolumeCreators === true;
-    highVolumeThreshold = Number(settings.highVolumeThreshold) || 100;
+    highVolumeThreshold = Number(settings.highVolumeThreshold) || 50;
     emergingReactionMode = settings.emergingReactionMode || "balanced";
     emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit))
       ? Number(settings.emergingReactionLimit) : 0;
@@ -1471,7 +1471,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
 }
 async function startup() {
   const navigationAtStartup = navigationVersion;
-  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 100; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
+  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 50; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
