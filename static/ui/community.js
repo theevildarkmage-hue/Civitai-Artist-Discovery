@@ -29,6 +29,7 @@ export function mountCommunity() {
   const el = id => document.getElementById(id);
   let productionBeta=false, policyControlled=true, submissions=false;
   let reporting=false,reportTarget=null,reportBusy=false;
+  let authenticationFailed=false, openingRecommendation=false;
   el('communityRecommend').disabled=true;
   el('communitySubmit').disabled=true;
   function applyPolicy(status) {
@@ -55,6 +56,7 @@ export function mountCommunity() {
   configureBeta().catch(()=>{tab.hidden=false;tab.classList.remove('hidden');});
   const message = value => { el('communityMessage').setAttribute('role','status'); el('communityMessage').textContent = value; };
   function accessError(error) {
+    if(['AUTH_REQUIRED','AUTH_EXPIRED'].includes(error.code))authenticationFailed=true;
     el('communityUpdates').textContent='';
     applyPolicy(null);
     const states={
@@ -169,6 +171,7 @@ export function mountCommunity() {
         const status = await api(`/api/community/status${refreshPage ? '?refresh=1' : ''}`, {signal});
         if (id !== generation || signal.aborted) return;
         quota(status.quota);
+        authenticationFailed=false;
         applyPolicy(status);
         viewSession = status.viewSession || null;
         if (el('communityMember')) el('communityMember').value = String(status.member.id);
@@ -249,6 +252,7 @@ export function mountCommunity() {
       const status = await api('/api/community/status');
       if (id !== generation || section.classList.contains('hidden')) return;
       quota(status.quota);
+      authenticationFailed=false;
       applyPolicy(status);
       // A restarted server has a new volatile artwork admission list. Refresh the
       // projection then; ordinary tab switches still keep their pages and scroll.
@@ -264,14 +268,28 @@ export function mountCommunity() {
     ++draftVersion; clearCards(); dialog.close();reportDialog.close();reporting=false;reportTarget=null;
     newestShown=null;el('communityUpdates').textContent='';
   }
-  function recommend(value = '') {
-    if (busy || !authorized || !submissions) return;
-    ++draftVersion;
-    el('communityLink').value = String(value);
-    el('communityDialogMessage').textContent = '';
-    requestKey = null; requestValue = null;
-    if (!dialog.open) dialog.showModal();
-    el('communityLink').focus();
+  async function recommend(value = '') {
+    if (busy || openingRecommendation) return;
+    if (!authorized) { window.toast('Sign in to Civitai to use Community.'); return; }
+    // Card actions also work before Community has ever been opened. Recheck
+    // server-owned admission/policy instead of trusting a stale toolbar state.
+    openingRecommendation=true;
+    const version=draftVersion;
+    try {
+      const status=await api('/api/community/status');
+      if(version!==draftVersion || !authorized)return;
+      authenticationFailed=false;quota(status.quota);applyPolicy(status);
+      if(!submissions) { window.toast(el('communityMessage').textContent); return; }
+      ++draftVersion;
+      el('communityLink').value = String(value);
+      el('communityDialogMessage').textContent = '';
+      requestKey = null; requestValue = null;
+      if (!dialog.open) dialog.showModal();
+      el('communityLink').focus();
+    } catch(error) {
+      if(version!==draftVersion || !authorized)return;
+      accessError(error);window.toast(el('communityMessage').textContent);
+    } finally {openingRecommendation=false;}
   }
   el('communityForm').onsubmit = async event => {
     event.preventDefault();
@@ -301,7 +319,7 @@ export function mountCommunity() {
     }
   };
   dialog.addEventListener('close', () => { ++draftVersion; });
-  let authorized = false, configured = false;
+  let authorized = false, configured = false, accountId = null;
   const enter = () => { if (authorized) window.showView('community'); };
   tab.onclick = enter;
   async function configure() {
@@ -328,10 +346,15 @@ export function mountCommunity() {
     };
   }
   window.addEventListener('discovery-auth-changed', ({detail}) => {
-    authorized=!!detail.connected;
+    const wasAuthorized=authorized, previousAccount=accountId;
+    authorized=!!detail.connected;accountId=authorized ? detail.id : null;
     tab.disabled=!authorized;
-    if (authorized) configure().catch(() => {});
-    else { invalidate(); section.classList.add('hidden'); }
+    if (authorized) {
+      const recover=authenticationFailed || (wasAuthorized && previousAccount!==accountId);
+      if(recover) {authenticationFailed=false;invalidate();}
+      configure().catch(() => {});
+      if(recover && !section.classList.contains('hidden'))activate();
+    } else { invalidate(); section.classList.add('hidden'); }
   });
   el('communityRecommend').onclick = () => recommend();
   el('communityReportForm').onsubmit=async event=>{

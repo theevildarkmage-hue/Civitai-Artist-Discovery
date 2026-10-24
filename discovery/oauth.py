@@ -364,27 +364,40 @@ def login(timeout: int = 300) -> dict:
 
 
 def get_community_access_token() -> str:
-    """Never fall back to the write-capable primary grant, including old profiles."""
+    """Never fall back to the primary grant; retain rotated refresh credentials."""
     with _REFRESH_LOCK:
         primary=_load();grant=primary.get('community_identity');active=client_id()
         if (primary.get('reauth_required') or not isinstance(grant,dict) or grant.get('reauth_required')
             or not active or primary.get('client_id')!=active or grant.get('client_id')!=active
             or grant.get('scope')!=READ_SCOPE or grant.get('identity',{}).get('id')!=primary.get('identity',{}).get('id')):
             raise OAuthReauthenticationRequired('Sign in again to authorize the secure Community connection.')
-        if int(grant.get('expires_at',0))<=int(time.time())+120:
-            try:
-                refreshed=_post('token',{'grant_type':'refresh_token','refresh_token':grant['refresh_token'],'client_id':active})
-                candidate={**grant,**refreshed,'expires_at':int(time.time())+int(refreshed.get('expires_in',3600))}
-                # Scope must be explicit on every issuer response; no silent grant widening.
-                if not _is_identity_scope(refreshed.get('scope')):
+        try:
+            pending=grant.get('pending_refresh')
+            current=pending if isinstance(pending,dict) else grant
+            if int(current.get('expires_at',0))<=int(time.time())+120:
+                refreshed=_post('token',{'grant_type':'refresh_token','refresh_token':current['refresh_token'],'client_id':active})
+                if not isinstance(refreshed.get('access_token'),str) or not refreshed['access_token']:
+                    raise OAuthTemporarilyUnavailable('Civitai did not return a valid Community authorization.')
+                # RFC 6749 permits omitted scope when unchanged. An explicit
+                # widened/malformed scope is still refused, and /me independently
+                # checks actual scope/account before this token can leave the PC.
+                if 'scope' in refreshed and not _is_identity_scope(refreshed['scope']):
                     raise OAuthReauthenticationRequired('Community authorization permissions changed. Sign in again.')
-                grant=_verify_identity_grant(candidate,primary['identity']['id'])
-            except (OAuthReauthenticationRequired,OAuthSetupError):
-                primary['community_identity']={**grant,'reauth_required':True};_save(primary)
-                raise OAuthReauthenticationRequired('Sign in again to reconnect Community securely.') from None
-            except Exception:
-                raise OAuthTemporarilyUnavailable('Community identity verification is temporarily unavailable.') from None
-            primary['community_identity']=grant;_save(primary)
+                pending={**current,**refreshed,'scope':READ_SCOPE,'client_id':active,
+                         'expires_at':int(time.time())+int(refreshed.get('expires_in',3600))}
+                pending.pop('pending_refresh',None)
+                # Keep the replacement separate from the admitted grant. Even an
+                # older client must not treat an unverified candidate as usable.
+                grant={**grant,'pending_refresh':pending}
+                primary['community_identity']=grant;_save(primary)
+            if pending is not None:
+                grant=_verify_identity_grant(pending,primary['identity']['id'])
+                primary['community_identity']=grant;_save(primary)
+        except (OAuthReauthenticationRequired,OAuthSetupError):
+            primary['community_identity']={**grant,'reauth_required':True};_save(primary)
+            raise OAuthReauthenticationRequired('Sign in again to reconnect Community securely.') from None
+        except Exception:
+            raise OAuthTemporarilyUnavailable('Community identity verification is temporarily unavailable.') from None
         return grant['access_token']
 
 

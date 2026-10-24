@@ -70,7 +70,7 @@ def run(mode):
                     open_modal(value);page.locator('#communitySubmit').click()
                 # Keyboard opening, native focus and Escape restoration.
                 page.locator('#communityRecommend').focus();page.keyboard.press('Enter')
-                assert page.locator('#communityLink').evaluate('(e)=>e===document.activeElement')
+                page.wait_for_function("()=>document.querySelector('#communityLink')===document.activeElement")
                 page.keyboard.press('Escape');assert page.locator('#communityRecommend').evaluate('(e)=>e===document.activeElement')
                 held=[];requests=[]
                 page.on('request',lambda req:requests.append(req) if req.url.endswith('/api/community/recommend') else None)
@@ -86,9 +86,10 @@ def run(mode):
                 assert len(requests)==1 and request('/api/community/status')['quota']['used']==1
                 assert '2 left' in page.locator('#communityQuota').inner_text()
                 assert not page.locator('dialog[open]').count()
-                # Card entry prepopulates the exact same modal, without a request.
+                # Card entry rechecks admission, then prepopulates the same modal without a submission.
                 page.locator('#communityGrid .more-menu').click()
                 page.get_by_role('menuitem',name='Recommend to Community').click()
+                page.locator('#communityDialogTitle').wait_for(state='visible')
                 assert page.locator('#communityLink').input_value()=='1001' and len(requests)==1
                 page.locator('#communitySubmit').click()
                 page.locator('#communityDialogMessage').filter(has_text='already been recommended').wait_for()
