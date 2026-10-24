@@ -173,7 +173,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def bounded_json(url, token=None, body=None):
-    headers = {"Accept": "application/json", "User-Agent": "CivitaiDiscoveryBeta/3.0.0-beta.1"}
+    headers = {"Accept": "application/json", "User-Agent": "CivitaiDiscoveryBeta/3.0.0-beta.2"}
     if token:
         if not isinstance(token, str) or len(token) > 8192 or any(c.isspace() for c in token):
             raise CommunityError("AUTH_EXPIRED", 401)

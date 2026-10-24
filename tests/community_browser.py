@@ -41,7 +41,7 @@ def run(mode):
                 try:request('/api/history/config');break
                 except OSError as error:last_error=error;time.sleep(.1)
             else:raise AssertionError(f'Server readiness failed: {last_error}')
-            assert request('/api/history/config')['version']=='3.0.0-beta.1'
+            assert request('/api/history/config')['version']==__import__('server').APP_VERSION
             assert request('/api/auth-status')['connected'] is False
             if mode=='offline':
                 try:request('/api/community/status');raise AssertionError('offline accepted')
