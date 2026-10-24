@@ -47,6 +47,8 @@ with tempfile.TemporaryDirectory(
         item(5, "AboveRating", "video", "Foo", 999, 8),
         item(6, "Compound", "video", "MiniMax H3YuE2", 2),
         item(7, "Unknown", "video", "Unknown", 2),
+        item(8, "MusicVideo", "video", "MiniMax H3YuE2-3B", 3),
+        item(9, "ExactMusic", "video", "YuE2-3B", 1),
     ]
     items += [item(100 + i, f"Extra{i:02}", "video", "Foo", 0) for i in range(55)]
     archive._upsert_normalized(items, forced_date=DAY)
@@ -74,6 +76,9 @@ with tempfile.TemporaryDirectory(
         "filtered reads changed the saved artist index"
     )
     assert base_labels("MiniMax H3YuE2") == ("MiniMax H3", "YuE2")
+    assert base_labels("MiniMax H3YuE2-3B") == ("MiniMax H3", "YuE2-3B")
+    assert base_labels("NotReallyYuE2-3BModel") == ("NotReallyYuE2-3BModel",)
+    assert set(GallerySelection(archive, DAY, ["YuE2-3B"], "video").groups) == {"musicvideo", "exactmusic"}
     assert base_labels("NotReallyYuE2Model") == ("NotReallyYuE2Model",)
     assert normalize_base_model(["YuE2", "YuE2", "MiniMax H3"]) == "YuE2 | MiniMax H3"
     assert list(GallerySelection(archive, DAY, ["YuE2"], "video").groups) == [
@@ -142,6 +147,10 @@ with tempfile.TemporaryDirectory(
             "models"
         ]
         assert "YuE2" in [entry["model"] for entry in facets]
+        assert next(entry["images"] for entry in facets if entry["model"] == "YuE2-3B") == 2
+        assert "MiniMax H3YuE2-3B" not in [entry["model"] for entry in facets]
+        music = get(f"/api/history/artists?date={DAY}&segment=all&media=video&model=YuE2-3B&view=discovery")
+        assert music["total"] == 2 and music["imageCount"] == 2
         assert "MiniMax H3YuE2" not in [entry["model"] for entry in facets]
         for view in ["foryou", "emerging", "new", "followed"]:
             result = get(
