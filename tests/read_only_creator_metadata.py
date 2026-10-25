@@ -152,6 +152,7 @@ with tempfile.TemporaryDirectory(prefix="cad3-creator-metadata-browser-", ignore
                               body='{"added":true,"collectionName":"Favorites"}')))
             page.route("**/api/discovery/summary", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"hasData":true}'))
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.wait_for_selector(".creator-card")
             card = page.locator(".creator-card").first

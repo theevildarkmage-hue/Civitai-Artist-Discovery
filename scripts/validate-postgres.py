@@ -19,6 +19,9 @@ def main():
     parser.add_argument('--bin', required=True, type=Path, help='Verified PostgreSQL bin directory')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--repeats', type=int, default=5)
+    parser.add_argument('--community-access',action='store_true',help='Test default-invite/public policy only in the owned release rehearsal')
+    parser.add_argument('--device-renewal',action='store_true',help='Test the rotating device authorization candidate in the owned cluster')
+    parser.add_argument('--identity-sessions',action='store_true',help='Apply/test identity-session candidate only in the owned cluster')
     parser.add_argument('--private-beta',action='store_true',help='Apply candidate only to owned HTTP test DB')
     parser.add_argument('--http-deno', type=Path, help='Verified native Deno for real HTTP integration')
     parser.add_argument('--http-postgrest', type=Path, help='Verified native PostgREST for real HTTP integration')
@@ -28,6 +31,8 @@ def main():
     parser.add_argument('--deployment-rehearsal',action='store_true',help='Owned interruption/operator/backup/recovery rehearsal')
     parser.add_argument('--release-candidate',action='store_true',help='Registry/owner-administration migrations and signed API role tests')
     args = parser.parse_args()
+    if args.community_access and not (args.release_candidate and args.identity_sessions):parser.error('--community-access requires release rehearsal and identity sessions')
+    if args.device_renewal and not args.community_access:parser.error('--device-renewal requires community access rehearsal')
     if args.deployment_rehearsal and not args.private_beta:parser.error('--deployment-rehearsal requires --private-beta')
     if args.release_candidate and not args.private_beta:parser.error('--release-candidate requires --private-beta')
     if args.release_candidate and not args.deployment_rehearsal:parser.error('--release-candidate requires --deployment-rehearsal')
@@ -214,6 +219,33 @@ def main():
             (output/'http.log').write_text(result.stdout+result.stderr,encoding='utf-8')
             summary['runs'].append({'suite':'community_http','passed':result.returncode==0})
             if result.returncode:raise RuntimeError('Real HTTP integration failed; inspect private log')
+        if args.identity_sessions:
+            import runpy
+            preparation=runpy.run_path(str(ROOT/'scripts/prepare-identity-candidate.py'))
+            require(sql('create schema if not exists supabase_migrations; create table if not exists supabase_migrations.schema_migrations(version text primary key,name text,statements text[]);'+
+                ''.join("insert into supabase_migrations.schema_migrations(version) values('"+v+"') on conflict do nothing;" for v in preparation['BASE'])),'Owned migration-history fixture')
+            _,_,bundle=preparation['build_bundle'](expected_owner='cad3_admin',expected_database=database)
+            if args.community_access:bundle=preparation['include_access_policy'](bundle)
+            if args.device_renewal:bundle=preparation['include_device_renewal'](bundle)
+            interrupted=sql(bundle.rsplit('commit;',1)[0]+"select 1/0;\ncommit;")
+            assert interrupted.returncode!=0 and require(sql("select to_regclass('public.community_identity_sessions') is null;"),'Atomic rollback probe')=='t'
+            summary['identityAtomicFailureRolledBack']=True
+            require(sql(bundle),'Identity-session atomic candidate')
+            assert require(sql("select count(*) from supabase_migrations.schema_migrations where version='202610240003';"),'Identity history record')=='1'
+            summary['identityAtomicHistoryRecorded']=True
+            result=subprocess.run([sys.executable,str(ROOT/'tests/identity_sessions_postgres.py')],cwd=ROOT,env=env,capture_output=True,text=True,timeout=120,creationflags=creationflags)
+            (output/'identity-sessions.log').write_text(result.stdout+result.stderr,encoding='utf-8')
+            summary['runs'].append({'suite':'identity_sessions_postgres','passed':result.returncode==0})
+            if result.returncode:raise RuntimeError('Identity-session SQL tests failed; inspect owned evidence')
+            result=subprocess.run(['node','--experimental-transform-types',str(ROOT/'tests/community_identity_session.mjs')],cwd=ROOT,env={**env,'CAD_TEST_IDENTITY_NATIVE':'1','CAD_TEST_DEVICE_RENEWAL':'1' if args.device_renewal else '0'},capture_output=True,text=True,timeout=120,creationflags=creationflags)
+            (output/'identity-edge-native.log').write_text(result.stdout+result.stderr,encoding='utf-8')
+            summary['runs'].append({'suite':'community_identity_session_native','passed':result.returncode==0})
+            if result.returncode:raise RuntimeError('Identity Edge/native SQL tests failed; inspect owned evidence')
+        if args.community_access:
+            result=subprocess.run([sys.executable,str(ROOT/'tests/community_access_policy_postgres.py')],cwd=ROOT,env=env,capture_output=True,text=True,timeout=120,creationflags=creationflags)
+            (output/'community-access-policy.log').write_text(result.stdout+result.stderr,encoding='utf-8')
+            summary['runs'].append({'suite':'community_access_policy_postgres','passed':result.returncode==0})
+            if result.returncode:raise RuntimeError('Community policy acceptance failed; inspect owned evidence')
         summary['extensions'] = require(sql('select extname from pg_extension order by extname;'), 'Extensions').splitlines()
         summary['passed'] = True
     finally:

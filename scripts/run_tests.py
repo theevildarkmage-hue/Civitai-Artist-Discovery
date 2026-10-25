@@ -115,7 +115,7 @@ def main():
             }
             for key in ('CAD_ALLOW_ISOLATED_DB_TESTS','CAD_TEST_DATABASE_URL',
                         'CAD_ALLOW_ISOLATED_EDGE_TESTS','CAD_TEST_COMMUNITY_URL',
-                        'CAD_TEST_CIVITAI_TOKEN','CAD_COMMUNITY_SAMPLE',
+                        'CAD_TEST_CIVITAI_TOKEN','CAD_TEST_DISCOVERY_SESSION','CAD_COMMUNITY_SAMPLE',
                         'CAD_COMMUNITY_TESTING','CAD_TEST_INSTANCE'):
                 env.pop(key, None)
             started = time.monotonic()

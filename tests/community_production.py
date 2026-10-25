@@ -1,4 +1,4 @@
-"""Opt-in Edge/UserInfo contract smoke test; never spends recommendation quota."""
+"""Explicit isolated Edge/Discovery-session contract smoke test; never spends recommendation quota."""
 import json
 import os
 from pathlib import Path
@@ -8,10 +8,10 @@ from discovery.community import CommunityError, SupabaseCommunityBackend
 
 def run():
     if os.environ.get('CAD_ALLOW_ISOLATED_EDGE_TESTS')!='1':
-        print('SKIP: isolated Edge Function and Civitai test-account credentials required');return
-    backend=SupabaseCommunityBackend(os.environ.get('CAD_TEST_COMMUNITY_URL'),identity_token_provider=lambda:os.environ['CAD_TEST_CIVITAI_TOKEN'])
-    token=os.environ.get('CAD_TEST_CIVITAI_TOKEN')
-    if not token:raise RuntimeError('Provide a test-account access token through the environment')
+        print('SKIP: isolated Edge Function and Discovery-only test session required');return
+    backend=SupabaseCommunityBackend(os.environ.get('CAD_TEST_COMMUNITY_URL'),identity_token_provider=lambda:os.environ['CAD_TEST_DISCOVERY_SESSION'])
+    token=os.environ.get('CAD_TEST_DISCOVERY_SESSION')
+    if not token:raise RuntimeError('Provide a Discovery-only isolated test session through the environment')
     status=backend.request('status',token,{})
     assert status['apiVersion']==1 and status['member']['id']>0 and not status['development']
     quota=status.get('quota')
@@ -23,9 +23,11 @@ def run():
     for artwork in ('https://127.0.0.1/images/1','https://evil.test/images/1'):
         try:backend.request('verify',token,{'artwork':artwork});raise AssertionError('Invalid artwork accepted')
         except CommunityError as error:assert error.code==expected
-    try:backend.request('status','synthetic-invalid-token',{});raise AssertionError('Invalid token accepted')
+    backend.identity_token_provider=lambda:'synthetic-invalid-token'
+    try:backend.request('status',None,{});raise AssertionError('Invalid token accepted')
     except CommunityError as error:assert error.code=='AUTH_EXPIRED'
-    after=backend.request('status',token,{})
+    backend.identity_token_provider=lambda:token
+    after=backend.request('status',None,{})
     if quota is not None:assert after['quota']['used']==quota['used']
     else:assert after.get('quota') is None
     print('PASS: verified Edge identity and policy errors; no valid write inputs. Disabled quota preservation requires the separate SQL snapshot check; tokens never printed')

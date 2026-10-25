@@ -496,6 +496,9 @@ class SupabaseCommunityBackend:
             try:restricted=self.identity_token_provider()
             except OAuthReauthenticationRequired:raise CommunityError('AUTH_EXPIRED',401) from None
             except OAuthTemporarilyUnavailable:raise CommunityError('UNAVAILABLE',503) from None
+            from .cloud_identity import SESSION
+            if not isinstance(restricted,str) or not SESSION.fullmatch(restricted):
+                raise CommunityError('AUTH_EXPIRED',401)
             value = self.fetch(self.url, restricted, {"apiVersion": 1, "operation": operation, **payload})
         except CommunityError:
             raise
@@ -697,8 +700,8 @@ def build_community(data_root, profile_provider, token_provider):
         verifier.live_verifier=CivitaiVerifier(token_provider=token_provider)
     if mode == "supabase":
         from .community_beta import BETA_ENDPOINT
-        from .oauth import get_community_access_token
-        backend = SupabaseCommunityBackend(BETA_ENDPOINT if getattr(sys,'frozen',False) else os.environ.get("CAD_COMMUNITY_URL"),identity_token_provider=get_community_access_token)
+        from .oauth import get_community_session
+        backend = SupabaseCommunityBackend(BETA_ENDPOINT if getattr(sys,'frozen',False) else os.environ.get("CAD_COMMUNITY_URL"),identity_token_provider=get_community_session)
     else:
         backend = LocalCommunityBackend(Path(data_root) / "community" / ("fixtures.sqlite3" if fixture else "local.sqlite3"), verifier)
         if fixture:

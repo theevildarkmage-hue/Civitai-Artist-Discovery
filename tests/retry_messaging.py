@@ -65,6 +65,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-retry-", ignore_cleanup_errors=
                 content_type="application/json", body=current["status"]))
             page.route("**/api/history/status**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body=current["status"]))
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.locator("#discovery:not(.hidden)").wait_for()
             page.locator('#tabGallery').click()

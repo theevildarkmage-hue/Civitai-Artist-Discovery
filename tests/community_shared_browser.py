@@ -69,6 +69,7 @@ try:
         assert writes[-1][1]=={'imageId':1002,'collectionId':77}
         card.locator('.more-menu').click()
         page.get_by_role('menuitem',name='Recommend to Community').click()
+        page.wait_for_function("()=>document.querySelector('#communityLink').value==='1002'")
         assert page.locator('#communityLink').input_value()=='1002'
         page.keyboard.press('Escape')
         # Retain a cached tab across an external backend restart: it must re-admit

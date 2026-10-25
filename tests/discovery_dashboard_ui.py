@@ -109,9 +109,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 900})
-            errors = []
+            errors = [];failed_responses=[]
             page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
             page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on("response", lambda response: failed_responses.append((response.status,response.url)) if response.status>=400 else None)
             # Signed in, but Civitai withheld write access: the dashboard must render its
             # analysis in full and still offer no way to write.
             page.route("**/api/community/config", lambda route: route.fulfill(content_type="application/json", body='{"development":false}'))
@@ -130,6 +131,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             auth_calls = []
             page.on("request", lambda request: auth_calls.append(request.url)
                     if "/api/auth-status" in request.url else None)
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
 
             before = len(auth_calls)
@@ -244,6 +246,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
                               body=json.dumps({"userId": sent[-1]["userId"], "following": True,
                                                "changed": True}))
             writer.route("**/api/follow", follow_route)
+            writer.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             writer.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             writer.click("#tabDiscovery")
             writer.wait_for_selector("#notFollowed .follow-button:not([disabled])")
@@ -295,6 +298,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             onscreen = page.evaluate("""() => [...document.querySelectorAll('.creator-card')]
                 .filter(c => c.getBoundingClientRect().top < window.innerHeight)
                 .every(c => c.querySelector('.image-button img').src)""")
+            # IntersectionObserver attaches src after layout; card insertion and
+            # screenshot completion are not evidence that its callback has run.
+            page.wait_for_function("""() => [...document.querySelectorAll('.creator-card')]
+                .filter(c => c.getBoundingClientRect().top < window.innerHeight)
+                .every(c => c.querySelector('.image-button img').src)""")
+            onscreen = page.evaluate("""() => [...document.querySelectorAll('.creator-card')]
+                .filter(c => c.getBoundingClientRect().top < window.innerHeight)
+                .every(c => c.querySelector('.image-button img').src)""")
             assert onscreen, "a visible card has no artwork attached"
 
             # Switching views repeatedly must not duplicate cards or empty the gallery: a
@@ -316,7 +327,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             assert page.is_visible("#syncDiscovery")
             page.screenshot(path=str(SHOTS / "discovery-empty.png"))
 
-            assert not errors, errors
+            assert not errors, (errors,failed_responses)
             browser.close()
     finally:
         process.terminate()

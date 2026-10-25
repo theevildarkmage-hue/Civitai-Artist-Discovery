@@ -16,7 +16,7 @@ def main():
     commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT).decode().strip()
     dirty=bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT).strip())
     state={'sourceCommit':commit,'sourceDirty':dirty,'inputFingerprint':inputs(),'python':sys.version.split()[0],'openssl':ssl.OPENSSL_VERSION,
-      'dependencies':{k:version(k) for k in ('pyinstaller','pyinstaller-hooks-contrib','pillow','pystray')}}
+      'dependencies':{k:version(k) for k in ('pyinstaller','pyinstaller-hooks-contrib','pillow','pystray','cryptography','cffi','pycparser')}}
     if a.action=='start':
         a.record.parent.mkdir(parents=True,exist_ok=True);a.record.write_text(json.dumps(state,indent=2))
     else:

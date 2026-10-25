@@ -13,8 +13,9 @@ const transport=async(url,options)=>{
 };
 const ordinary=createCommunityHandler({invitationOnly:true,fetch:identityTransport(transport)});
 const restricted=createCommunityHandler({invitationOnly:true,ownerOnly:true,fetch:identityTransport(transport)});
+let serial=0;
 async function call(extra={},operation='register'){
- const response=await (ownerMode?restricted:ordinary)(new Request('https://fixture.invalid',{method:'POST',headers:{Authorization:'Bearer synthetic','Content-Type':'application/json'},body:JSON.stringify({apiVersion:1,operation,...(operation==='register'?{appVersion:'3.0.0-beta.1',platform:'Linux'}:{}),...extra})}));return response.json();
+ const response=await (ownerMode?restricted:ordinary)(new Request('https://fixture.invalid',{method:'POST',headers:{Authorization:'Bearer synthetic-'+(++serial),'Content-Type':'application/json'},body:JSON.stringify({apiVersion:1,operation,...(operation==='register'?{appVersion:'3.0.0-beta.1',platform:'Linux'}:{}),...extra})}));return response.json();
 }
 assert.equal((await call()).registered,true);
 assert.deepEqual(calls.find(x=>x.name==='community_registry_upsert').args,{p_member:7,p_name:'VerifiedName',p_version:'3.0.0-beta.1',p_platform:'Linux'});

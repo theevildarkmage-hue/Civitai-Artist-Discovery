@@ -64,6 +64,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-model-filter-", ignore_cleanup_
                     "oauthJob": {"state": "complete"}})))
             page.route("**/api/discovery/summary", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"hasData":true,"sync":{"running":false}}'))
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.wait_for_selector(".creator-card", timeout=15000)
 

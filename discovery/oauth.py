@@ -275,7 +275,7 @@ class Callback(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_): return
 
 
-def _authorize_tokens(requested_scope: int, timeout: int = 300) -> dict:
+def _authorize_tokens(requested_scope: int, timeout: int = 300, *, nonce: str | None = None) -> dict:
     verifier = secrets.token_urlsafe(64)[:96]
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     state = secrets.token_urlsafe(32)
@@ -288,6 +288,10 @@ def _authorize_tokens(requested_scope: int, timeout: int = 300) -> dict:
                               "and enter its client ID before connecting.")
     params = {"response_type": "code", "client_id": active, "redirect_uri": REDIRECT_URI, "scope": str(requested_scope),
         "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
+    if nonce is not None:
+        if not isinstance(nonce,str) or len(nonce)!=43:
+            raise OAuthSetupError("Invalid cloud identity challenge.")
+        params["nonce"] = nonce
     try:
         server = http.server.ThreadingHTTPServer(("localhost", CALLBACK_PORT), Callback)
     except OSError as error:
@@ -315,90 +319,109 @@ def _authorize_tokens(requested_scope: int, timeout: int = 300) -> dict:
     return tokens
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self,*args,**kwargs):
-        raise OAuthSetupError('Civitai identity authorization redirected unexpectedly.')
-
-
-def _is_identity_scope(scope) -> bool:
-    # Civitai serializes OAuth scope as a singleton string array as well as a
-    # scalar. Accept only the exact read grant, never additional array entries.
-    if isinstance(scope,list):
-        if len(scope)!=1:return False
-        scope=scope[0]
-    return type(scope) in (str,int) and str(scope)==str(READ_SCOPE)
-
-
-def _verify_identity_grant(tokens: dict, expected_id: int) -> dict:
-    """Validate the separate read-only grant directly with Civitai, never Supabase."""
-    scope=tokens.get('scope')
-    if not _is_identity_scope(scope):
-        raise OAuthSetupError('Civitai did not issue the required read-only Community authorization.')
-    request=urllib.request.Request('https://civitai.com/api/v1/me',headers=HEADERS)
-    request.add_unredirected_header('Authorization','Bearer '+tokens['access_token'])
-    with urllib.request.build_opener(_NoRedirect()).open(request,timeout=20) as response:
-        raw=response.read(65537)
-        if len(raw)>65536:raise OAuthSetupError('Civitai identity response was oversized.')
-        verified=json.loads(raw)
-    identity=_userinfo(tokens['access_token'])
-    if (verified.get('tokenScope')!=READ_SCOPE or verified.get('subject',{}).get('type')!='oauth'
-        or int(verified.get('id') or 0)!=expected_id or int(identity.get('sub') or identity.get('id') or 0)!=expected_id):
-        raise OAuthSetupError('Community authorization identity or permissions did not match.')
-    tokens['scope']=READ_SCOPE
-    tokens['identity']={'id':expected_id,'username':identity.get('preferred_username') or identity.get('username')}
-    return tokens
-
-
 def login(timeout: int = 300) -> dict:
-    # Separate provider grants: write access stays local, only the read grant may
-    # leave this computer for the hosted identity/Community service.
-    tokens=_authorize_tokens(READ_SCOPE | USER_WRITE | COLLECTIONS_READ | COLLECTIONS_WRITE | SOCIAL_WRITE,timeout)
+    # Cloud outages must not prevent local login or access to Daily Gallery.
+    from . import cloud_identity
+    pending=None
+    try:
+        pending=cloud_identity.challenge(client_id())
+    except Exception:
+        pass
+    tokens=_authorize_tokens(READ_SCOPE | USER_WRITE | COLLECTIONS_READ | COLLECTIONS_WRITE | SOCIAL_WRITE,
+        timeout,nonce=pending['nonce'] if pending else None)
     identity=_userinfo(tokens['access_token'])
     identity_id=int(identity.get('id') or identity.get('sub') or 0)
     if identity_id<=0:raise OAuthSetupError('Civitai did not return a verifiable account identity.')
     tokens['identity']={'id':identity_id,'username':identity.get('username') or identity.get('preferred_username')}
-    restricted=_authorize_tokens(READ_SCOPE,timeout)
-    tokens['community_identity']=_verify_identity_grant(restricted,identity_id)
+    assertion=tokens.pop('id_token',None)
+    # Never persist or forward the token endpoint dictionary. Only its signed ID
+    # assertion may enter the exchange; access/refresh credentials stay local.
+    if pending:
+        try:
+            tokens['discovery_session']=cloud_identity.exchange(assertion,pending,identity_id)
+        except Exception:
+            pass
     with _REFRESH_LOCK:_save(tokens)
     return tokens['identity']
 
 
-def get_community_access_token() -> str:
-    """Never fall back to the primary grant; retain rotated refresh credentials."""
-    with _REFRESH_LOCK:
-        primary=_load();grant=primary.get('community_identity');active=client_id()
-        if (primary.get('reauth_required') or not isinstance(grant,dict) or grant.get('reauth_required')
-            or not active or primary.get('client_id')!=active or grant.get('client_id')!=active
-            or grant.get('scope')!=READ_SCOPE or grant.get('identity',{}).get('id')!=primary.get('identity',{}).get('id')):
-            raise OAuthReauthenticationRequired('Sign in again to authorize the secure Community connection.')
+_CLOUD_REFRESH_LOCK=threading.Lock()
+_CLOUD_RETRY={}
+
+
+def get_community_session() -> str:
+    """Renew Discovery authorization independently; never clear/refresh Civitai here."""
+    from .cloud_identity import SESSION
+    from . import cloud_identity
+    def load():
+        with _REFRESH_LOCK:primary=_load()
+        active=client_id();session=primary.get('discovery_session')
+        if (primary.get('reauth_required') or not active or primary.get('client_id')!=active
+            or not isinstance(session,dict) or not isinstance(session.get('session'),str)
+            or not SESSION.fullmatch(session['session']) or type(session.get('expires_at')) is not int
+            or type(session.get('member_id')) is not int or session['member_id']!=primary.get('identity',{}).get('id')):
+            raise OAuthReauthenticationRequired('Reconnect Community securely; your local Civitai login is preserved.')
+        return primary,session
+    primary,session=load();now=time.time()
+    if session['expires_at']>now+300:return session['session']
+    renewal=session.get('renewal')
+    if (session.get('renewal_revoked') or not isinstance(renewal,dict)
+        or min(renewal.get('expires_at',0),renewal.get('absolute_expires_at',0))<=now):
+        if session['expires_at']>now+30:return session['session']
+        raise OAuthReauthenticationRequired('Community device authorization needs renewal; your Civitai login is preserved.')
+    marker=(session['member_id'],renewal.get('credential'))
+    retry=_CLOUD_RETRY.get(marker,{})
+    if retry.get('after',0)>now:
+        if session['expires_at']>now+30:return session['session']
+        raise OAuthTemporarilyUnavailable('Community renewal is temporarily unavailable. Daily Gallery still works.')
+    if not _CLOUD_REFRESH_LOCK.acquire(blocking=False):
+        if session['expires_at']>now+30:return session['session']
+        # Startup registry and gallery can arrive together. Join the one bounded
+        # cloud renewal without taking the independent Civitai refresh lock.
+        if _CLOUD_REFRESH_LOCK.acquire(timeout=16):
+            _CLOUD_REFRESH_LOCK.release()
+            _,fresh=load()
+            if fresh['expires_at']>time.time()+30:return fresh['session']
+        raise OAuthTemporarilyUnavailable('Community renewal is temporarily unavailable. Daily Gallery still works.')
+    try:
+        primary,session=load()
+        if session['expires_at']>time.time()+300:return session['session']
+        # Persist the operation ID BEFORE sending. A crash/lost reply can retry
+        # the same rotation with a fresh device signature, even after restart.
+        session=json.loads(json.dumps(session));renewal=session['renewal']
+        renewal.setdefault('pending_request',secrets.token_urlsafe(32))
+        with _REFRESH_LOCK:
+            current=_load()
+            if current.get('identity',{}).get('id')!=session['member_id']:raise OAuthReauthenticationRequired('Community account changed.')
+            _save({**current,'discovery_session':session})
         try:
-            pending=grant.get('pending_refresh')
-            current=pending if isinstance(pending,dict) else grant
-            if int(current.get('expires_at',0))<=int(time.time())+120:
-                refreshed=_post('token',{'grant_type':'refresh_token','refresh_token':current['refresh_token'],'client_id':active})
-                if not isinstance(refreshed.get('access_token'),str) or not refreshed['access_token']:
-                    raise OAuthTemporarilyUnavailable('Civitai did not return a valid Community authorization.')
-                # RFC 6749 permits omitted scope when unchanged. An explicit
-                # widened/malformed scope is still refused, and /me independently
-                # checks actual scope/account before this token can leave the PC.
-                if 'scope' in refreshed and not _is_identity_scope(refreshed['scope']):
-                    raise OAuthReauthenticationRequired('Community authorization permissions changed. Sign in again.')
-                pending={**current,**refreshed,'scope':READ_SCOPE,'client_id':active,
-                         'expires_at':int(time.time())+int(refreshed.get('expires_in',3600))}
-                pending.pop('pending_refresh',None)
-                # Keep the replacement separate from the admitted grant. Even an
-                # older client must not treat an unverified candidate as usable.
-                grant={**grant,'pending_refresh':pending}
-                primary['community_identity']=grant;_save(primary)
-            if pending is not None:
-                grant=_verify_identity_grant(pending,primary['identity']['id'])
-                primary['community_identity']=grant;_save(primary)
-        except (OAuthReauthenticationRequired,OAuthSetupError):
-            primary['community_identity']={**grant,'reauth_required':True};_save(primary)
-            raise OAuthReauthenticationRequired('Sign in again to reconnect Community securely.') from None
-        except Exception:
-            raise OAuthTemporarilyUnavailable('Community identity verification is temporarily unavailable.') from None
-        return grant['access_token']
+            renewed=cloud_identity.renew(session)
+        except Exception as error:
+            from .community import CommunityError
+            if isinstance(error,CommunityError) and error.code in ('AUTH_EXPIRED','AUTH_REQUIRED'):
+                with _REFRESH_LOCK:
+                    current=_load();stored=current.get('discovery_session',{})
+                    if stored.get('session')==session['session']:_save({**current,'discovery_session':{**stored,'renewal_revoked':True}})
+                raise OAuthReauthenticationRequired('Community device authorization was revoked. Local Civitai login is preserved.') from None
+            failures=min(5,retry.get('failures',0)+1)
+            _CLOUD_RETRY.clear();_CLOUD_RETRY[marker]={'after':time.time()+min(300,20*2**(failures-1)),'failures':failures}
+            if session['expires_at']>time.time()+30:return session['session']
+            raise OAuthTemporarilyUnavailable('Community renewal is temporarily unavailable. Daily Gallery still works.') from None
+        with _REFRESH_LOCK:
+            current=_load()
+            if (current.get('identity',{}).get('id')!=session['member_id']
+                or current.get('discovery_session',{}).get('session')!=session['session']):
+                raise OAuthReauthenticationRequired('Community account changed during renewal.')
+            _save({**current,'discovery_session':renewed})
+        _CLOUD_RETRY.clear()
+        return renewed['session']
+    finally:_CLOUD_REFRESH_LOCK.release()
+
+
+def get_community_access_token() -> str:
+    # Compatibility name for older local integrations: it returns ONLY a Discovery
+    # session. Existing scope-33 grants are never loaded, refreshed or transmitted.
+    return get_community_session()
 
 
 # Civitai rotates the refresh token: redeeming one invalidates it. The gallery makes
@@ -539,6 +562,16 @@ def disconnect() -> None:
     except RuntimeError:
         tokens = {}
     if tokens.get("client_id") == client:
+        # Best-effort cloud session revocation uses only the Discovery credential.
+        # Failure never prevents local sign-out; the server also enforces expiry.
+        try:
+            from .cloud_identity import ENDPOINT, SESSION
+            session=tokens.get('discovery_session',{}).get('session','')
+            if isinstance(session,str) and SESSION.fullmatch(session):
+                from .community import bounded_json
+                bounded_json(ENDPOINT,session,{'apiVersion':1,'operation':'identityLogout'})
+        except Exception:
+            pass
         # The refresh token is the durable grant; revoking it takes the access token with
         # it on a compliant server, but both are sent because that is not guaranteed.
         _revoke(tokens.get("refresh_token") or "", "refresh_token", client)

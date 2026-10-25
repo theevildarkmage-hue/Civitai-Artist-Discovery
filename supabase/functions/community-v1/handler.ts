@@ -1,7 +1,9 @@
 // Shared deployed factory; local candidate changes require a pinned hosted rollout.
 // No SDK dependency and no browser OAuth transport.
 export function createCommunityHandler({fetch:transport=globalThis.fetch, ipLimit=120,
-  ipWindowMs=60000, maxConcurrent=16, ownerOnly=false, invitationOnly=false, distributedLimit=false, galleryWindow=false} = {}) {
+  ipWindowMs=60000, maxConcurrent=16, ownerOnly=false, invitationOnly=false, distributedLimit=false, galleryWindow=false,
+  authenticate=undefined as undefined|((token:string)=>Promise<any>),
+  publicArtwork=false} = {}) {
 const fetch=transport;
 const ingress=new Map<string,{started:number,count:number}>();
 const denied=new Map<string,number>();
@@ -69,7 +71,7 @@ async function readJSON(response: Response, max: number): Promise<any> {
 async function upstream(url: string, token?: string): Promise<any> {
   const response=await fetch(url, {redirect:'manual',signal:AbortSignal.timeout(8000),
     headers:{Accept:'application/json','User-Agent':'CivitaiDiscoveryBeta/3.0.0-beta.1',...(token?{Authorization:`Bearer ${token}`}:{})}});
-  if(response.status===401) fail('AUTH_EXPIRED');
+  if(response.status===401) fail(publicArtwork?'UNAVAILABLE':'AUTH_EXPIRED');
   if(response.status===403) fail((url==='https://auth.civitai.com/api/auth/oauth/userinfo'||url==='https://civitai.com/api/v1/me')?'AUTH_EXPIRED':'INVALID_ARTWORK');
   if(response.status===429) fail('RATE_LIMITED');
   if(response.status===404) fail('INVALID_ARTWORK');
@@ -130,8 +132,16 @@ function unwrapResult(response: any): any {
   return hydrate(0);
 }
 async function artwork(image: number, token: string, publicReview=false): Promise<number> {
-  const list=await upstream(`https://civitai.red/api/v1/images?imageId=${image}&limit=1&browsingLevel=31`,publicReview?undefined:token);
+  let list:any;
+  try {list=await upstream(`https://civitai.red/api/v1/images?imageId=${image}&limit=1&browsingLevel=31`,publicReview||publicArtwork?undefined:token);}
+  catch(error) {
+    // An anonymous visibility failure applies to the shared artwork, unlike a
+    // viewer's authenticated detail denial. Use the existing bounded cooldown.
+    if(publicReview&&error instanceof Failure&&error.code==='INVALID_ARTWORK')fail('PUBLIC_UNAVAILABLE');
+    throw error;
+  }
   const item=list?.items?.[0];
+  if(publicReview&&Array.isArray(list?.items)&&list.items.length===0)fail('PUBLIC_UNAVAILABLE');
   if(!Array.isArray(list?.items) || list.items.length!==1 || item?.id!==image || !['image','video'].includes(item?.type)) fail('INVALID_ARTWORK');
   // Shared eligibility uses independent anonymous public visibility/rating proof.
   // Authenticated detail remains required for numeric ownership and public flags.
@@ -139,6 +149,33 @@ async function artwork(image: number, token: string, publicReview=false): Promis
     const policy=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??'1,2').split(',').map(Number);
     if(!policy.length||policy.some(n=>![1,2,4,8,16].includes(n)))fail('UNAVAILABLE');
     if([1,2,4,8,16].includes(item.browsingLevel)&&!policy.includes(item.browsingLevel))fail('PUBLIC_RATING');
+  }
+  if(publicArtwork) {
+    // Anonymous retrieval is the eligibility boundary, including link-accessible
+    // unlisted artwork. Never request or accept any Civitai bearer credential.
+    let post:any;
+    try {post=await upstream(`https://civitai.red/api/v1/posts/${id(item.postId)}`);}
+    catch(error) {
+      if(publicReview&&error instanceof Failure&&error.code==='INVALID_ARTWORK')fail('PUBLIC_UNAVAILABLE');
+      throw error;
+    }
+    if(post?.id!==item.postId || !Array.isArray(post.images))fail('INVALID_ARTWORK');
+    const matches=post.images.filter((entry:any)=>entry?.id===image);
+    // Public posts return only their first 100 images. Exact anonymous image
+    // lookup already supplies its postId; omission from this preview is not deletion.
+    if(matches.length>1)fail('INVALID_ARTWORK');
+    const entry=matches[0];
+    if(entry && (entry.type!==item.type || entry.browsingLevel!==item.browsingLevel || entry.postId!==item.postId))fail('INVALID_ARTWORK');
+    if(!post.user?.username || post.user.username!==item.username)fail('UNVERIFIED_OWNER');
+    const creator=id(post.user.id);
+    if(!post.publishedAt || !Number.isFinite(Date.parse(post.publishedAt)) || Date.parse(post.publishedAt)>Date.now())fail('INVALID_ARTWORK');
+    const allowed=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??'1,2').split(',').map(Number);
+    if(!allowed.length || allowed.some(n=>![1,2,4,8,16].includes(n)))fail('UNAVAILABLE');
+    if(![1,2,4,8,16].includes(item.browsingLevel))fail('INVALID_ARTWORK');
+    if(!allowed.includes(item.browsingLevel))fail(publicReview?'PUBLIC_RATING':'CONTENT_FILTERED');
+    let media:URL;try {media=new URL(item.url);}catch {return fail('INVALID_ARTWORK');}
+    if(media.protocol!=='https:'||media.hostname!=='image.civitai.com'||media.port||media.username||media.password)fail('INVALID_ARTWORK');
+    return creator;
   }
   const input=encodeURIComponent(JSON.stringify({json:{id:image}}));
   const response=await upstream(`https://civitai.red/api/trpc/image.get?input=${input}`,token);
@@ -192,6 +229,13 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     if((denied.get(digest)??0)>now)fail('AUTH_EXPIRED');
     let member:any,memberId:number,username:string;
     try {
+      if(authenticate) {
+        try {member=await authenticate(token);} catch(error) {
+          fail(error instanceof Error&&error.message==='AUTH_EXPIRED'?'AUTH_EXPIRED':'UNAVAILABLE');
+        }
+        memberId=id(member?.id);username=member?.username;
+        if(typeof username!=='string'||username.length<1||username.length>200)fail('AUTH_EXPIRED');
+      } else {
       member=await upstream('https://auth.civitai.com/api/auth/oauth/userinfo',token);
       try {memberId=id(member?.sub);if(member.id!=null&&id(member.id)!==memberId)fail('AUTH_EXPIRED');}
       catch {return fail('AUTH_EXPIRED');}
@@ -200,6 +244,7 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
       const grant=await upstream('https://civitai.com/api/v1/me',token);
       let same=false;try {same=id(grant?.id)===memberId;}catch {fail('AUTH_EXPIRED');}
       if(grant?.tokenScope!==33||grant?.subject?.type!=='oauth'||!same)fail('AUTH_EXPIRED');
+      }
     } catch(error) {
       if(error instanceof Failure&&error.code==='AUTH_EXPIRED') {
         if(denied.size>=2048)denied.delete(denied.keys().next().value!);
@@ -219,7 +264,7 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     }
 
     // Application registry is independent of Community invitations and policy.
-    // Identity always comes from the fresh UserInfo response above.
+    // Identity comes from the trusted session resolver (or legacy fixture UserInfo).
     if(body.operation==='register') {
       if(Object.keys(body).some(k=>!['apiVersion','operation','appVersion','platform'].includes(k))
          || typeof body.appVersion!=='string' || body.appVersion.length<1 || body.appVersion.length>64
@@ -244,7 +289,7 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     const fields=body.operation==='report'?['artwork','reason']:body.operation==='recommend'?['artwork','idempotencyKey']:
       ['verify','withdraw'].includes(body.operation)?['artwork']:body.operation==='gallery'?['cursor','limit']:[];
     if(keys.some(k=>!['apiVersion','operation',...fields].includes(k))) fail('INVALID_REQUEST');
-    // Only fresh Civitai UserInfo supplies this ID. No JWT/body/header identity.
+    // Only the trusted identity resolver supplies this ID. No body/header identity.
     // Database invitation checks are deliberately uncached across instances.
     // Server-owned configuration, read for every authenticated operation. Missing
     // or malformed state is disabled; clients cannot override it. Secret changes
@@ -257,14 +302,19 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
       && Number.isFinite(remaining) && remaining>0 && remaining<=30*60*1000;
     // In the deployed owner-only entry point, even "enabled" fails closed.
     const submissions=ownerWindow || (!ownerOnly && state==='enabled');
-    const policy={available:submissions||state==='read_only',submissions,
+    const policy:{available:boolean,submissions:boolean,reporting?:boolean,accessMode?:string}={available:submissions||state==='read_only',submissions,
       ...(invitationOnly?{reporting:submissions||state==='read_only'}:{})};
     // Global disable takes precedence over invitation status and roster lookup.
     if(invitationOnly && !policy.available) {
       if(body.operation==='status') return reply({apiVersion:1,member:{id:memberId,username},quota:null,development:false,beta:policy});
       fail('BETA_DISABLED');
     }
-    if(invitationOnly) await rpc('community_access',{p_member:memberId});
+    // Protected RPC mode covers both invite beta and future public access.
+    // The database owns audience policy; the client cannot select it.
+    if(invitationOnly) {
+      const access=await rpc('community_access',{p_member:memberId});
+      policy.accessMode=access.accessMode??'invite_only';
+    }
     if(body.operation!=='status' && !policy.available) fail('BETA_DISABLED');
     if(['recommend','verify','withdraw'].includes(body.operation) && !policy.submissions) fail('READ_ONLY');
     let result:any;
@@ -286,7 +336,8 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
             catch(error) {
               const code=error instanceof Failure?error.code:'UNAVAILABLE';
               if(galleryWindow) {
-                failure=code==='PUBLIC_RATING'?'rating':['UNAVAILABLE','RATE_LIMITED'].includes(code)?'transient':'viewer';
+                failure=code==='PUBLIC_UNAVAILABLE'?'unavailable':code==='PUBLIC_RATING'?'rating':
+                  ['UNAVAILABLE','RATE_LIMITED'].includes(code)?'transient':'viewer';
               } else {
                 if(code==='AUTH_EXPIRED')throw error;
                 failure=code==='CONTENT_FILTERED'?'rating':code==='INVALID_ARTWORK'||code==='UNVERIFIED_OWNER'?'unavailable':'transient';
