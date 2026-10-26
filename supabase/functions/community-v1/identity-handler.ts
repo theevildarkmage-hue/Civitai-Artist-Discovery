@@ -72,7 +72,7 @@ export function createIdentityCommunityHandler({fetch:transport=globalThis.fetch
     return matches[0];
   }
   const renewal=createDeviceRenewal({rpc,env,clock,publicUser});
-  const community=createCommunityHandler({fetch:transport,invitationOnly:true,galleryWindow:true,
+  const community=createCommunityHandler({fetch:transport,invitationOnly:true,recommendationList:true,
     authenticate:async(token:string)=>{
       if(!/^sdc_[A-Za-z0-9_-]{43}$/.test(token))failure('AUTH_EXPIRED');
       return rpc('community_identity_resolve',{p_session_hash:await hash(token)});
@@ -83,9 +83,10 @@ export function createIdentityCommunityHandler({fetch:transport=globalThis.fetch
       if(request.headers.has('Origin'))failure('FORBIDDEN');
       if(request.method!=='POST'||request.headers.get('content-type')?.split(';')[0].trim()!=='application/json')failure('INVALID_REQUEST');
       if(active>=16)failure('UNAVAILABLE');active++;admitted=true;
-      const size=request.headers.get('content-length');if(size&&(!/^\d+$/.test(size)||Number(size)>16384))failure('INVALID_REQUEST');
-      const body=await json(new Response(request.body),16384);
+      const size=request.headers.get('content-length');if(size&&(!/^\d+$/.test(size)||Number(size)>131072))failure('INVALID_REQUEST');
+      const body=await json(new Response(request.body),131072);
       if(!body||typeof body!=='object'||Array.isArray(body))failure('INVALID_REQUEST');
+      if(body.operation!=='gallery'&&JSON.stringify(body).length>16384)failure('INVALID_REQUEST');
       if(body.apiVersion===2) {
         // Identity exchange endpoints never accept an API/session bearer header.
         if(request.headers.has('Authorization'))failure('AUTH_EXPIRED');

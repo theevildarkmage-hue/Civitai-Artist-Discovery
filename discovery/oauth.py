@@ -33,6 +33,8 @@ from .paths import data_root
 # authorization runs through it, abuse is attributed to it, and rate limits may be pooled
 # across everyone using it.
 BUILTIN_CLIENT_ID = "b9e2edf5-4bf0-4381-8823-ed01603256c5"
+COMMUNITY_UNSUPPORTED_CLIENT = ('Your custom Civitai application still works with Daily Gallery, but is not supported for Community identity enrollment. '
+    'Community requires the built-in application. Reconnecting will not resolve this. Switching applications requires fresh authorization; no switch was made.')
 AUTH_BASE = "https://auth.civitai.com/api/auth/oauth"
 CALLBACK_PORT = 8765
 REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/oauth/callback"
@@ -212,7 +214,24 @@ def _migrate_legacy_token() -> None:
         pass  # A connection that cannot be moved is simply re-established by the user.
 
 
+_FILE_LOCK=threading.RLock()
+_ROTATED_PENDING=None
+
+def _pending_for_profile():
+    return _ROTATED_PENDING if _ROTATED_PENDING and _ROTATED_PENDING['path']==str(TOKEN_PATH.resolve()) else None
+
 def _load() -> dict:
+    with _FILE_LOCK:
+        pending=_pending_for_profile()
+        if pending:
+            if time.monotonic()>=pending['retryAt']:
+                pending['retryAt']=time.monotonic()+15
+                try:_save(pending['tokens'])
+                except (OSError,OAuthSetupError):pass
+            return json.loads(json.dumps(pending['tokens']))
+        return _load_stored()
+
+def _load_stored() -> dict:
     if _uses_secret_service():
         return _load_linux()
     if not _uses_dpapi():
@@ -223,15 +242,29 @@ def _load() -> dict:
 
 
 def _save(tokens: dict) -> None:
+    with _FILE_LOCK:
+        _save_stored(tokens)
+        global _ROTATED_PENDING
+        if _pending_for_profile():_ROTATED_PENDING=None
+
+def _save_rotated(tokens):
+    """A redeemed remote rotation must not be discarded if secure storage fails."""
+    try:_save(tokens)
+    except (OSError,OAuthSetupError):
+        global _ROTATED_PENDING
+        with _FILE_LOCK:
+            _ROTATED_PENDING={'path':str(TOKEN_PATH.resolve()),'tokens':json.loads(json.dumps(tokens)),
+                              'retryAt':time.monotonic()+15}
+        raise OAuthTemporarilyUnavailable('Secure credential storage is temporarily unavailable. Keep the app open while it retries.') from None
+
+def _save_stored(tokens: dict) -> None:
     if _uses_secret_service():
         _save_linux(tokens)
         return
     if not _uses_dpapi():
         raise _unsupported_storage()
-    APP_DATA.mkdir(parents=True, exist_ok=True)
-    temporary = TOKEN_PATH.with_suffix(".tmp")
-    temporary.write_bytes(_crypt(json.dumps(tokens, separators=(",", ":")).encode(), True))
-    os.replace(temporary, TOKEN_PATH)
+    from .atomic_file import write_bytes
+    write_bytes(TOKEN_PATH,_crypt(json.dumps(tokens,separators=(",",":")).encode(),True))
 
 
 def _post(name: str, values: dict) -> dict:
@@ -319,14 +352,29 @@ def _authorize_tokens(requested_scope: int, timeout: int = 300, *, nonce: str | 
     return tokens
 
 
+_AUTHORIZATION_LOCK=threading.Lock()
+
+def _enrollment_failure(tokens,phase,error):
+    from .cloud_identity import EnrollmentError
+    from .community import CommunityError
+    from .diagnostics import community_failure
+    reasons={'unsupported_client','clock_or_expired_challenge','missing_identity_proof'}
+    reason=error.reason if isinstance(error,EnrollmentError) and error.reason in reasons else (
+        'service_unavailable' if isinstance(error,(OSError,OAuthTemporarilyUnavailable)) or isinstance(error,CommunityError) and error.code=='UNAVAILABLE' else 'fresh_authorization_required')
+    tokens['discovery_enrollment']={'state':'temporarily_unavailable' if reason=='service_unavailable' else 'incomplete','reason':reason}
+    community_failure(APP_DATA,phase,error)
+
 def login(timeout: int = 300) -> dict:
+    with _AUTHORIZATION_LOCK:return _login(timeout)
+
+def _login(timeout: int = 300) -> dict:
     # Cloud outages must not prevent local login or access to Daily Gallery.
     from . import cloud_identity
     pending=None
     try:
         pending=cloud_identity.challenge(client_id())
-    except Exception:
-        pass
+    except Exception as error:
+        failure=error
     tokens=_authorize_tokens(READ_SCOPE | USER_WRITE | COLLECTIONS_READ | COLLECTIONS_WRITE | SOCIAL_WRITE,
         timeout,nonce=pending['nonce'] if pending else None)
     identity=_userinfo(tokens['access_token'])
@@ -334,15 +382,93 @@ def login(timeout: int = 300) -> dict:
     if identity_id<=0:raise OAuthSetupError('Civitai did not return a verifiable account identity.')
     tokens['identity']={'id':identity_id,'username':identity.get('username') or identity.get('preferred_username')}
     assertion=tokens.pop('id_token',None)
+    if not pending:_enrollment_failure(tokens,'challenge',failure)
     # Never persist or forward the token endpoint dictionary. Only its signed ID
     # assertion may enter the exchange; access/refresh credentials stay local.
     if pending:
         try:
             tokens['discovery_session']=cloud_identity.exchange(assertion,pending,identity_id)
-        except Exception:
-            pass
-    with _REFRESH_LOCK:_save(tokens)
+        except Exception as error:_enrollment_failure(tokens,'exchange',error)
+    with _REFRESH_LOCK:_save_rotated(tokens)
     return tokens['identity']
+
+def reconnect_community(timeout=300):
+    """Explicit fresh nonce authorization. Never silently replace another account."""
+    from . import cloud_identity
+    from .diagnostics import community_failure
+    with _AUTHORIZATION_LOCK:
+        with _REFRESH_LOCK:before=_load()
+        expected=before.get('identity',{}).get('id');active=client_id()
+        if not expected or before.get('client_id')!=active:
+            raise OAuthSetupError('Sign in to Civitai before reconnecting Community.')
+        if active!=BUILTIN_CLIENT_ID:
+            raise OAuthSetupError(COMMUNITY_UNSUPPORTED_CLIENT)
+        try:pending=cloud_identity.challenge(active)
+        except Exception as error:
+            with _REFRESH_LOCK:
+                current=_load()
+                if current.get('identity',{}).get('id')==expected:
+                    _enrollment_failure(current,'challenge',error);_save(current)
+            raise OAuthTemporarilyUnavailable('Community is temporarily unavailable. Retry when connectivity returns; Daily stays connected.') from None
+        tokens=_authorize_tokens(READ_SCOPE|USER_WRITE|COLLECTIONS_READ|COLLECTIONS_WRITE|SOCIAL_WRITE,timeout,nonce=pending['nonce'])
+        assertion=tokens.pop('id_token',None)
+        identity=_userinfo(tokens['access_token']);member=int(identity.get('id') or identity.get('sub') or 0)
+        if member!=expected:
+            _revoke(tokens.get('refresh_token',''),'refresh_token',active)
+            community_failure(APP_DATA,'reconnect',ValueError())
+            raise OAuthSetupError('Reconnect using the same Civitai account. Your saved Daily profile was not replaced.')
+        tokens['identity']={'id':member,'username':identity.get('username') or identity.get('preferred_username')}
+        try:tokens['discovery_session']=cloud_identity.exchange(assertion,pending,member)
+        except Exception as error:_enrollment_failure(tokens,'exchange',error)
+        with _REFRESH_LOCK:
+            current=_load()
+            if current.get('identity',{}).get('id')!=expected or current.get('client_id')!=active:
+                raise OAuthSetupError('The signed-in account changed. Reconnect again from the current account.')
+            # The provider may supersede a grant during authorization. Keep the
+            # verified new primary grant even when the cloud exchange failed.
+            _save_rotated(tokens)
+        if 'discovery_session' not in tokens:
+            raise OAuthTemporarilyUnavailable('Community authorization was not completed. Daily remains connected; retry Reconnect Community.')
+        return tokens['identity']
+
+def community_authorization(tokens):
+    import re
+    from .cloud_identity import SESSION
+    active=client_id()
+    if active and active!=BUILTIN_CLIENT_ID:
+        return {'state':'unsupported_client','reason':'unsupported_client','action':'none','communityEnrolled':False}
+    session=tokens.get('discovery_session');now=time.time()
+    if not isinstance(session,dict) or not isinstance(session.get('session'),str) or not SESSION.fullmatch(session['session']) or type(session.get('expires_at')) is not int or session.get('member_id')!=tokens.get('identity',{}).get('id'):
+        detail=tokens.get('discovery_enrollment',{})
+        reason=detail.get('reason','fresh_authorization_required') if isinstance(detail,dict) else 'fresh_authorization_required'
+        reason=reason if reason in {'unsupported_client','clock_or_expired_challenge','missing_identity_proof','service_unavailable','fresh_authorization_required'} else 'fresh_authorization_required'
+        return {'state':'temporarily_unavailable' if reason=='service_unavailable' else 'incomplete','reason':reason,'action':'none' if reason=='unsupported_client' else 'reconnect','communityEnrolled':False}
+    renewal=session.get('renewal')
+    if renewal is not None and (not isinstance(renewal,dict)
+            or not isinstance(renewal.get('credential'),str)
+            or not re.fullmatch(r'sdr_[A-Za-z0-9_-]{43}',renewal['credential'])
+            or not isinstance(renewal.get('device'),dict)
+            or any(type(renewal.get(name)) is not int for name in ('expires_at','absolute_expires_at'))):
+        return {'state':'authorization_required','reason':'fresh_authorization_required','action':'reconnect','communityEnrolled':False}
+    if session.get('renewal_revoked'):
+        return {'state':'authorization_required','reason':'device_revoked','action':'reconnect','communityEnrolled':False}
+    if isinstance(renewal,dict) and min(renewal.get('expires_at',0),renewal.get('absolute_expires_at',0))<=now:
+        return {'state':'authorization_required','reason':'device_expired','action':'reconnect','communityEnrolled':False}
+    if session.get('expires_at',0)>now+30:return {'state':'ready','action':'none','communityEnrolled':True}
+    if isinstance(renewal,dict):
+        retry=_CLOUD_RETRY.get((session.get('member_id'),renewal.get('credential')),{})
+        if retry.get('after',0)>now:
+            return {'state':'temporarily_unavailable','reason':'renewal_unavailable','action':'retry','communityEnrolled':True}
+        return {'state':'renewable','reason':'silent_renewal','action':'retry','communityEnrolled':True}
+    return {'state':'authorization_required','reason':'device_expired','action':'reconnect','communityEnrolled':False}
+
+def note_community_rejection(rejected):
+    with _REFRESH_LOCK:
+        try:
+            current=_load();session=current.get('discovery_session',{})
+            if session.get('session')==rejected:
+                _save({**current,'discovery_session':{**session,'expires_at':0}})
+        except (OSError,RuntimeError):pass
 
 
 _CLOUD_REFRESH_LOCK=threading.Lock()
@@ -412,7 +538,7 @@ def get_community_session() -> str:
             if (current.get('identity',{}).get('id')!=session['member_id']
                 or current.get('discovery_session',{}).get('session')!=session['session']):
                 raise OAuthReauthenticationRequired('Community account changed during renewal.')
-            _save({**current,'discovery_session':renewed})
+            _save_rotated({**current,'discovery_session':renewed})
         _CLOUD_RETRY.clear()
         return renewed['session']
     finally:_CLOUD_REFRESH_LOCK.release()
@@ -433,6 +559,13 @@ _REFRESH_LOCK = threading.Lock()
 
 def _refreshed_tokens(active: str, rejected_token: str | None = None) -> dict:
     with _REFRESH_LOCK:
+        # No further provider rotation until a prior successful one is durable.
+        with _FILE_LOCK:
+            pending=_pending_for_profile()
+            if pending:
+                try:_save(pending['tokens'])
+                except (OSError,OAuthSetupError):
+                    raise OAuthTemporarilyUnavailable('Secure credential storage is temporarily unavailable. The latest authorization remains in memory.') from None
         # Re-read inside the lock: whoever held it before this thread may already have
         # saved a fresh token, and redeeming the old one again would fail.
         tokens = _load()
@@ -451,7 +584,7 @@ def _refreshed_tokens(active: str, rejected_token: str | None = None) -> dict:
         if not isinstance(refreshed.get('access_token'),str) or not refreshed['access_token']:
             raise OAuthTemporarilyUnavailable('Civitai did not return a valid refreshed authorization.')
         tokens = {**tokens,**refreshed, "identity": tokens.get("identity", {}), "client_id": active,'reauth_required':False}
-        tokens["expires_at"] = int(time.time()) + int(tokens.get("expires_in", 3600)); _save(tokens)
+        tokens["expires_at"] = int(time.time()) + int(tokens.get("expires_in", 3600)); _save_rotated(tokens)
         return tokens
 
 
@@ -493,7 +626,9 @@ def status() -> dict:
     user_write = usable and (scope_value & USER_WRITE) == USER_WRITE
     collections_read = usable and (scope_value & COLLECTIONS_READ) == COLLECTIONS_READ
     collections_write = usable and (scope_value & COLLECTIONS_WRITE) == COLLECTIONS_WRITE
+    with _FILE_LOCK:persistence_pending=bool(_pending_for_profile())
     return {"connected": not tokens.get('reauth_required',False), **(tokens.get("identity") or {}), "scope": scope,
+            "credentialPersistencePending":persistence_pending,
             "scopeGrantsWrite": granted, "socialWrite": granted,
             "userWrite": user_write,
             "collectionsRead": collections_read, "collectionsWrite": collections_write}
@@ -528,7 +663,8 @@ def session_status() -> dict:
         state=dict(_SESSION_STATE)
     if expired or revoked:
         value.update(socialWrite=False,userWrite=False,collectionsRead=False,collectionsWrite=False)
-    return {**value,'cachedSession':True,'needsReauthentication':revoked,
+    community=community_authorization(tokens)
+    return {**value,'communityAuthorization':community,'communityEnrolled':community['communityEnrolled'],'cachedSession':True,'needsReauthentication':revoked,
         'sessionState':'reauthentication_required' if revoked else ('refreshing' if state['running'] else
             ('offline' if expired else 'ready')),'refreshError':state['error']}
 
@@ -549,6 +685,10 @@ def _revoke(token: str, hint: str, client: str) -> bool:
 
 
 def disconnect() -> None:
+    # Lock order: refresh -> file. Never acquire refresh while holding file.
+    with _REFRESH_LOCK:_disconnect_locked()
+
+def _disconnect_locked() -> None:
     """Revoke the authorization at Civitai, then delete it locally.
 
     Deleting the local token only makes this installation forget the grant; the
@@ -580,10 +720,10 @@ def disconnect() -> None:
         if isinstance(restricted,dict) and restricted.get('client_id')==client:
             _revoke(restricted.get('refresh_token') or '', 'refresh_token', client)
             _revoke(restricted.get('access_token') or '', 'access_token', client)
-    if _uses_dpapi():
-        for path in {TOKEN_PATH, LEGACY_TOKEN_PATH}:
-            if path.exists(): path.unlink()
-    elif _uses_secret_service():
-        _delete_linux()
-    else:
-        raise _unsupported_storage()
+    with _FILE_LOCK:
+        global _ROTATED_PENDING
+        if _pending_for_profile():_ROTATED_PENDING=None
+        if _uses_dpapi():
+            for path in {TOKEN_PATH, LEGACY_TOKEN_PATH}:path.unlink(missing_ok=True)
+        elif _uses_secret_service():_delete_linux()
+        else:raise _unsupported_storage()

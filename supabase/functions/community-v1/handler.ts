@@ -3,7 +3,7 @@
 export function createCommunityHandler({fetch:transport=globalThis.fetch, ipLimit=120,
   ipWindowMs=60000, maxConcurrent=16, ownerOnly=false, invitationOnly=false, distributedLimit=false, galleryWindow=false,
   authenticate=undefined as undefined|((token:string)=>Promise<any>),
-  publicArtwork=false} = {}) {
+  publicArtwork=false, recommendationList=false} = {}) {
 const fetch=transport;
 const ingress=new Map<string,{started:number,count:number}>();
 const denied=new Map<string,number>();
@@ -131,7 +131,7 @@ function unwrapResult(response: any): any {
   }
   return hydrate(0);
 }
-async function artwork(image: number, token: string, publicReview=false): Promise<number> {
+async function artwork(image: number, token: string, publicReview=false): Promise<any> {
   let list:any;
   try {list=await upstream(`https://civitai.red/api/v1/images?imageId=${image}&limit=1&browsingLevel=31`,publicReview||publicArtwork?undefined:token);}
   catch(error) {
@@ -174,7 +174,7 @@ async function artwork(image: number, token: string, publicReview=false): Promis
     if(![1,2,4,8,16].includes(item.browsingLevel))fail('INVALID_ARTWORK');
     if(!allowed.includes(item.browsingLevel))fail(publicReview?'PUBLIC_RATING':'CONTENT_FILTERED');
     let media:URL;try {media=new URL(item.url);}catch {return fail('INVALID_ARTWORK');}
-    if(media.protocol!=='https:'||media.hostname!=='image.civitai.com'||media.port||media.username||media.password)fail('INVALID_ARTWORK');
+    if(media.protocol!=='https:'||media.hostname!=='image.civitai.com'||media.port||media.username||media.password||media.href.length>2048)fail('INVALID_ARTWORK');
     return creator;
   }
   const input=encodeURIComponent(JSON.stringify({json:{id:image}}));
@@ -207,8 +207,8 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
     if(!/^Bearer [^\s]{1,8192}$/.test(auth)) fail('AUTH_REQUIRED');
     const token=auth.slice(7);
     const length=request.headers.get('content-length');
-    if(length && (!/^\d+$/.test(length) || Number(length)>8192)) fail('INVALID_REQUEST');
-    const body=await readJSON(new Response(request.body),8192);
+    if(length && (!/^\d+$/.test(length) || Number(length)>(recommendationList?131072:8192))) fail('INVALID_REQUEST');
+    const body=await readJSON(new Response(request.body),recommendationList?131072:8192);
     if(!body || typeof body!=='object' || Array.isArray(body) || body.apiVersion!==1 || typeof body.operation!=='string') fail('INVALID_REQUEST');
     // No attacker-chargeable project quota: unverified callers must not exhaust
     // another member's budget. Concurrency and per-credential admission bound work.
@@ -324,29 +324,11 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
       case 'gallery': {
         const cursor=body.cursor==null?null:id(body.cursor),limit=body.limit??24;
         if(!Number.isInteger(limit) || limit<1 || limit>50) fail('INVALID_REQUEST');
-        if(invitationOnly) {
-          const candidates=galleryWindow
-            ? await rpc('community_prepare_gallery',{p_member:memberId,p_cursor:cursor,p_limit:limit})
-            : await rpc('community_review_candidates',{p_member:memberId});
-          if(!Array.isArray(candidates) || candidates.length>3) fail('UNAVAILABLE');
-          await Promise.all(candidates.map(async (candidate:any)=>{
-            const image=id(candidate.imageId),creator=id(candidate.creatorId);
-            let failure:string|null=null;
-            try {if(await artwork(image,token,galleryWindow)!==creator) failure=galleryWindow?'viewer':'owner';}
-            catch(error) {
-              const code=error instanceof Failure?error.code:'UNAVAILABLE';
-              if(galleryWindow) {
-                failure=code==='PUBLIC_UNAVAILABLE'?'unavailable':code==='PUBLIC_RATING'?'rating':
-                  ['UNAVAILABLE','RATE_LIMITED'].includes(code)?'transient':'viewer';
-              } else {
-                if(code==='AUTH_EXPIRED')throw error;
-                failure=code==='CONTENT_FILTERED'?'rating':code==='INVALID_ARTWORK'||code==='UNVERIFIED_OWNER'?'unavailable':'transient';
-              }
-            }
-            await rpc('community_record_review',{p_member:memberId,p_image:image,p_creator:creator,p_lease:candidate.lease,p_failure:failure});
-          }));
-          result=await rpc('community_beta_gallery',{p_member:memberId,p_cursor:cursor,p_limit:limit});
-        } else result=await rpc('community_gallery',{p_cursor:cursor,p_limit:limit});
+        if(recommendationList) {
+            result=await rpc('community_recommendation_list',{p_member:memberId,p_cursor:cursor,p_limit:limit});
+            break;
+          }
+        result=await rpc('community_gallery',{p_cursor:cursor,p_limit:limit});
         break;
       }
       case 'report': {
@@ -354,7 +336,8 @@ return async (request: Request, info?: {remoteAddr?:{hostname?:string}}) => {
         result=await rpc('community_report',{p_member:memberId,p_image:artworkInput(body.artwork),p_reason:body.reason});break;
       }
       case 'verify': case 'recommend': {
-        const image=artworkInput(body.artwork), creator=await artwork(image,token);
+        const image=artworkInput(body.artwork), verified=await artwork(image,token);
+        const creator=verified;
         const key=body.idempotencyKey;
         if(key!==undefined && (body.operation!=='recommend' || typeof key!=='string' || !/^[A-Za-z0-9_-]{16,80}$/.test(key))) fail('INVALID_REQUEST');
         result=await rpc(key===undefined?'community_submit':'community_submit_once',{

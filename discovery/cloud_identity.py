@@ -6,12 +6,21 @@ import secrets
 ENDPOINT = 'https://aibelmhucizupzvvhdvf.supabase.co/functions/v1/community-v1'
 SESSION = re.compile(r'sdc_[A-Za-z0-9_-]{43}')
 
+class EnrollmentError(RuntimeError):
+    def __init__(self,reason):
+        self.reason=reason
+        super().__init__('Community authorization needs attention.')
+
 
 def challenge(audience, *, send=None, clock=time.time):
     from .community import bounded_json
     from .device_identity import generate
     device=generate()
     value = (send or bounded_json)(ENDPOINT, None, {'apiVersion': 2, 'operation': 'identityChallenge','devicePublicKey':device['public']})
+    if isinstance(value,dict) and value.get('audience') and value['audience']!=audience:
+        raise EnrollmentError('unsupported_client')
+    if isinstance(value,dict) and type(value.get('expiresAt')) is int and not clock()<value['expiresAt']<=clock()+330:
+        raise EnrollmentError('clock_or_expired_challenge')
     if (not isinstance(value, dict) or value.get('apiVersion') != 2
         or value.get('audience') != audience
         or value.get('devicePublicKey')!=device['public']
@@ -24,6 +33,8 @@ def challenge(audience, *, send=None, clock=time.time):
 
 def exchange(assertion, pending, expected_id, *, send=None, clock=time.time):
     from .community import bounded_json
+    if not isinstance(assertion,str):raise EnrollmentError('missing_identity_proof')
+    if pending['expiresAt']<=clock():raise EnrollmentError('clock_or_expired_challenge')
     if (not isinstance(assertion, str) or len(assertion)>8192
         or not re.fullmatch(r'[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', assertion)
         or pending['expiresAt'] <= clock()):

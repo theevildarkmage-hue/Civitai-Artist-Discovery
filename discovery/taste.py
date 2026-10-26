@@ -691,9 +691,14 @@ class TasteStore:
         Read-only, and it replaces rather than merges: unhiding something on Civitai has
         to take effect here too, which a merge would quietly prevent.
         """
+        try:expected_account=auth_status().get('id')
+        except RuntimeError:expected_account=None
         payload = (client or SocialClient()).query("hiddenPreferences.getHidden", {})
         if not isinstance(payload, dict):
             raise RuntimeError("Civitai returned unexpected content controls")
+        # Validate completeness before replacing either gallery's shared mirror.
+        from .community import content_profile
+        content_profile(payload,(1,2,4,8,16))
 
         def named(rows):
             for row in rows or []:
@@ -719,6 +724,8 @@ class TasteStore:
                 continue
 
         with self.lock, self.connect() as db:
+            if expected_account is not None and auth_status().get('id')!=expected_account:
+                raise RuntimeError('Account changed while reading content controls')
             db.execute("DELETE FROM hidden_creators")
             db.execute("DELETE FROM hidden_tags")
             db.execute("DELETE FROM hidden_images")
@@ -727,15 +734,6 @@ class TasteStore:
             db.executemany("INSERT OR REPLACE INTO hidden_tags(tag_id, tag_name) VALUES(?,?)", tags)
             db.executemany("INSERT OR REPLACE INTO hidden_images(image_id) VALUES(?)", images)
             self._set_state(db, "hidden_imported_at", _now())
-        # Update the same account-scoped snapshot used by Community after a local
-        # content-control action, so a fresh 24-hour cache never masks that action.
-        try:
-            from .community import content_profile,CommunityError
-            from .cache import MetadataCache
-            content_profile(payload,(1,2,4,8,16))
-            account=auth_status().get('id')
-            if account:MetadataCache(self.root.parent/'cache'/'community-metadata.sqlite3').put(f'controls:{account}',payload)
-        except (CommunityError,ValueError,RuntimeError,sqlite3.Error,OSError):pass
         return {"creators": len(creators), "tags": len(tags), "images": len(images)}
 
     def hidden_creator_keys(self) -> set[str]:

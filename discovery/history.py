@@ -489,7 +489,7 @@ class HistoryArchive:
                 self.build_artist_index(path.stem)
         marker.write_text(utcnow(), encoding="utf-8")
 
-    def _upsert_normalized(self, items: list[dict], forced_date: str | None = None) -> list[int]:
+    def _upsert_normalized(self, items: list[dict], forced_date: str | None = None, *, archive=True) -> list[int]:
         rows = []
         for item in items:
             if not item.get("id") or not item.get("createdAt") or not item.get("url"):
@@ -505,25 +505,62 @@ class HistoryArchive:
         with self.connect() as db:
             # Name every column: archives written by older versions carry columns this
             # schema no longer declares, and a positional insert breaks against them.
-            db.executemany("""INSERT INTO images(
-                    id, local_date, post_id, username, username_key, created_at,
-                    url, width, height, type, nsfw_level, browsing_level, base_model,
-                    model_version_ids, stats, prompt, negative_prompt, resources, details_loaded,
-                    visual_hash)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET local_date=excluded.local_date,post_id=excluded.post_id,
-                username=excluded.username,username_key=excluded.username_key,created_at=excluded.created_at,
-                url=excluded.url,width=excluded.width,height=excluded.height,type=excluded.type,
-                nsfw_level=excluded.nsfw_level,browsing_level=excluded.browsing_level,
-                base_model=excluded.base_model,model_version_ids=excluded.model_version_ids,
-                stats=excluded.stats,prompt=CASE WHEN excluded.prompt!='' THEN excluded.prompt ELSE images.prompt END,
-                negative_prompt=CASE WHEN excluded.negative_prompt!='' THEN excluded.negative_prompt ELSE images.negative_prompt END,
-                resources=CASE WHEN excluded.resources!='[]' THEN excluded.resources ELSE images.resources END,
-                details_loaded=MAX(images.details_loaded,excluded.details_loaded),
-                visual_hash=COALESCE(excluded.visual_hash,images.visual_hash)""", rows)
-            db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)",
-                [(row[1], row[0]) for row in rows])
+            if not archive:
+                db.executemany("""INSERT INTO images(
+                        id, local_date, post_id, username, username_key, created_at,
+                        url, width, height, type, nsfw_level, browsing_level, base_model,
+                        model_version_ids, stats, prompt, negative_prompt, resources, details_loaded,
+                        visual_hash)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(id) DO NOTHING""", rows)
+            else:
+                db.executemany("""INSERT INTO images(
+                        id, local_date, post_id, username, username_key, created_at,
+                        url, width, height, type, nsfw_level, browsing_level, base_model,
+                        model_version_ids, stats, prompt, negative_prompt, resources, details_loaded,
+                        visual_hash)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET local_date=excluded.local_date,post_id=excluded.post_id,
+                    username=excluded.username,username_key=excluded.username_key,created_at=excluded.created_at,
+                    url=excluded.url,width=excluded.width,height=excluded.height,type=excluded.type,
+                    nsfw_level=excluded.nsfw_level,browsing_level=excluded.browsing_level,
+                    base_model=excluded.base_model,model_version_ids=excluded.model_version_ids,
+                    stats=excluded.stats,prompt=CASE WHEN excluded.prompt!='' THEN excluded.prompt ELSE images.prompt END,
+                    negative_prompt=CASE WHEN excluded.negative_prompt!='' THEN excluded.negative_prompt ELSE images.negative_prompt END,
+                    resources=CASE WHEN excluded.resources!='[]' THEN excluded.resources ELSE images.resources END,
+                    details_loaded=MAX(images.details_loaded,excluded.details_loaded),
+                    visual_hash=COALESCE(excluded.visual_hash,images.visual_hash)""", rows)
+            if archive:
+                db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)",
+                    [(row[1], row[0]) for row in rows])
         return [row[0] for row in rows]
+
+    def gallery_images(self,image_ids,client=None):
+        """Shared ID-to-Gallery adapter. Cache metadata, never create archive days."""
+        ids=list(dict.fromkeys(int(i) for i in image_ids))
+        if not ids or len(ids)>50:raise ValueError('Provide 1 to 50 image IDs')
+        cached={}
+        with self.connect() as db:
+            for i in ids:
+                row=db.execute('select * from images where id=?',(i,)).fetchone()
+                if row:cached[i]=self._row_item(row)
+        missing=[i for i in ids if i not in cached]
+        if missing and client:
+            # Same authenticated batch transport/normalization used by Daily sweeps.
+            results=client.batch_query_optional('image.get',[{'id':i} for i in missing])
+            from .search import normalize_hit
+            for i,raw in zip(missing,results):
+                if not isinstance(raw,dict) or raw.get('id')!=i:continue
+                value=normalize_hit(raw)
+                if value['username']=='Unknown' or not value.get('createdAt'):continue
+                from urllib.parse import urlsplit
+                u=urlsplit(value['url'])
+                if u.scheme!='https' or u.hostname!='image.civitai.com' or u.port or u.username or u.password:continue
+                if value['browsingLevel'] not in (1,2,4,8,16):continue
+                self._upsert_normalized([value],archive=False)
+                with self.connect() as db:
+                    cached[i]=self._row_item(db.execute('select * from images where id=?',(i,)).fetchone())
+        return [cached[i] for i in ids if i in cached]
 
     def _row_item(self, row: sqlite3.Row, details: bool = False) -> dict:
         video = row["type"] == "video"

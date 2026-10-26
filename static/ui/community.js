@@ -1,4 +1,5 @@
 import { requestKey as secureRequestKey } from './request-key.js';
+import { icon } from './icons.js';
 import { api } from './api.js';
 import { bindDialog } from './dialog.js';
 import { showGallerySkeleton } from './feedback.js';
@@ -11,11 +12,11 @@ const reportingUiEnabled = false;
 
 export function mountCommunity() {
   const tab = document.createElement('button');
-  tab.id = 'tabCommunity'; tab.textContent = 'Community Gallery'; tab.setAttribute('aria-pressed', 'false');
+  tab.id = 'tabCommunity'; tab.innerHTML = icon('community')+'<span>Community Gallery</span>'; tab.setAttribute('aria-pressed', 'false');
   tab.hidden = true;tab.classList.add('hidden');
   document.querySelector('.view-tabs').prepend(tab);
   const section = document.createElement('section'); section.id = 'community'; section.className = 'discovery hidden';
-  section.innerHTML = `<div class="community-heading"><h2>Community Gallery</h2><p id="communityUpdates" class="community-updates" role="status" aria-live="polite" aria-atomic="true"></p><div class="community-tools"><button id="communityRecommend" type="button" class="primary-button" aria-haspopup="dialog">Recommend Art</button><button id="communityRefresh" type="button">Refresh</button><span id="communityQuota" role="status"></span></div></div><p id="communityMessage" class="discovery-message" role="status" aria-live="polite"></p><div id="communityGrid" class="gallery"></div><div id="communitySentinel" class="load-sentinel"></div><details id="communityDiagnostics" class="community-diagnostics hidden"><summary>Development diagnostics</summary><p id="communityMode"></p><div id="communityMemberHost"></div><p id="communityCounts"></p></details>`;
+  section.innerHTML = `<div class="community-heading"><h2>Community Gallery</h2><p id="communityUpdates" class="community-updates" role="status" aria-live="polite" aria-atomic="true"></p><div class="community-tools"><button id="communityRecommend" type="button" class="primary-button" aria-haspopup="dialog">Recommend Art</button><button id="communityRefresh" type="button">Refresh</button><span id="communityQuota" role="status"></span></div></div><p id="communityMessage" class="discovery-message" role="status" aria-live="polite"></p><button id="communityReconnect" type="button" hidden>Reconnect Community</button><div id="communityGrid" class="gallery"></div><div id="communitySentinel" class="load-sentinel"></div><details id="communityDiagnostics" class="community-diagnostics hidden"><summary>Development diagnostics</summary><p id="communityMode"></p><div id="communityMemberHost"></div><p id="communityCounts"></p></details>`;
   document.querySelector('main').append(section);
   document.getElementById('discovery').append(document.getElementById('communityDiagnostics'));
   const dialog = document.createElement('dialog'); dialog.className = 'community-dialog';
@@ -51,10 +52,24 @@ export function mountCommunity() {
     policyControlled=productionBeta||beta.serverPolicy===true;
     tab.hidden=false;tab.classList.remove('hidden');
     if(!policyControlled){submissions=true;el('communityRecommend').disabled=false;el('communitySubmit').disabled=false;}
-    if(productionBeta)tab.textContent='Community Beta';
+    if(productionBeta)tab.querySelector('span').textContent='Community Beta';
   }
   configureBeta().catch(()=>{tab.hidden=false;tab.classList.remove('hidden');});
   const message = value => { el('communityMessage').setAttribute('role','status'); el('communityMessage').textContent = value; };
+  let communityAuthorization=null;
+  let reconnecting=false;
+  const recoveryMessage=() => {
+    const reason=communityAuthorization?.reason;
+    if(reason==='unsupported_client')return 'Your custom Civitai application still works with Daily Gallery, but Community requires the built-in application. Reconnecting will not resolve this. Switching applications requires fresh authorization; no switch was made.';
+    if(reason==='clock_or_expired_challenge')return 'Community authorization expired or the computer clock differs. Check the clock and reconnect Community. Daily stays connected.';
+    if(reason==='device_revoked'||reason==='device_expired')return 'Community device authorization expired or was revoked. Reconnect Community; Daily stays connected.';
+    return 'Daily is connected, but Community authorization is incomplete. Reconnect Community when connectivity is available. A fresh Civitai authorization may be required.';
+  };
+  function showRecovery(failed=false) {
+    const action=communityAuthorization?.action;
+    el('communityReconnect').hidden=!(authorized&&(action==='reconnect'||failed&&!communityAuthorization));
+    el('communityReconnect').disabled=reconnecting;
+  }
   function accessError(error) {
     if(['AUTH_REQUIRED','AUTH_EXPIRED'].includes(error.code))authenticationFailed=true;
     el('communityUpdates').textContent='';
@@ -68,13 +83,13 @@ export function mountCommunity() {
       UNAVAILABLE:'Community is temporarily unavailable. Please retry later. Your Daily Gallery still works.',
       AUTH_REQUIRED:'Sign in to Civitai to use Community.',AUTH_EXPIRED:'Please sign in to Civitai again.',
     };
-    message(states[error.code]||error.message);
+    message((authorized&&(communityAuthorization?.reason==='unsupported_client'||['AUTH_REQUIRED','AUTH_EXPIRED'].includes(error.code)||error.code==='UNAVAILABLE'&&communityAuthorization?.action==='reconnect')) ? recoveryMessage() : (states[error.code]||error.message));
+    showRecovery(['AUTH_REQUIRED','AUTH_EXPIRED'].includes(error.code));
     // Access decisions are not failed pagination. Keep retry UI for transient
     // failures; an explicit refresh can recheck a changed policy or invitation.
     el('communitySentinel').hidden=['INVITE_ONLY','INVITE_REVOKED','INVITE_EXPIRED',
       'SUBMITTER_BLOCKED','BETA_DISABLED','AUTH_REQUIRED','AUTH_EXPIRED','FORBIDDEN'].includes(error.code);
   }
-  let reviewPending=false;
   let cursor = null, generation = 0, busy = false, draftVersion = 0, requestKey = null, requestValue = null;
   const quota = value => { if (value) {
     if (value.unlimited === true) {
@@ -85,7 +100,8 @@ export function mountCommunity() {
     el('communityQuota').textContent = `${value.remaining} left this week`;
     el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week · ${value.remaining} remaining`;
   } };
-  let initialized = false, firstPage = true, refreshPage = false, metadataTimer = null, metadataRetries = 0, viewSession = null;
+  let initialized = false, firstPage = true, refreshPage = false, viewSession = null;
+  let oauthWasLoading=false;
   // Background probes never change the rendered feed or its pagination cursor.
   let newestShown=null, lastUpdateCheck=0, updateRequest=null, updatesAllowed=false;
   function cancelUpdateCheck() { updateRequest?.abort(); updateRequest=null; }
@@ -95,13 +111,13 @@ export function mountCommunity() {
     visible:()=>authorized && !section.classList.contains('hidden'),
     hasMore:()=>!initialized || firstPage || !!cursor,
     load:fetchPage,
-    exhausted:()=>reviewPending?"Artwork checks are still running. Refresh to retry.":"You're caught up for this view.",
+    exhausted:()=>"You're caught up for this view.",
     onError:accessError,
   });
-  const artists = new Map(), recommendations = new Map();
+  const artists = new Map(), recommendations = new Map(), listedRecommendations=new Map();
   function clearCards(keepRecommendations=false) {
     for (const card of el('communityGrid').children) window.DiscoveryGallery.releaseCard(card);
-    artists.clear(); if(!keepRecommendations)recommendations.clear(); el('communityGrid').replaceChildren();
+    artists.clear(); if(!keepRecommendations){recommendations.clear();listedRecommendations.clear();} el('communityGrid').replaceChildren();
   }
   const modelLabels=art=>Array.isArray(art.modelLabels) && art.modelLabels.length
     ? art.modelLabels : String(art.baseModel||'Unknown').split(' | ');
@@ -171,27 +187,34 @@ export function mountCommunity() {
       addedArtists.push(artist); addedCards.push(card);
     }
     if(remember)window.dispatchEvent(new Event('community-model-catalog-changed'));
-    window.DiscoveryGallery.enrichCards(addedArtists, addedCards);
-    window.DiscoveryGallery.hydrateReactionStates(artworks).catch(error => console.warn('Reaction history could not be loaded', error));
+    // All cards use the shared Daily metadata, tag gate and media loader.
+    // Optional creator/reaction enrichment must not fan out Civitai requests on
+    // gallery navigation. Explicit personal actions remain available on cards.
   }
   async function load(more = false, refresh = false) {
     if (more) return pages.request(true);
     cancelUpdateCheck();
     el('communitySentinel').hidden=false;
-    ++generation; clearTimeout(metadataTimer); pages.reset();
+    ++generation; pages.reset();
     cursor = null; firstPage = true; refreshPage = refresh; initialized = true;
     requestedCursors.clear(); clearCards();
     return pages.request(true);
   }
-  async function fetchPage({signal}) {
+  async function fetchPage({signal, controller}) {
     const id = generation, first = firstPage, pageCursor = cursor;
     const clearSkeleton = first ? showGallerySkeleton(el('communityGrid')) : ()=>{};
     if(first)applyPolicy(null);
     if (first) message('Loading community recommendations\u2026');
     try {
+      // Both endpoints independently enforce identity/invitation policy. Start
+      // them together, but admit no cards until both have succeeded. This avoids
+      // adding a complete status round trip to every first page and Refresh.
+      const [status, result] = await Promise.all([
+        first ? api(`/api/community/status${refreshPage ? '?refresh=1' : ''}`, {signal}) : Promise.resolve(null),
+        api(`/api/community/gallery?limit=50&refresh=${refreshPage ? '1' : '0'}${pageCursor ? `&cursor=${encodeURIComponent(pageCursor)}` : ''}`, {signal}),
+      ]).catch(error => { controller?.abort(); throw error; });
+      if (id !== generation || signal.aborted) return;
       if (first) {
-        const status = await api(`/api/community/status${refreshPage ? '?refresh=1' : ''}`, {signal});
-        if (id !== generation || signal.aborted) return;
         quota(status.quota);
         authenticationFailed=false;
         applyPolicy(status);
@@ -201,14 +224,29 @@ export function mountCommunity() {
           ? 'DEVELOPMENT SIMULATOR: Real OAuth session gates access; this Community ledger uses ten simulated members. No public recommendations.'
           : 'Civitai identity verified for each request. Your personal galleries stay on this computer.';
       }
-      const result = await api(`/api/community/gallery?refresh=${refreshPage ? '1' : '0'}${pageCursor ? `&cursor=${encodeURIComponent(pageCursor)}` : ''}`, {signal});
-      if (id !== generation || signal.aborted) return;
-      reviewPending=result.reviewPending===true;
       const next = result.nextCursor;
       if (next && (next === pageCursor || requestedCursors.has(next))) throw new Error('The service repeated a page. Refresh the gallery to try again.');
       if (pageCursor) requestedCursors.add(pageCursor);
       if (result.controls) window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:result.controls}));
-      clearSkeleton(); appendRecommendations(result.items);
+      clearSkeleton();
+      if(result.feedVersion===3) {
+        for(const row of result.items)listedRecommendations.set(String(row.imageId),row);
+        // List arrival and image preparation are separate. Each small batch uses
+        // the shared Gallery cache/metadata route; visible previews still wait
+        // for the ordinary shared viewport tag gate and lazy image observer.
+        let filtered=0,unavailable=0;
+        for(let offset=0;offset<result.items.length;offset+=12) {
+          const batch=result.items.slice(offset,offset+12);
+          const prepared=await window.DiscoveryGallery.resolveImages(batch.map(row=>row.imageId),{signal});
+          if(id!==generation || signal.aborted)return;
+          const images=new Map(prepared.images.map(image=>[String(image.id),image]));
+          appendRecommendations(batch.filter(row=>images.has(String(row.imageId))).map(row=>({
+            ...row,artwork:{...images.get(String(row.imageId)),creatorId:row.creatorId,
+              imageUrl:`https://civitai.red/images/${row.imageId}`,profileUrl:`https://civitai.red/user/${encodeURIComponent(images.get(String(row.imageId)).username)}`}})));
+          filtered+=prepared.counts.contentControls;unavailable+=prepared.counts.unavailable;
+        }
+        result.counts={acceptedPage:result.items.length,contentControls:filtered,returned:result.items.length-filtered-unavailable,unavailableMetadata:unavailable};
+      } else appendRecommendations(result.items);
       if(first) {
         const dates=result.items.map(row=>Date.parse(row.submittedAt)).filter(Number.isFinite);
         newestShown=dates.length ? Math.max(...dates) : null;
@@ -218,13 +256,8 @@ export function mountCommunity() {
       cursor = next; firstPage = false; refreshPage = false;
       const cached = result.cache;
       if (result.counts) el('communityCounts').textContent = `This page: ${result.counts.acceptedPage} records; ${result.counts.contentControls} filtered; ${result.counts.returned} returned. More pages: ${cursor ? 'yes' : 'no'}.`;
-      if (first && cached) el('communityMode').textContent += ` \u00b7 ${cached.state === 'stale' ? 'Cached results - refresh pending' : 'Metadata cached'} \u00b7 ${new Date(cached.verifiedAt * 1000).toLocaleString()}`;
+      if (first && cached) el('communityMode').textContent += ' \u00b7 Current accepted recommendations';
       message(artists.size ? '' : cursor ? 'Checking more recommendations against your content controls as you scroll.' : 'No recommendations match your content controls yet. Spotlight an artist to get things started.');
-      // Recheck an initially empty cache only a bounded number of times. Never reset
-      // an already-rendered feed or its scroll position during background hydration.
-      if (!recommendations.size && !cursor && (result.metadataRefreshing || cached?.refreshing) && metadataRetries++ < 2) {
-        metadataTimer = setTimeout(()=>{ if (id === generation && !section.classList.contains('hidden')) load(); },2500);
-      }
     } finally { clearSkeleton(); }
   }
   async function checkNewRecommendations() {
@@ -244,13 +277,13 @@ export function mountCommunity() {
       // Bound background work to four normal-size pages. A capped count is shown
       // honestly as "N+" rather than claiming to have scanned the entire feed.
       for(let page=0;page<4;page++) {
-        const result=await api(`/api/community/gallery?refresh=0${next ? `&cursor=${encodeURIComponent(next)}` : ''}`,{signal:controller.signal});
+        const result=await api(`/api/community/gallery?limit=50&refresh=0${next ? `&cursor=${encodeURIComponent(next)}` : ''}`,{signal:controller.signal});
         if(id!==generation || controller.signal.aborted || !authorized || !updatesAllowed || document.hidden || section.classList.contains('hidden'))return;
         if(result.cache?.state==='stale')return;
         for(const row of result.items) {
-          const key=String(row.artwork.id), date=Date.parse(row.submittedAt);
+          const key=String(row.imageId??row.artwork?.id), date=Date.parse(row.submittedAt);
           if(key===lastLoaded || (Number.isFinite(date) && date<oldestShown)) {stopped=true;break;}
-          if(recommendations.has(key) || !Number.isFinite(date) || !matchesFilters(row.artwork))continue;
+          if(listedRecommendations.has(key) || recommendations.has(key) || !Number.isFinite(date) || row.artwork&&!matchesFilters(row.artwork))continue;
           found.add(key);
           if(newestShown!==null && date<=newestShown)restored=true;
         }
@@ -270,7 +303,6 @@ export function mountCommunity() {
     } finally { if(updateRequest===controller)updateRequest=null; }
   }
   async function refreshRecommendations() {
-    metadataRetries=0;
     const id=generation+1;
     await load(false,true);
     if(id===generation && !firstPage && !section.classList.contains('hidden'))window.scrollTo({top:0,behavior:'instant'});
@@ -292,7 +324,7 @@ export function mountCommunity() {
     } catch (error) { if (id === generation) accessError(error); }
   }
   function deactivate() {
-    ++generation; clearTimeout(metadataTimer); cancelUpdateCheck(); pages.pause();
+    ++generation; cancelUpdateCheck(); pages.pause();
   }
   function invalidate() {
     deactivate(); initialized = false; cursor = null; firstPage = true;
@@ -378,15 +410,40 @@ export function mountCommunity() {
   }
   window.addEventListener('discovery-auth-changed', ({detail}) => {
     const wasAuthorized=authorized, previousAccount=accountId;
+    communityAuthorization=detail.communityAuthorization||null;
     authorized=!!detail.connected;accountId=authorized ? detail.id : null;
     tab.disabled=!authorized;
+    showRecovery();
+    if(authorized&&(communityAuthorization?.action==='reconnect'||communityAuthorization?.reason==='unsupported_client'))message(recoveryMessage());
+    const authFinished=oauthWasLoading&&detail.oauthJob?.state==='complete';
+    oauthWasLoading=detail.oauthJob?.state==='loading';
     if (authorized) {
-      const recover=authenticationFailed || (wasAuthorized && previousAccount!==accountId);
+      const recover=authFinished||(authenticationFailed&&(!communityAuthorization||['ready','renewable'].includes(communityAuthorization.state))) || (wasAuthorized && previousAccount!==accountId);
       if(recover) {authenticationFailed=false;invalidate();}
       configure().catch(() => {});
       if(recover && !section.classList.contains('hidden'))activate();
     } else { invalidate(); section.classList.add('hidden'); }
   });
+  el('communityReconnect').onclick=async () => {
+    if(reconnecting)return;
+    reconnecting=true;showRecovery();
+    try {
+      await api('/api/community/reconnect',{method:'POST',body:'{}'});
+      const deadline=Date.now()+330000;
+      while(Date.now()<deadline) {
+        await new Promise(resolve=>setTimeout(resolve,700));
+        const auth=await api('/api/auth-status');
+        window.dispatchEvent(new CustomEvent('discovery-auth-changed',{detail:auth}));
+        if(auth.oauthJob?.state==='error')throw new Error(auth.oauthJob.error);
+        if(auth.oauthJob?.state==='complete') {
+          if(auth.communityAuthorization?.state!=='ready')throw new Error(recoveryMessage());
+          authenticationFailed=false;invalidate();await activate();return;
+        }
+      }
+      throw new Error('Community authorization timed out. Daily stays connected; retry when ready.');
+    } catch(error) {message(error.message);}
+    finally {reconnecting=false;showRecovery();}
+  };
   el('communityRecommend').onclick = () => recommend();
   el('communityReportForm').onsubmit=async event=>{
     event.preventDefault();if(!reporting||reportBusy||!reportTarget)return;

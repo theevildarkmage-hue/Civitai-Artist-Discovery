@@ -22,7 +22,7 @@ class AdmissionTests(unittest.TestCase):
         client.mode='supabase';client.identity_provider=lambda:42
         client.store=Mock()
         client._read('gallery',None,{'refresh':True})
-        backend.request.assert_called_once_with('gallery','synthetic-fresh',{})
+        backend.request.assert_called_once_with('gallery',None,{})
         client.store.get.assert_not_called()
         backend.request.side_effect=CommunityError('FORBIDDEN',403)
         with self.assertRaises(CommunityError):client._read('gallery',None,{})

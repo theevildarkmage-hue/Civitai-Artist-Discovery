@@ -155,8 +155,13 @@ def normalize(item: dict) -> dict:
 class CandidateCache:
     def __init__(self, path: Path):
         self.path = path
+        import threading
+        self.lock=threading.RLock()
 
     def load(self) -> dict:
+        with self.lock:return self._load_locked()
+
+    def _load_locked(self) -> dict:
         if not self.path.exists():
             return {"version": 1, "items": [], "nextCursor": None, "updatedAt": None}
         try:
@@ -166,10 +171,8 @@ class CandidateCache:
             return {"version": 1, "items": [], "nextCursor": None, "updatedAt": None}
 
     def save(self, state: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(self.path)
+        from .atomic_file import write_bytes
+        with self.lock:write_bytes(self.path,json.dumps(state,ensure_ascii=False,indent=2).encode())
 
     def collect(
         self,

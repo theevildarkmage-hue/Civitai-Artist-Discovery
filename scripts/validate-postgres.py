@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--bin', required=True, type=Path, help='Verified PostgreSQL bin directory')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--repeats', type=int, default=5)
+    parser.add_argument('--accepted-feed',action='store_true',help='Only the accepted-feed candidate in a fresh owned cluster')
     parser.add_argument('--community-access',action='store_true',help='Test default-invite/public policy only in the owned release rehearsal')
     parser.add_argument('--device-renewal',action='store_true',help='Test the rotating device authorization candidate in the owned cluster')
     parser.add_argument('--identity-sessions',action='store_true',help='Apply/test identity-session candidate only in the owned cluster')
@@ -119,6 +120,23 @@ def main():
         assert bad.returncode != 0 and 'password authentication failed' in bad.stderr
         summary['wrongPasswordRejected'] = True
         migrations = sorted((ROOT/'supabase/migrations').glob('*.sql'))
+        if args.accepted_feed:
+            for migration in migrations:
+                require(command('psql','-X','-v','ON_ERROR_STOP=1','--single-transaction','-f',str(migration)),migration.name)
+            require(sql('create role community_operator nologin noinherit nobypassrls;'),'Restricted operator')
+            candidates=sorted((ROOT/'supabase/beta-migrations').glob('*.sql'))
+            for migration in candidates:
+                if migration.name.startswith('202610250001'):continue
+                require(command('psql','-X','-v','ON_ERROR_STOP=1','--single-transaction','-f',str(migration)),migration.name)
+            import runpy
+            suite=runpy.run_path(str(ROOT/'tests/accepted_feed_postgres.py'))
+            summary['acceptedFeed']=suite['run'](lambda statement:require(sql(statement),'Accepted feed SQL'),sql,output)
+            if args.http_deno:
+                suite=runpy.run_path(str(ROOT/'tests/accepted_feed_http_native.py'))
+                summary['acceptedFeedHTTP']=suite['run'](lambda statement:require(sql(statement),'Accepted feed HTTP SQL'),env,
+                    args.http_deno.resolve(),args.http_postgrest.resolve(),output)
+            summary['passed']=True
+            return
         # Rehearse the proposed all-or-nothing bootstrap in a second empty DB
         # inside this same owned cluster. No persistent profile or host is used.
         atomic_database=database+'_atomic'

@@ -79,7 +79,7 @@ async function transport(url,options={}) {
   if(name==='community_access')return invited?Response.json({invited:true}):Response.json({message:'INVITE_ONLY'},{status:400});
   if(name==='community_registry_upsert'){registers++;return Response.json({apiVersion:1,registered:true});}
   if(name==='community_quota')return Response.json({apiVersion:1,remaining:3,used:0,limit:3});
-  if(name==='community_submit'){assert.equal(body.p_preview,true);assert.equal(body.p_creator,9);return Response.json({apiVersion:1,preview:true});}
+  if(name==='community_submit_verified'){assert.equal(body.p_preview,true);assert.equal(body.p_creator,9);assert.equal(body.p_artwork.type,'video');return Response.json({apiVersion:1,preview:true});}
   throw Error('Unexpected RPC '+name);
  }
  providerCalls++;

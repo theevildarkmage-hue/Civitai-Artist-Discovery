@@ -8,6 +8,8 @@ body { background: var(--bg); }
 .skip-link:focus { top: 8px; }
 body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background: var(--bg); backdrop-filter: none; }
 .app-brand { min-width: 0; }
+.app-brand .app-title-row { flex-wrap: wrap; row-gap: 4px; }
+.app-logo { width: 32px; height: 32px; flex: none; align-self: center; object-fit: contain; }
 .app-brand h1 { font-size: 19px; }
 .app-brand .eyebrow, .app-brand .tagline { display: none; }
 .account-toolbar { min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -45,6 +47,7 @@ main { padding: 18px 20px 60px; }
 @media (max-width: 700px) {
   body > .app-header { align-items: center; flex-wrap: wrap; padding: 10px 12px; gap: 8px; }
   .app-brand h1 { font-size: 17px; }
+  .app-logo { width: 24px; height: 24px; }
   .account-toolbar { width: 100%; flex-direction: row; align-items: center; justify-content: flex-start; }
   .account-toolbar #accountStatus { flex: 1 1 100%; }
   .account-toolbar #closeApp { margin-left: auto; }

@@ -10,10 +10,14 @@ import time
 import re
 import math
 import weakref
+from collections import OrderedDict
 
 FRESH_SECONDS = 24 * 60 * 60
 THUMBNAIL_LANE=threading.BoundedSemaphore(3)
 METADATA_REFRESH_LANE=threading.BoundedSemaphore(3)
+GALLERY_ADMISSION_INTERVAL=.1
+_GALLERY_ADMISSION_LOCK=threading.Lock()
+_GALLERY_NEXT_START=0.0
 
 
 class MetadataCache:
@@ -56,9 +60,13 @@ class MetadataCache:
             db.execute('UPDATE metadata_cache SET attempt_at=?,error=?,unavailable=? WHERE key=?',
                 (self.clock(),error,int(unavailable),key))
 
-    def refresh(self,key,loader,*,background=False):
+    def refresh(self,key,loader,*,background=False,verified_after=None):
         with self.lock:
             if key in self.pending:return False
+            if verified_after is not None:
+                with self.connect() as db:
+                    current=db.execute('SELECT verified_at,unavailable FROM metadata_cache WHERE key=?',(key,)).fetchone()
+                if current and not current['unavailable'] and current['verified_at']>=verified_after and self.clock()-current['verified_at']<self.freshness:return False
             prior=self.get_attempt(key)
             if background and prior and prior['error'] and self.clock()-(prior['attempt_at'] or 0)<60:return False
             # Acquire before creating a thread: a pool with an unbounded queue
@@ -93,10 +101,79 @@ class ArtworkCache:
     """Browse from cache; submissions always call the underlying verifier."""
     def __init__(self,store,verifier,namespace):
         self.store,self.verifier,self.namespace=store,verifier,namespace
+        self.refresh_lock=threading.Lock()
+        self.refreshes=OrderedDict()
+
+    def refresh_boundary(self,identifier,scope):
+        """A browser ID names work, never authorizes it or supplies a timestamp.
+
+        Unknown/expired/evicted IDs start fresh verification. Incompatible scope
+        is rejected. State is profile-local, capped at 64 and expires after 120s
+        without extension; cleanup is lazy on access and no worker owns it.
+        """
+        from .community import CommunityError
+        if not isinstance(identifier,str) or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',identifier):
+            raise CommunityError('INVALID_REQUEST')
+        now=time.monotonic()
+        with self.refresh_lock:
+            for key in list(self.refreshes):
+                if self.refreshes[key][2]<=now:del self.refreshes[key]
+            context=self.refreshes.get(identifier)
+            if context:
+                if context[0]!=scope:raise CommunityError('INVALID_REQUEST')
+                return context[1]
+            boundary=self.store.clock()
+            self.refreshes[identifier]=(scope,boundary,now+120)
+            while len(self.refreshes)>64:self.refreshes.popitem(last=False)
+            return boundary
 
     def key(self,image):return f'{self.namespace}:artwork:{image}'
 
     def remember(self,art):self.store.put(self.key(art.id),asdict(art))
+
+    def gallery(self,images,*,force=False,budget=4,verified_after=None):
+        """Hydrate a page through the existing global three-worker admission.
+
+        No waiting worker queue and no per-request executor. Concurrent pages join
+        pending keys. Fail the page on budget exhaustion, retaining completed work
+        for retry, rather than advancing a cursor past temporarily missing rows.
+        """
+        from .community import Artwork,CommunityError
+        global _GALLERY_NEXT_START
+        remaining=set(images);results={};attempted=set()
+        deadline=time.monotonic()+budget
+        while remaining:
+            for image in sorted(remaining):
+                key=self.key(image);entry=self.store.get(key)
+                with self.store.lock:pending=key in self.store.pending
+                if pending:
+                    attempted.add(image)
+                    continue
+                current_refresh=(entry and entry['verified_at']>=verified_after) if verified_after is not None else image in attempted
+                if entry and not entry['stale'] and not entry['unavailable'] and (not force or current_refresh):
+                    value=dict(entry['value']);value['tags']=tuple(value.get('tags',()));value['tag_ids']=tuple(value.get('tag_ids',()))
+                    results[image]=(Artwork(**value),{'state':'cached','verifiedAt':entry['verified_at'],'refreshing':False})
+                    remaining.remove(image)
+                    continue
+                prior=self.store.get_attempt(key)
+                if prior and prior['error'] and self.store.clock()-(prior['attempt_at'] or 0)<60:
+                    code=prior['error']
+                    code=code if code in ('INVALID_ARTWORK','UNVERIFIED_OWNER','CONTENT_FILTERED','AUTH_REQUIRED','AUTH_EXPIRED','RATE_LIMITED') else 'UNAVAILABLE'
+                    results[image]=CommunityError(code,404 if code in ('INVALID_ARTWORK','UNVERIFIED_OWNER') else 401 if code in ('AUTH_REQUIRED','AUTH_EXPIRED') else 429 if code=='RATE_LIMITED' else 503)
+                    remaining.remove(image)
+                    continue
+                # Pace artwork starts across simultaneous pages. Waiting requests
+                # keep no worker/queue slot; provider failures retain the existing
+                # sixty-second per-key retry backoff.
+                with _GALLERY_ADMISSION_LOCK:
+                    if time.monotonic()>=_GALLERY_NEXT_START and self.store.refresh(
+                            key,lambda image=image:asdict(self.verifier.artwork(image)),background=True,verified_after=verified_after):
+                        _GALLERY_NEXT_START=time.monotonic()+GALLERY_ADMISSION_INTERVAL
+                        attempted.add(image)
+            if remaining:
+                if time.monotonic()>=deadline:raise CommunityError('UNAVAILABLE',503)
+                time.sleep(min(.02,max(0,deadline-time.monotonic())))
+        return results
 
     def browse(self,image,*,force=False):
         from .community import Artwork,CommunityError,FixtureVerifier

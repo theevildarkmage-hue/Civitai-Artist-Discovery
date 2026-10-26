@@ -39,10 +39,11 @@ try:
    page.locator('#communityCancel').click()
    # A denial is visible from Daily, rather than a dead card action.
    denial[0]='AUTH_EXPIRED';card_recommend()
-   page.locator('#toast').filter(has_text='sign in').wait_for()
+   page.locator('#toast').filter(has_text='Reconnect Community').wait_for()
    assert not page.locator('dialog[open]').count()
    page.locator('#tabCommunity').click()
-   page.locator('#communityMessage').filter(has_text='sign in').wait_for()
+   page.locator('#communityMessage').filter(has_text='Reconnect Community').wait_for()
+   page.locator('#communityReconnect').wait_for(state='visible')
    # Simulate the auth-state event produced by a successful login, using only
    # this synthetic transport. Recovery must reload without a manual refresh.
    denial[0]=None

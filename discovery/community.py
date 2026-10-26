@@ -490,6 +490,7 @@ class SupabaseCommunityBackend:
         self.identity_token_provider = identity_token_provider
 
     def request(self, operation, token, payload):
+        restricted=None
         try:
             if self.identity_token_provider is None:raise CommunityError('AUTH_REQUIRED',401)
             from .oauth import OAuthReauthenticationRequired,OAuthTemporarilyUnavailable
@@ -500,7 +501,10 @@ class SupabaseCommunityBackend:
             if not isinstance(restricted,str) or not SESSION.fullmatch(restricted):
                 raise CommunityError('AUTH_EXPIRED',401)
             value = self.fetch(self.url, restricted, {"apiVersion": 1, "operation": operation, **payload})
-        except CommunityError:
+        except CommunityError as error:
+            if restricted is not None and error.code=='AUTH_EXPIRED':
+                from .oauth import note_community_rejection
+                note_community_rejection(restricted)
             raise
         if not isinstance(value, dict) or value.get("apiVersion") != 1:
             raise CommunityError("UNAVAILABLE", 503)
@@ -519,6 +523,7 @@ class CommunityClient:
         # Shared personal actions cannot turn arbitrary browser IDs into lookups.
         self.presented = OrderedDict()
         self.presented_lock = threading.Lock()
+        self.accepted = OrderedDict()
 
     def remember_presented(self, rows, viewer):
         with self.presented_lock:
@@ -530,6 +535,9 @@ class CommunityClient:
                 self.presented.popitem(last=False)
 
     def presented_artwork(self, image_id, viewer, token=None):
+        if getattr(self,'mode',None)=='supabase' and self.listed(image_id):
+            try:return self.browse_artwork(image_id,self.profile_provider(token))[0]
+            except CommunityError:return None
         with self.presented_lock:
             if (viewer, image_id) not in self.presented:
                 return None
@@ -556,8 +564,13 @@ class CommunityClient:
         if getattr(self,'mode',None)=='supabase':
             # Admission/moderation/availability are server-owned. A 24-hour local
             # feed/status cache must not mask revocation or disabled policy.
-            value=self.backend.request(operation,self.token_provider(),
-                {k:v for k,v in payload.items() if k!='refresh'})
+            try:
+                value=self.backend.request(operation,None,
+                    {k:v for k,v in payload.items() if k not in ('refresh','refreshContext')})
+            except CommunityError as error:
+                if error.code in ('AUTH_REQUIRED','AUTH_EXPIRED','INVITE_ONLY','INVITE_REVOKED','INVITE_EXPIRED','SUBMITTER_BLOCKED','BETA_DISABLED','FORBIDDEN'):
+                    with self.presented_lock:self.accepted.clear();self.presented.clear()
+                raise
             return {**value,'cache':{'state':'current'}}
         if not store or not identity:
             if getattr(self,'dev_offline',False):raise CommunityError('UNAVAILABLE',503)
@@ -567,7 +580,7 @@ class CommunityClient:
         def load():
             if getattr(self,'dev_offline',False):raise CommunityError('UNAVAILABLE',503)
             return self.backend.request(operation,self.token_provider() if not isinstance(self.verifier,FixtureVerifier) else token,
-                                        {k:v for k,v in payload.items() if k!='refresh'})
+                                        {k:v for k,v in payload.items() if k not in ('refresh','refreshContext')})
         if entry and not isinstance(self.verifier,FixtureVerifier):
             if entry['stale'] or payload.get('refresh'):store.refresh(key,load,background=True)
             return {**entry['value'],'cache':{'state':'stale' if entry['stale'] else 'cached',
@@ -579,7 +592,21 @@ class CommunityClient:
             if entry:return {**entry['value'],'cache':{'state':'stale','verifiedAt':entry['verified_at'],'offline':True}}
             raise
 
+    def listed(self,image):
+        with self.presented_lock:
+            entry=self.accepted.get((self._identity(None),image))
+        return bool(entry and entry[1]>time.time())
+
+    def listed_creator(self,image):
+        with self.presented_lock:entry=self.accepted.get((self._identity(None),image))
+        return entry[0]['creatorId'] if entry and entry[1]>time.time() else None
+
     def browse_artwork(self,image,profile,*,force=False):
+        if getattr(self,'mode',None)=='supabase':
+            if not self.listed(image):raise CommunityError('INVALID_ARTWORK',404)
+            resolver=getattr(self,'gallery_resolver',None)
+            if not resolver:raise CommunityError('INVALID_ARTWORK',404)
+            return resolver(image),{'state':'shared-gallery'}
         cache=getattr(self,'artwork_cache',None)
         art,info=cache.browse(image,force=force) if cache else (self.verifier.artwork(image),{'state':'current'})
         if not profile.allows(art):raise CommunityError('CONTENT_FILTERED',403)
@@ -612,7 +639,26 @@ class CommunityClient:
             if payload.get('reason') not in ('inappropriate','abuse','ownership','unavailable'):
                 raise CommunityError('INVALID_REQUEST')
             return self.backend.request('report',token,{'artwork':parse_artwork(payload.get('artwork')),'reason':payload['reason']})
+        request_identity=self._identity(token) if getattr(self,'mode',None)=='supabase' else None
+        if operation=='status' and getattr(self,'mode',None)=='supabase':
+            return self._read(operation,None,payload)
+        if operation=='gallery' and getattr(self,'mode',None)=='supabase':
+            from .community_feed import decode
+            identity=request_identity
+            if identity is None:raise CommunityError('AUTH_REQUIRED',401)
+            result=self._read('gallery',None,{'cursor':payload.get('cursor'),'limit':payload.get('limit',50)})
+            if result.get('feedVersion')!=3 or not isinstance(result.get('items'),list) or len(result['items'])>50:
+                raise CommunityError('UNAVAILABLE',503)
+            decoded=[(row,*decode(row)) for row in result['items']]
+            if identity!=self._identity(None):raise CommunityError('AUTH_EXPIRED',401)
+            with self.presented_lock:
+                for row,image,creator,expires in decoded:
+                    key=(identity,image);self.accepted[key]=(row,expires);self.accepted.move_to_end(key)
+                while len(self.accepted)>2000:self.accepted.popitem(last=False)
+            return {**result,'counts':{'acceptedPage':len(decoded),'returned':len(decoded),'contentControls':0}}
         profile = self.profile_provider(token)
+        if getattr(self,'mode',None)=='supabase' and request_identity!=self._identity(token):
+            raise CommunityError('AUTH_EXPIRED',401)
         if operation=='detail':
             art,_=self.browse_artwork(parse_artwork(payload.get('artwork')),profile)
             value=self.browser_artwork(art)
@@ -646,13 +692,25 @@ class CommunityClient:
         result = self._read(operation,token,payload) if operation in ('status','gallery') else self.backend.request(operation, token, payload)
         if operation == "gallery":
             allowed = []
+            cache=getattr(self,'artwork_cache',None)
+            boundary=None
+            if cache and payload.get('refresh') and payload.get('refreshContext') is not None:
+                identity=self._identity(token)
+                if identity is None:raise CommunityError('AUTH_REQUIRED',401)
+                boundary=cache.refresh_boundary(payload['refreshContext'],(identity,profile))
+            hydrated=cache.gallery((positive_id(row['imageId']) for row in result['items']),
+                force=bool(payload.get('refresh')),verified_after=boundary) if cache and not isinstance(self.verifier,FixtureVerifier) else None
             counts={'acceptedPage':len(result['items']),'contentControls':0,'unavailableMetadata':0,'ownerMismatch':0}
             exclusions={name:0 for name in ('ratingRestriction','hiddenCreator','hiddenArtwork','hiddenTag','blockedUser','incompleteMetadata','other')}
             for row in result["items"]:
                 try:
                     image=positive_id(row['imageId'])
-                    cache=getattr(self,'artwork_cache',None)
-                    art,info=cache.browse(image,force=bool(payload.get('refresh'))) if cache else (self.verifier.artwork(image),{'state':'current'})
+                    if hydrated is not None:
+                        entry=hydrated[image]
+                        if isinstance(entry,CommunityError):raise entry
+                        art,info=entry
+                    else:
+                        art,info=cache.browse(image,force=bool(payload.get('refresh'))) if cache else (self.verifier.artwork(image),{'state':'current'})
                     reasons=profile.exclusions(art)
                     if reasons:
                         counts['contentControls']+=1
@@ -736,7 +794,7 @@ def build_community(data_root, profile_provider, token_provider):
     client.mode = mode
     from .cache import MetadataCache,ArtworkCache,ThumbnailCache
     client.store=MetadataCache(Path(data_root)/'cache'/'community-metadata.sqlite3')
-    client.artwork_cache=ArtworkCache(client.store,verifier,mode)
+    if mode!='supabase':client.artwork_cache=ArtworkCache(client.store,verifier,mode)
     client.thumbnails=ThumbnailCache(Path(data_root)/'cache'/'community-thumbnails',allow_downscale=True)
     # Bootstrap public fixture metadata once; never refresh existing cache on launch.
     if fixture:
