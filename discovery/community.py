@@ -127,6 +127,8 @@ class ContentProfile:
     tag_ids: frozenset[int] = frozenset()
     blocked_creators: frozenset[int] = frozenset()
     blocked_usernames: frozenset[str] = frozenset()
+    apply_tag_filters: bool = True
+    apply_account_filters: bool = True
 
     def allows(self, art):
         return not self.exclusions(art)
@@ -135,15 +137,15 @@ class ContentProfile:
         """All applicable reasons, deliberately overlapping; no artwork leaves this gate."""
         reasons = []
         if art.rating not in self.levels: reasons.append('ratingRestriction')
-        if art.creator_id in self.blocked_creators or art.username.casefold() in self.blocked_usernames:
+        if self.apply_account_filters and (art.creator_id in self.blocked_creators or art.username.casefold() in self.blocked_usernames):
             reasons.append('blockedUser')
-        if ((art.creator_id in self.creators and art.creator_id not in self.blocked_creators)
+        if self.apply_account_filters and ((art.creator_id in self.creators and art.creator_id not in self.blocked_creators)
                 or (art.username.casefold() in self.usernames and art.username.casefold() not in self.blocked_usernames)):
             reasons.append('hiddenCreator')
         if art.id in self.images: reasons.append('hiddenArtwork')
-        if self.tags.intersection(art.tags) or self.tag_ids.intersection(art.tag_ids): reasons.append('hiddenTag')
-        if ((not art.tags_known and (self.tags or self.tag_ids)) or
-                (not art.owner_verified and self.creators and len(self.usernames-{''}) < len(self.creators))):
+        if self.apply_tag_filters and (self.tags.intersection(art.tags) or self.tag_ids.intersection(art.tag_ids)): reasons.append('hiddenTag')
+        if ((self.apply_tag_filters and not art.tags_known and (self.tags or self.tag_ids)) or
+                (self.apply_account_filters and not art.owner_verified and self.creators and len(self.usernames-{''}) < len(self.creators))):
             reasons.append('incompleteMetadata')
         return reasons
 
@@ -788,7 +790,8 @@ def build_community(data_root, profile_provider, token_provider):
             hidden = verifier.hidden.get(token)
             if hidden is None:return base
             extra=content_profile(hidden,base.levels)
-            return ContentProfile(**{name:getattr(base,name)|getattr(extra,name)
+            return ContentProfile(**{name:(getattr(base,name) if name in ('apply_tag_filters', 'apply_account_filters')
+                                         else getattr(base,name)|getattr(extra,name))
                 for name in ContentProfile.__dataclass_fields__})
     client = CommunityClient(backend, verifier, token_provider, profile_provider)
     client.mode = mode

@@ -745,7 +745,7 @@ class TasteStore:
         with self.connect() as db:
             return {row["tag_name"] for row in db.execute("SELECT tag_name FROM hidden_tags")}
 
-    def hidden_image_ids(self) -> set[int]:
+    def hidden_image_ids(self, *, include_tags: bool = True) -> set[int]:
         """Images hidden outright, plus any whose known tags the account hides.
 
         Tags are only known for images the app has already read them for, so this is a
@@ -754,6 +754,8 @@ class TasteStore:
         """
         with self.connect() as db:
             direct = {row["image_id"] for row in db.execute("SELECT image_id FROM hidden_images")}
+            if not include_tags:
+                return direct
             tagged = {row["image_id"] for row in db.execute(
                 "SELECT DISTINCT image_id FROM archive_image_tags "
                 "WHERE tag_name IN (SELECT tag_name FROM hidden_tags)")}

@@ -14,7 +14,8 @@ try:
  with sync_playwright() as pw:
   browser=pw.chromium.launch(headless=True)
   for width in (1440,390):
-   page=browser.new_page(viewport={'width':width,'height':900});errors=[];calls=[];follow_writes=[];pending_profiles=[];defer_profiles=True
+   context=browser.new_context(viewport={'width':width,'height':900})
+   page=context.new_page();errors=[];calls=[];follow_writes=[];pending_profiles=[];defer_profiles=True
    page.on('pageerror',lambda error:errors.append(str(error)))
    install_fixture(page,base,cached_tags=True)
    def reply(route,value):route.fulfill(content_type='application/json',body=json.dumps(value))
@@ -97,8 +98,51 @@ try:
    unavailable=page.locator('#communityGrid [data-username="synthetic1"] .follow-button')
    unavailable.filter(has_text='Status unavailable').wait_for()
    assert unavailable.is_disabled()
+   # Each imported control category has a persistent, independent viewing switch.
+   assert page.get_by_label('Apply my tag filters',exact=True).is_checked()
+   assert page.get_by_label('Apply hidden and blocked accounts',exact=True).is_checked()
+   page.get_by_label('Apply my tag filters',exact=True).uncheck()
+   page.wait_for_function("()=>!window.galleryFilterState().controlFiltersSaving")
+   assert not page.get_by_label('Apply my tag filters',exact=True).is_checked()
+   assert page.get_by_label('Apply hidden and blocked accounts',exact=True).is_checked()
+   page.get_by_label('Apply hidden and blocked accounts',exact=True).uncheck()
+   page.wait_for_function("()=>!window.galleryFilterState().controlFiltersSaving")
+   page.reload(wait_until='networkidle')
+   page.locator('#filterToggle').click()
+   assert not page.get_by_label('Apply my tag filters',exact=True).is_checked()
+   assert not page.get_by_label('Apply hidden and blocked accounts',exact=True).is_checked()
+   assert page.locator('.filter-reset').is_enabled()
+   page.screenshot(path=str(test_safety.REPORTS/f'content-filter-toggles-{width}.png'))
+   page.locator('.filter-reset').click()
+   page.wait_for_function("()=>window.galleryFilterState().applyTagFilters && window.galleryFilterState().applyAccountFilters && !window.galleryFilterState().controlFiltersSaving")
+   assert page.get_by_label('Apply my tag filters',exact=True).is_checked()
+   assert page.get_by_label('Apply hidden and blocked accounts',exact=True).is_checked()
+   failed_posts=[]
+   def fail_save(route):
+    if route.request.method=='POST':
+     failed_posts.append(route.request.post_data_json)
+     route.fulfill(status=500,content_type='application/json',body='{"error":"Synthetic save failure"}')
+    else:route.fallback()
+   page.route('**/api/settings',fail_save)
+   page.locator('#applyTagFilters').click()
+   page.locator('#toast').filter(has_text='Synthetic save failure').wait_for()
+   page.wait_for_function("()=>!window.galleryFilterState().controlFiltersSaving && window.galleryFilterState().applyTagFilters")
+   assert len(failed_posts)==1
+   assert page.get_by_label('Apply my tag filters',exact=True).is_checked()
+   page.unroute('**/api/settings',fail_save)
+   # Exercise the actual BroadcastChannel between two tabs. APIs are synthetic.
+   sender=page.context.new_page()
+   install_fixture(sender,base,cached_tags=True)
+   sender.goto(base,wait_until='networkidle')
+   sender.evaluate('()=>window.setGalleryTagFilters(false)')
+   page.wait_for_function("()=>!window.galleryFilterState().applyTagFilters")
+   sender.evaluate('()=>window.setGalleryAccountFilters(false)')
+   page.wait_for_function("()=>!window.galleryFilterState().applyAccountFilters")
+   assert not page.get_by_label('Apply my tag filters',exact=True).is_checked()
+   assert not page.get_by_label('Apply hidden and blocked accounts',exact=True).is_checked()
+   sender.close()
    assert not errors,errors
-   page.close()
+   context.close()
   browser.close()
  print('PASS: desktop/mobile full panel, model selection/clear/search, media selection, next-page catalog, Daily restoration; synthetic HTTP/artwork, no submissions')
 finally:server.shutdown();server.server_close()

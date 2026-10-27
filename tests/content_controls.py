@@ -168,6 +168,29 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
         assert after_filter["artistCount"] == summary["artistCount"], after_filter
         assert get(f"/api/history/artists?date={day}&segment=all&view=discovery&offset=0&limit=50")["artists"]
 
+        # The two local viewing switches are independent and never erase the
+        # imported rules. Explicitly hidden images remain hidden in every mode.
+        before_controls = get('/api/discovery/hidden')
+        post('/api/settings', {'applyTagFilters': False})
+        for view in ('discovery', 'foryou', 'followed', 'new', 'emerging'):
+            rows = get(f'/api/history/artists?date={day}&segment=all&view={view}')['artists']
+            names = {row['username'] for row in rows}
+            assert 'AllHiddenArtist' in names, (view, names)
+            assert not {'HiddenArtist', 'BlockedMe'} & names, (view, names)
+        images = get(f'/api/history/artist?date={day}&segment=all&username=TaggedArtist')['images']
+        assert {row['id'] for row in images} == {9301, 9303}, images
+        post('/api/settings', {'applyTagFilters': True, 'applyAccountFilters': False})
+        rows = get(f'/api/history/artists?date={day}&segment=all&view=discovery')['artists']
+        names = {row['username'] for row in rows}
+        assert {'HiddenArtist', 'BlockedMe'} <= names, names
+        assert 'AllHiddenArtist' not in names, names
+        post('/api/settings', {'applyTagFilters': False})
+        images = get(f'/api/history/artist?date={day}&segment=all&username=TaggedArtist')['images']
+        assert 9302 not in {row['id'] for row in images}, images
+        assert get('/api/discovery/hidden') == before_controls
+        post('/api/settings', {'applyTagFilters': True, 'applyAccountFilters': True})
+        assert get(f'/api/history/day?date={day}&segment=all')['artistCount'] == summary['artistCount']
+
         # If tags arrive later (an on-demand details read or the background sweep), a
         # fresh gallery session must immediately enforce them rather than retaining the
         # image in the frozen order. With all three TaggedArtist images now hidden, the
