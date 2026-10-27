@@ -23,6 +23,7 @@ try:
         page.route('**/api/discovery/summary',lambda route:reply(route,{'hasData':False,'lastSyncAt':'2099-01-01T00:00:00Z'}))
         page.route('**/api/creator-metadata?*',lambda route:reply(route,{'creators':{
             'demoartist1':{'username':'DemoArtist1','userId':101,'following':False,'followers':27}}}))
+        page.route('**/api/follow-status?*',lambda route:reply(route,{'accountId':42,'following':{'101':False}}))
         page.route('**/api/reaction-status?*',lambda route:reply(route,{'images':{
             str(i):{'reactions':[],'stats':{'likeCount':5,'reactionCount':5}} for i in (1001,1002,1004)}}))
         def mutation(route):

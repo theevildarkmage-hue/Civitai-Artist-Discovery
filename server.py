@@ -843,17 +843,37 @@ def _follower_fields(profile: object) -> dict:
     return {"followers": count, "emerging": count is not None and count < EMERGING_FOLLOWERS}
 
 
-def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
-    """Resolve visible creators and cache their avatars and follow state."""
+FOLLOW_STATUS_LOCK = threading.Lock()
+FOLLOW_STATUS_CACHE = {}
+
+
+def creator_follow_status(user_ids: list[int]) -> dict:
+    """One account-scoped following-list read; no per-creator profile lookups."""
+    account = connected_user_id()
+    if account is None: raise CommunityError('AUTH_REQUIRED', 401)
+    with FOLLOW_STATUS_LOCK:
+        if FOLLOW_STATUS_CACHE.get('account') != account or time.monotonic() >= FOLLOW_STATUS_CACHE.get('expires', 0):
+            payload = SocialClient().query('user.getFollowingUsers', {})
+            if not isinstance(payload, list) and not (isinstance(payload, dict) and
+                    any(isinstance(payload.get(key), list) for key in ('items', 'users', 'following'))):
+                raise RuntimeError('Civitai follow status is unavailable')
+            if connected_user_id() != account: raise CommunityError('AUTH_EXPIRED', 401)
+            FOLLOW_STATUS_CACHE.update(account=account, expires=time.monotonic()+60, ids=following_ids(payload))
+        return {'accountId': account, 'following': {str(user): user in FOLLOW_STATUS_CACHE['ids'] for user in user_ids}}
+
+
+def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -> dict[str, dict]:
+    """Resolve visible creators and cache their avatars and, optionally, follow state."""
     clean = list(dict.fromkeys(name.strip() for name in usernames if name.strip()))[:100]
     # Copied because this adds newly resolved creators before writing the file back, and
     # creator_profiles() hands out the shared cached parse.
     profiles = dict(creator_profiles())
     missing = [name for name in clean if name.casefold() not in profiles]
     client = SocialClient()
-    identity = auth_status()
-    account_user_id = int(identity["id"])
-    followed_ids = following_ids(client.query("user.getFollowingUsers", {}))
+    if include_follow:
+        identity = auth_status()
+        account_user_id = int(identity["id"])
+        followed_ids = following_ids(client.query("user.getFollowingUsers", {}))
 
     if missing:
         # A deleted or renamed creator is an ordinary condition in a saved daily
@@ -869,17 +889,18 @@ def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
             temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "byUsername": profiles}, ensure_ascii=False, indent=2), encoding="utf-8")
             temporary.replace(CREATOR_PROFILES)
 
-    followed_names = {
-        str(profile.get("username") or name)
-        for name, profile in profiles.items()
-        if profile.get("id") is not None and int(profile["id"]) in followed_ids
-    }
-    with WRITE_LOCK:
-        temporary = FOLLOW_CACHE.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "userId": account_user_id,
-            "username": identity.get("username"), "count": len(followed_names),
-            "usernames": sorted(followed_names, key=str.casefold)}, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(FOLLOW_CACHE)
+    if include_follow:
+        followed_names = {
+            str(profile.get("username") or name)
+            for name, profile in profiles.items()
+            if profile.get("id") is not None and int(profile["id"]) in followed_ids
+        }
+        with WRITE_LOCK:
+            temporary = FOLLOW_CACHE.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "userId": account_user_id,
+                "username": identity.get("username"), "count": len(followed_names),
+                "usernames": sorted(followed_names, key=str.casefold)}, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(FOLLOW_CACHE)
 
     follower_counts = TASTE.follower_counts(clean)
 
@@ -891,18 +912,20 @@ def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
         if fields["followers"] is None and cached_count is not None:
             fields = {"followers": cached_count,
                       "emerging": cached_count < EMERGING_FOLLOWERS}
-        return {
+        result = {
             "username": name,
             "avatarUrl": profile_avatar(profile),
-            "following": bool(
-                (profile or {}).get("id") is not None
-                and int(profile["id"]) in followed_ids
-            ),
             "userId": (profile or {}).get("id"),
             # The all-day sweep stores counts in SQLite. The profile cache carries
             # avatars and ids, but is populated only for cards the user has loaded.
             **fields,
         }
+        if include_follow:
+            result["following"] = bool(
+                (profile or {}).get("id") is not None
+                and int(profile["id"]) in followed_ids
+            )
+        return result
     return {name.casefold(): result_for(name) for name in clean}
 
 
@@ -1632,12 +1655,24 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("History artist page", error)
             return
+        if parsed.path == '/api/follow-status':
+            try:
+                raw = query.get('userId', [])
+                if not 1 <= len(raw) <= 100: raise ValueError('Provide 1 to 100 creator IDs')
+                ids = list(dict.fromkeys(int(value) for value in raw))
+                if any(value <= 0 for value in ids): raise ValueError('Invalid creator ID')
+                self.json_response(creator_follow_status(ids))
+            except CommunityError as error:self.json_response(error.response(), error.status)
+            except ValueError as error:self.json_response({'error': str(error)}, 400)
+            except Exception as error:self.internal_error('Follow status', error)
+            return
         if parsed.path == "/api/creator-metadata":
             try:
                 if not connected_or_false():
                     self.json_response({"error": "Connect Civitai to load creator profiles and follow state."}, 401)
                     return
-                self.json_response({"creators": enrich_creator_metadata(query.get("username", []))})
+                self.json_response({"creators": enrich_creator_metadata(
+                    query.get("username", []), include_follow=query.get("follow", ["1"])[0] != "0")})
             except Exception as error:
                 self.internal_error("Creator metadata", error)
             return
@@ -2341,6 +2376,7 @@ class Handler(BaseHTTPRequestHandler):
                 "usernames": sorted(names.values(), key=str.casefold)}, indent=2), encoding="utf-8")
             temporary.replace(FOLLOW_CACHE)
         TASTE.set_following(user_id, desired)
+        with FOLLOW_STATUS_LOCK: FOLLOW_STATUS_CACHE.clear()
         self.json_response({"userId": user_id, "following": desired, "changed": changed})
 
     def log_message(self, format: str, *args: object) -> None:

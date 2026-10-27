@@ -14,7 +14,7 @@ try:
  with sync_playwright() as pw:
   browser=pw.chromium.launch(headless=True)
   for width in (1440,390):
-   page=browser.new_page(viewport={'width':width,'height':900});errors=[];calls=[]
+   page=browser.new_page(viewport={'width':width,'height':900});errors=[];calls=[];follow_writes=[];pending_profiles=[];defer_profiles=True
    page.on('pageerror',lambda error:errors.append(str(error)))
    install_fixture(page,base,cached_tags=True)
    def reply(route,value):route.fulfill(content_type='application/json',body=json.dumps(value))
@@ -33,8 +33,37 @@ try:
      rows.append({'artwork':art,'submittedAt':'2026-10-24T12:00:00Z','recommender':'SyntheticMember'})
     reply(route,{'items':rows,'nextCursor':'2' if number==1 else None})
    page.route('**/api/community/gallery*',gallery)
-   page.goto(base,wait_until='networkidle');page.locator('#tabCommunity').click()
+   def follows(route):
+    ids=parse_qs(urlsplit(route.request.url).query).get('userId',[])
+    reply(route,{'accountId':7,'following':{value:int(value)%2==1 for value in ids}})
+   page.route('**/api/follow-status?*',follows)
+   def follow_write(route):
+    value=route.request.post_data_json;follow_writes.append(value)
+    reply(route,{'userId':value['userId'],'following':value['following'],'changed':True})
+   page.route('**/api/follow',follow_write)
+   def metadata(route):
+    query=parse_qs(urlsplit(route.request.url).query)
+    if query.get('follow')!=['0']:return route.fallback()  # Daily gallery cards
+    # No following field: a profile reply must not clear the follow state above.
+    result={'creators':{name.lower():{'username':name,'avatarUrl':f'https://image.civitai.com/fixture/{900+int(name[9:])}.svg'} for name in query.get('username',[])}}
+    if defer_profiles:pending_profiles.append((route,result))
+    else:reply(route,result)
+   page.route('**/api/creator-metadata?*',metadata)
+   page.goto(base,wait_until='domcontentloaded');page.locator('#tabCommunity').click()
    page.wait_for_function('()=>document.querySelectorAll("#communityGrid .creator-card").length>=4')
+   page.locator('#communityGrid [data-username="synthetic1"] .follow-button').filter(has_text='Following').wait_for()
+   page.locator('#communityGrid [data-username="synthetic2"] .follow-button').filter(has_text='+ Follow').wait_for()
+   button=page.locator('#communityGrid [data-username="synthetic1"] .follow-button')
+   button.click();button.filter(has_text='+ Follow').wait_for()
+   assert len(follow_writes)==1 and follow_writes[0]['following'] is False
+   # A delayed public profile reply must not undo the user's completed unfollow.
+   page.wait_for_function('()=>document.querySelectorAll("#communityGrid .creator-card").length>=4')
+   for route,result in pending_profiles:reply(route,result)
+   defer_profiles=False
+   page.wait_for_function('()=>document.querySelector(\'#communityGrid [data-username="synthetic1"] img.creator-avatar\')?.getAttribute("src")?.endsWith("/901.svg")')
+   button.filter(has_text='+ Follow').wait_for()
+   button.click();button.filter(has_text='Following').wait_for()
+   assert len(follow_writes)==2 and follow_writes[1]['following'] is True
    page.locator('#filterToggle').click()
    page.locator('#mediaType').wait_for(state='visible')
    page.locator('.model-search').wait_for(state='visible')
@@ -63,6 +92,11 @@ try:
    page.locator('#filterToggle').click()
    page.locator('#modelMenu input[value="SDXL"]').wait_for(state='visible')
    assert page.locator('#mediaType').is_visible() and page.locator('.model-search').is_visible()
+   page.route('**/api/follow-status?*',lambda route:route.fulfill(status=503,content_type='application/json',body='{}'))
+   page.keyboard.press('Escape');page.locator('#tabCommunity').click();page.locator('#communityRefresh').click()
+   unavailable=page.locator('#communityGrid [data-username="synthetic1"] .follow-button')
+   unavailable.filter(has_text='Status unavailable').wait_for()
+   assert unavailable.is_disabled()
    assert not errors,errors
    page.close()
   browser.close()

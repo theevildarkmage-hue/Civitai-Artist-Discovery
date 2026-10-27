@@ -13,6 +13,7 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -55,6 +56,46 @@ with tempfile.TemporaryDirectory(prefix="civitai-profile-cache-", ignore_cleanup
     # Corrupt content falls back to empty rather than failing the gallery.
     server.CREATOR_PROFILES.write_text("{not json", encoding="utf-8")
     assert server.creator_profiles() == {}, "unreadable file must not raise"
+
+    # Follow reads reuse one complete list and never cross account boundaries.
+    with patch.object(server, 'connected_user_id', return_value=42) as account, \
+            patch.object(server, 'SocialClient') as transport:
+        server.FOLLOW_STATUS_CACHE.clear()
+        transport.return_value.query.return_value = [1, 2]
+        assert server.creator_follow_status([1, 3])['following'] == {'1': True, '3': False}
+        server.creator_follow_status([2])
+        transport.return_value.query.assert_called_once_with('user.getFollowingUsers', {})
+        account.return_value = 43
+        transport.return_value.query.return_value = [3]
+        assert server.creator_follow_status([1, 3])['following'] == {'1': False, '3': True}
+        assert transport.return_value.query.call_count == 2
+
+    # A failed read cannot populate a misleading all-not-followed cache, and
+    # account switching during the upstream request must reject the reply.
+    with patch.object(server,'connected_user_id',return_value=42), patch.object(server,'SocialClient') as transport:
+        server.FOLLOW_STATUS_CACHE.clear()
+        transport.return_value.query.return_value={'unexpected':'shape'}
+        try:server.creator_follow_status([1]);raise AssertionError('Malformed following response accepted')
+        except RuntimeError:pass
+        assert not server.FOLLOW_STATUS_CACHE
+        transport.return_value.query.return_value=[]
+        assert server.creator_follow_status([1])['following']=={'1':False}
+        server.FOLLOW_STATUS_CACHE['expires']=0
+        transport.return_value.query.return_value=[1]
+        assert server.creator_follow_status([1])['following']=={'1':True}
+    with patch.object(server,'connected_user_id',side_effect=[42,43]),patch.object(server,'SocialClient') as transport:
+        server.FOLLOW_STATUS_CACHE.clear();transport.return_value.query.return_value=[1]
+        try:server.creator_follow_status([1]);raise AssertionError('Stale account reply accepted')
+        except server.CommunityError as error:assert error.code=='AUTH_EXPIRED'
+        assert not server.FOLLOW_STATUS_CACHE
+
+    # Avatar-only reads use cached profiles and skip the account's following list.
+    write({"ana": {"id": 1, "username": "Ana", "profilePicture": {"url": "avatar-ana"}}})
+    with patch.object(server, 'SocialClient') as transport, patch.object(server, 'auth_status') as identity:
+        result = server.enrich_creator_metadata(["Ana"], include_follow=False)["ana"]
+        assert result["userId"] == 1 and result["avatarUrl"] and "following" not in result, result
+        transport.return_value.query.assert_not_called()
+        identity.assert_not_called()
 
 print({"missingFileEmpty": True, "parsedOncePerVersion": True, "rewriteSeenImmediately": True,
        "callerEditsDoNotLeak": True, "corruptFileSafe": True})
