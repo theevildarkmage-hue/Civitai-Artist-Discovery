@@ -23,15 +23,27 @@ try:
    page.route('**/api/community/config',lambda r:reply(r,{'development':False}))
    page.route('**/api/community/status*',lambda r:reply(r,{'member':{'id':7},'quota':{'remaining':3},'beta':{'available':True,'submissions':True}}))
    page.route('**/api/community/gallery*',lambda r:reply(r,{'items':[{'artwork':art,'recommender':'SyntheticMember','submittedAt':'2026-10-24T12:00:00Z'}],'nextCursor':None}))
-   # Posters that never answer: only playback can clear the dialog's loading overlay.
+   # Keep PR #17's hanging-poster regression alongside the sound preference.
    page.route('**/hanging-poster.jpg*',lambda r:None)
    art={**art,'thumbnailUrl':f'{base}/hanging-poster.jpg'}
    page.route('**/api/community/detail*',lambda r:reply(r,{**art,'detailImageUrl':f'{base}/hanging-poster.jpg?detail','civitaiUrl':art['imageUrl'],'known':True,'tags':[],'prompt':''}))
-   page.goto(base,wait_until='domcontentloaded');page.locator('#tabCommunity').click()
+   page.goto(base,wait_until='domcontentloaded')
+   muted=width==1440
+   if muted:
+    # Turning sound off is saved like the other gallery preferences.
+    page.locator('#galleryPreferences').click()
+    sound=page.locator('#prefDetailVideoSound');assert sound.is_checked();sound.uncheck()
+    page.wait_for_function('()=>!document.querySelector("#prefDetailVideoSound").checked&&!document.querySelector("#prefDetailVideoSound").disabled')
+    # It sits directly after the viewed-card dimming checkbox.
+    assert page.evaluate('document.querySelector("#prefDimSeen").closest("label").nextElementSibling.contains(document.querySelector("#prefDetailVideoSound"))')
+    page.keyboard.press('Escape')
+   page.locator('#tabCommunity').click()
    card=page.locator('#communityGrid .creator-card');card.wait_for()
    page.wait_for_function('()=>[...document.querySelectorAll("#communityGrid video")].some(v=>v.readyState>=2&&v.currentTime>0)',timeout=30000)
    card.locator('.info-button').click()
-   page.wait_for_function('()=>document.querySelector("#detailVideo")?.readyState>=2',timeout=30000)
+   page.wait_for_function('()=>document.querySelector("#detailVideo")?.currentTime>0',timeout=30000)
+   # Details play with sound by default; turning the preference off starts them muted.
+   assert page.evaluate('document.querySelector("#detailVideo").muted')==muted,width
    page.wait_for_function('()=>!document.querySelector("#details").classList.contains("detail-loading")',timeout=5000)
    page.locator('#detailMeta dt').filter(has_text='Video').wait_for()
    page.locator('#close').click()
@@ -43,5 +55,5 @@ try:
    page.screenshot(path=str(test_safety.REPORTS/f'community-video-{width}.png'))
    page.close()
   browser.close()
- print('PASS: desktop/mobile Community video decoding, details, cleanup and media filtering; synthetic artwork, no hosted writes')
+ print('PASS: desktop/mobile Community video decoding, details with sound or muted by preference, cleanup and media filtering; synthetic artwork, no hosted writes')
 finally:server.shutdown();server.server_close()

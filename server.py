@@ -2006,6 +2006,7 @@ class Handler(BaseHTTPRequestHandler):
                                         browsing_levels_value=body.get("browsingLevels"),
                                         content_rating_value=body.get("contentRating"),
                                         dim_seen_cards_value=body.get("dimSeenCards"),
+                                        detail_video_sound_value=body.get("detailVideoSound"),
                                         check_for_updates_value=body.get("checkForUpdates"),
                                         hide_high_volume_creators_value=body.get("hideHighVolumeCreators"),
                                         high_volume_threshold_value=body.get("highVolumeThreshold"),

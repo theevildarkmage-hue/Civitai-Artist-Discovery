@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
         assert value.get('mediaType') in ('all', 'image', 'video'), value
         return {key: item for key, item in value.items() if key not in ('captureSeed', 'mediaType')}
 
-    gallery_defaults = {"hideHighVolumeCreators": True, "highVolumeThreshold": 50,
+    gallery_defaults = {"detailVideoSound": True, "hideHighVolumeCreators": True, "highVolumeThreshold": 50,
                         "emergingReactionMode": "balanced", "emergingReactionLimit": 0,
                         "autoCapture": True, "autoCaptureHours": 12,
                         "autoCaptureMinute": None, "allowLanAccess": False,
@@ -51,12 +51,20 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
     saved = settings.update(check_for_updates_value=False)
     assert view(saved) == {"contentRating": "X", "browsingLevels": [4, 16],
                      "dimSeenCards": False, "checkForUpdates": False, **gallery_defaults}
+    assert settings.update(detail_video_sound_value=False)["detailVideoSound"] is False
+    assert settings.load()["detailVideoSound"] is False
+    try:
+        settings.update(detail_video_sound_value="yes")
+        raise AssertionError("detailVideoSound must reject non-booleans")
+    except ValueError:
+        pass
+    settings.update(detail_video_sound_value=True)
     assert settings.update(high_volume_threshold_value=150)["highVolumeThreshold"] == 150
     saved = settings.update(hide_high_volume_creators_value=True,
                             high_volume_threshold_value=200,
                             emerging_reaction_mode_value="strict",
                             emerging_reaction_limit_value=500)
-    gallery_saved = {"hideHighVolumeCreators": True, "highVolumeThreshold": 200,
+    gallery_saved = {"detailVideoSound": True, "hideHighVolumeCreators": True, "highVolumeThreshold": 200,
                      "emergingReactionMode": "strict", "emergingReactionLimit": 500,
                      "autoCapture": True, "autoCaptureHours": 12,
                      "autoCaptureMinute": None, "allowLanAccess": False,
