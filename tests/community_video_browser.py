@@ -23,12 +23,16 @@ try:
    page.route('**/api/community/config',lambda r:reply(r,{'development':False}))
    page.route('**/api/community/status*',lambda r:reply(r,{'member':{'id':7},'quota':{'remaining':3},'beta':{'available':True,'submissions':True}}))
    page.route('**/api/community/gallery*',lambda r:reply(r,{'items':[{'artwork':art,'recommender':'SyntheticMember','submittedAt':'2026-10-24T12:00:00Z'}],'nextCursor':None}))
-   page.route('**/api/community/detail*',lambda r:reply(r,{**art,'detailImageUrl':art['thumbnailUrl'],'civitaiUrl':art['imageUrl'],'known':True,'tags':[],'prompt':''}))
+   # Posters that never answer: only playback can clear the dialog's loading overlay.
+   page.route('**/hanging-poster.jpg*',lambda r:None)
+   art={**art,'thumbnailUrl':f'{base}/hanging-poster.jpg'}
+   page.route('**/api/community/detail*',lambda r:reply(r,{**art,'detailImageUrl':f'{base}/hanging-poster.jpg?detail','civitaiUrl':art['imageUrl'],'known':True,'tags':[],'prompt':''}))
    page.goto(base,wait_until='domcontentloaded');page.locator('#tabCommunity').click()
    card=page.locator('#communityGrid .creator-card');card.wait_for()
    page.wait_for_function('()=>[...document.querySelectorAll("#communityGrid video")].some(v=>v.readyState>=2&&v.currentTime>0)',timeout=30000)
    card.locator('.info-button').click()
    page.wait_for_function('()=>document.querySelector("#detailVideo")?.readyState>=2',timeout=30000)
+   page.wait_for_function('()=>!document.querySelector("#details").classList.contains("detail-loading")',timeout=5000)
    page.locator('#detailMeta dt').filter(has_text='Video').wait_for()
    page.locator('#close').click()
    page.wait_for_function('()=>!document.querySelector("#detailVideo")')

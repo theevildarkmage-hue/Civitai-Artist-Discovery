@@ -319,6 +319,9 @@ export function showDetailVideo(artwork, url, imageId = '') {
       status.update(info);
       artwork.hidden = !!info.video;
       owner.dataset.videoState = info.state;
+      // The poster's "Loading image" overlay waits for an image event that a slow or
+      // abandoned poster never sends. Playback, or its own error, supersedes it.
+      if (info.state === 'playing' || info.state === 'failed') owner.classList.remove('detail-loading');
     },
   });
   controller.setItem({ id: String(imageId || url), source: url,
