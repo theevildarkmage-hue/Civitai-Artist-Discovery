@@ -1284,12 +1284,8 @@ $("prefDimSeen").onchange = () => {
     if (saved) toast(desired ? "Viewed cards will be dimmed." : "Viewed cards will stay at full brightness.");
   });
 };
-$("prefDetailVideoSound").onchange = () => {
-  const desired = $("prefDetailVideoSound").checked;
-  saveGalleryPreferences({ detailVideoSound: desired }, false).then(saved => {
-    if (saved) toast(desired ? "Videos in the details view will play with sound." : "Videos in the details view will start muted.");
-  });
-};
+$("prefDetailVideoSound").onchange = () =>
+  saveGalleryPreferences({ detailVideoSound: $("prefDetailVideoSound").checked }, false);
 $("prefHideHighVolume").onchange = () => saveGalleryPreferences({
   hideHighVolumeCreators: $("prefHideHighVolume").checked
 }).then(saved => { if (saved) toast("Gallery preferences applied from saved data."); });
