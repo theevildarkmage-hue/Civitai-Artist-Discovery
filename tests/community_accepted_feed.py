@@ -1,6 +1,6 @@
 import test_safety
 import copy,time,unittest
-from datetime import datetime,timezone
+from datetime import datetime,timedelta,timezone
 from unittest.mock import Mock
 from discovery.community import CommunityClient,CommunityError,ContentProfile
 def row(i):return dict(imageId=i,creatorId=i+1000,recommender='Synthetic',submittedAt=datetime.now(timezone.utc).isoformat())
@@ -17,6 +17,21 @@ def make_client(n=125,profile=None):
  c=CommunityClient(b,v,lambda:(_ for _ in ()).throw(AssertionError('List fetched OAuth')),lambda _:profile or ContentProfile())
  c.mode='supabase';c.identity_provider=lambda:17;return c,b,v
 class Contract(unittest.TestCase):
+ def test_server_timestamp_ahead_of_client_does_not_break_page(self):
+  c,b,v=make_client(3)
+  b.rows[0]['submittedAt']=(datetime.now(timezone.utc)+timedelta(seconds=2)).isoformat()
+  result=c.request('gallery',{})
+  self.assertEqual([r['imageId'] for r in result['items']],[3,2,1])
+  self.assertTrue(c.listed(3));v.artwork.assert_not_called()
+ def test_expiration_and_timestamp_validation_remain_strict(self):
+  from discovery.community_feed import decode
+  now=datetime(2026,10,27,tzinfo=timezone.utc)
+  r=row(1)
+  for age in (timedelta(0),timedelta(days=6),timedelta(days=7,microseconds=-1)):
+   r['submittedAt']=(now-age).isoformat();self.assertEqual(decode(r,now)[0],1)
+  for stamp in ((now-timedelta(days=7)).isoformat(),(now-timedelta(days=8)).isoformat(),'invalid',now.replace(tzinfo=None).isoformat()):
+   r['submittedAt']=stamp
+   with self.assertRaises(CommunityError):decode(r,now)
  def test_pagination(self):
   for n in (0,3,13,24,50,51,125):
    c,b,v=make_client(n);seen=[];cursor=None

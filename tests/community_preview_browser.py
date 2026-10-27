@@ -3,6 +3,9 @@ import test_safety
 from functools import partial
 from http.server import ThreadingHTTPServer
 import json,threading
+from datetime import datetime,timedelta,timezone
+from community_accepted_feed import make_client
+from discovery.community import CommunityError
 from playwright.sync_api import sync_playwright,Error
 from v2_visual_baseline import ROOT,StaticHandler,install_fixture
 
@@ -22,14 +25,23 @@ try:
    page.route('**/api/community/beta',lambda r:reply(r,{'production':True,'serverPolicy':True,'available':True}))
    page.route('**/api/community/config',lambda r:reply(r,{'development':False}))
    page.route('**/api/community/status*',lambda r:reply(r,{'member':{'id':7},'quota':{'used':0,'remaining':3,'limit':3},'beta':{'available':True,'submissions':True}}))
-   page.route('**/api/community/gallery*',lambda r:reply(r,{'items':[],'nextCursor':None}))
+   client,backend,_=make_client(0)
+   def gallery(route):
+    try:reply(route,client.request('gallery',{}))
+    except CommunityError as error:reply(route,error.response(),error.status)
+   page.route('**/api/community/gallery*',gallery)
+   page.route('**/api/history/images',lambda r:reply(r,{'images':[artwork(i) for i in r.request.post_data_json['imageIds']],'counts':{'contentControls':0,'unavailable':0}}))
    page.route('**/api/creator-metadata?*',lambda r:reply(r,{'creators':{'previewartist':{'userId':55,'following':False,'followers':12}}}))
    def verify(route):
     value=route.request.post_data_json['artwork'];calls.append(value);held.append(route)
    page.route('**/api/community/verify',verify)
-   page.route('**/auto-preview.svg?*',lambda route:media.append(route))
+   page.route('**/auto-preview.svg?*',lambda route:reply_media(route) if writes else media.append(route))
+   def reply_media(route):route.fulfill(content_type='image/svg+xml',body=svg)
    def submit(route):
-    writes.append(route.request.post_data_json);reply(route,{'quota':{'used':1,'remaining':2}})
+    writes.append(route.request.post_data_json)
+    # The authoritative server clock can be ahead of the Windows client clock.
+    backend.rows=[{'imageId':3105,'creatorId':55,'recommender':'Synthetic','submittedAt':(datetime.now(timezone.utc)+timedelta(seconds=2)).isoformat()}]
+    reply(route,{'quota':{'used':1,'remaining':2}})
    page.route('**/api/community/recommend',submit)
    page.goto(base,wait_until='domcontentloaded');page.locator('#tabCommunity').click();page.locator('#communityRecommend').click()
    page.wait_for_function("()=>!document.querySelector('#communityLoad').disabled")
@@ -92,6 +104,9 @@ try:
    page.wait_for_function("()=>!document.querySelector('#communitySubmit').disabled")
    assert not writes;save.click();page.wait_for_function("()=>!document.querySelector('.community-recommend-dialog').open")
    assert len(writes)==1 and writes[0]['artwork']==3105 and len(writes[0]['idempotencyKey'])>=16
+   page.locator('#communityGrid .community-card[data-id="3105"]').wait_for()
+   assert page.locator('#communityGrid .community-credit').inner_text().startswith('Recommended by Synthetic')
+   assert 'temporarily unavailable' not in page.locator('#communityMessage').inner_text()
    assert not errors,errors
    results.append({'width':width,'automaticDebounce':True,'loadingAndMediaGating':True,'editedURLAndLateResultSafe':True,'invalidURLNoRequest':True,'closeCancelsScheduledWork':True,'retryPassed':True,'explicitConfirmationWrites':1,'writesAreMocked':True,'layoutPassed':True})
    page.close()
