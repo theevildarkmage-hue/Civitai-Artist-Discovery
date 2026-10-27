@@ -13,7 +13,7 @@ try:
  with sync_playwright() as pw:
   browser=pw.chromium.launch(headless=True)
   for width in (1440,390):
-   page=browser.new_page(viewport={'width':width,'height':900});errors=[];writes=[];status_calls=[];denial=[None];enabled=[True]
+   page=browser.new_page(viewport={'width':width,'height':900});errors=[];writes=[];status_calls=[];held=[];hold=[False];denial=[None];enabled=[True]
    page.on('pageerror',lambda error:errors.append(str(error)))
    page.on('request',lambda r:writes.append(r.url) if r.method=='POST' and '/api/community/recommend' in r.url else None)
    install_fixture(page,base,cached_tags=True)
@@ -22,6 +22,7 @@ try:
    page.route('**/api/community/config',lambda r:reply(r,{'development':False}))
    def status(route):
     status_calls.append(True)
+    if hold[0]:held.append(route);return
     if denial[0]:reply(route,{'code':denial[0],'error':'Synthetic admission denial'},401 if denial[0]=='AUTH_EXPIRED' else 403)
     else:reply(route,{'member':{'id':7},'quota':{'used':0,'remaining':3,'limit':3},'beta':{'available':True,'submissions':enabled[0]}})
    page.route('**/api/community/status*',status)
@@ -32,9 +33,15 @@ try:
    def card_recommend():
     page.locator('#gallery .more-menu').first.click()
     page.get_by_role('menuitem',name='Recommend to Community').click()
-   card_recommend()
+   hold[0]=True;card_recommend()
    page.locator('#communityDialogTitle').wait_for(state='visible')
    assert page.locator('#communityLink').input_value()=='1'
+   assert page.locator('#communitySubmit').is_disabled()
+   page.locator('#communityLink').fill('1002')
+   hold[0]=False
+   reply(held.pop(),{'quota':{'used':0,'remaining':3,'limit':3},'beta':{'available':True,'submissions':True}})
+   page.wait_for_function("()=>!document.querySelector('#communitySubmit').disabled")
+   assert page.locator('#communityLink').input_value()=='1002'
    assert len(status_calls)==1 and not writes
    page.locator('#communityCancel').click()
    # A denial is visible from Daily, rather than a dead card action.

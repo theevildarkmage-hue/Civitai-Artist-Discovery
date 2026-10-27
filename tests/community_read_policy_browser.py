@@ -31,7 +31,8 @@ try:
             assert page.locator('#communityRecommend').is_disabled()
             assert page.locator('#communitySubmit').is_disabled()
             page.evaluate("()=>{window.CivitaiCommunity.recommend('1001');document.querySelector('#communityLink').value='1001';document.querySelector('#communityForm').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));}")
-            assert page.locator('.community-dialog[open]').count()==0 and writes==[]
+            page.locator('.community-dialog[open]').wait_for(state='hidden')
+            assert writes==[]
         denied()
         state['submissions']=True;page.locator('#communityRefresh').click()
         page.wait_for_function("()=>!document.querySelector('#communityRecommend').disabled")

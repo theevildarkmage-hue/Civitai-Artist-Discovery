@@ -30,7 +30,7 @@ export function mountCommunity() {
   const el = id => document.getElementById(id);
   let productionBeta=false, policyControlled=true, submissions=false;
   let reporting=false,reportTarget=null,reportBusy=false;
-  let authenticationFailed=false, openingRecommendation=false;
+  let authenticationFailed=false, checkingRecommendation=false;
   el('communityRecommend').disabled=true;
   el('communitySubmit').disabled=true;
   function applyPolicy(status) {
@@ -43,7 +43,7 @@ export function mountCommunity() {
     if(!policyControlled)return;
     submissions=status?.beta?.submissions===true && status?.cache?.state!=='stale';
     el('communityRecommend').disabled=!submissions;
-    el('communitySubmit').disabled=busy||!submissions;
+    el('communitySubmit').disabled=busy||checkingRecommendation||!submissions;
     if(!submissions&&dialog.open)dialog.close();
     if(!submissions)message(status?.beta?.available ? 'Community Beta is read-only. Your personal galleries still work.' : disabledNotice);
   }
@@ -332,31 +332,36 @@ export function mountCommunity() {
     newestShown=null;el('communityUpdates').textContent='';
   }
   async function recommend(value = '') {
-    if (busy || openingRecommendation) return;
+    if (busy) return;
     if (!authorized) { window.toast('Sign in to Civitai to use Community.'); return; }
-    // Card actions also work before Community has ever been opened. Recheck
-    // server-owned admission/policy instead of trusting a stale toolbar state.
-    openingRecommendation=true;
-    const version=draftVersion;
+    if (dialog.open) { el('communityLink').focus(); return; }
+    const version=++draftVersion;
+    checkingRecommendation=true;
+    el('communityLink').value = String(value);
+    el('communityDialogMessage').textContent = 'Checking Community access…';
+    el('communitySubmit').disabled = true;
+    requestKey = null; requestValue = null;
+    dialog.showModal();
+    el('communityLink').focus();
     try {
+      // Recheck server-owned policy while the reader can already enter a link.
       const status=await api('/api/community/status');
-      if(version!==draftVersion || !authorized)return;
+      if(version!==draftVersion || !authorized || !dialog.open)return;
+      checkingRecommendation=false;
       authenticationFailed=false;quota(status.quota);applyPolicy(status);
       if(!submissions) { window.toast(el('communityMessage').textContent); return; }
-      ++draftVersion;
-      el('communityLink').value = String(value);
+      el('communitySubmit').disabled = false;
       el('communityDialogMessage').textContent = '';
-      requestKey = null; requestValue = null;
-      if (!dialog.open) dialog.showModal();
-      el('communityLink').focus();
     } catch(error) {
-      if(version!==draftVersion || !authorized)return;
+      if(version!==draftVersion || !authorized || !dialog.open)return;
       accessError(error);window.toast(el('communityMessage').textContent);
-    } finally {openingRecommendation=false;}
+    } finally {
+      if(version===draftVersion)checkingRecommendation=false;
+    }
   }
   el('communityForm').onsubmit = async event => {
     event.preventDefault();
-    if (busy || !authorized || !submissions) return;
+    if (busy || checkingRecommendation || !authorized || !submissions) return;
     const value = el('communityLink').value.trim(), version = draftVersion;
     try {if(requestValue!==value||!requestKey){requestKey=secureRequestKey();requestValue=value;}}
     catch(error){el('communityDialogMessage').textContent=error.message;return;}
@@ -381,7 +386,7 @@ export function mountCommunity() {
       el('communitySubmit').textContent = 'Submit Recommendation'; el('communityForm').removeAttribute('aria-busy');
     }
   };
-  dialog.addEventListener('close', () => { ++draftVersion; });
+  dialog.addEventListener('close', () => { ++draftVersion; checkingRecommendation=false; });
   let authorized = false, configured = false, accountId = null;
   const enter = () => { if (authorized) window.showView('community'); };
   tab.onclick = enter;
