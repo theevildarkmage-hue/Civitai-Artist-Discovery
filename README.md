@@ -1,5 +1,11 @@
 # Civitai Artist Discovery
 
+Current follow-up decisions: [Beta 11 audit and decision tracker](docs/3.0-audit-tracker.md#october-27-2026-decision-record).
+The October 27 record separates conditional recovery maintenance from accepted
+cache behavior, monitored lookup costs and intentionally retained renewal. It does
+not authorize application changes or a new release. Older candidate notes below
+are historical; see the dated tracker for the accepted Beta 11 baseline.
+
 ## Beta authenticated activity notice
 
 Discovery 3.0 Beta automatically records your verified Civitai account ID, public
