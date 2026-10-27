@@ -6,6 +6,9 @@ cache behavior, monitored lookup costs and intentionally retained renewal. It do
 not authorize application changes or a new release. Older candidate notes below
 are historical; see the dated tracker for the accepted Beta 11 baseline.
 
+Suspected vulnerabilities: use [private security reporting](SECURITY.md).
+General support and non-sensitive maintenance remain in GitHub Issues.
+
 ## Beta authenticated activity notice
 
 Discovery 3.0 Beta automatically records your verified Civitai account ID, public
