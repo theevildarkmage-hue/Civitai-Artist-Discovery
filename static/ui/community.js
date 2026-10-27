@@ -212,6 +212,15 @@ export function mountCommunity() {
           if(card.isConnected && !button.dataset.followKnown)button.textContent='Status unavailable';
         });
       });
+      // Avatars come from the locally cached creator profiles. Skip follow data so
+      // a slower profile reply cannot overwrite the follow state read above.
+      const names=new URLSearchParams([['follow','0'],...batchArtists.map(artist=>['username',artist.username])]);
+      api(`/api/creator-metadata?${names}`).then(result=>{
+        batchArtists.forEach((artist,index)=>{
+          const metadata=result.creators?.[artist.username.toLowerCase()], card=batchCards[index];
+          if(metadata && card.isConnected)card.applyCreatorProfile(metadata);
+        });
+      }).catch(()=>{});
     }
   }
   async function load(more = false, refresh = false) {

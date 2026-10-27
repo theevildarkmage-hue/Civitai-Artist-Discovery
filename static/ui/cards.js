@@ -312,7 +312,9 @@ export function createCreatorCard(a, context) {
   });
   follow.onclick = () => toggleCreatorFollow(follow, a, { api, canWrite: context.canWrite, toast });
   el.addEventListener("reactionstate", () => { if (document.body.contains(el)) renderReactions(); });
-  el.applyCreatorMetadata = metadata => { a.avatarUrl = metadata.avatarUrl; a.following = !!metadata.following; a.userId = metadata.userId; const oldAvatar = el.querySelector(".creator-avatar"); if (a.avatarUrl && oldAvatar && oldAvatar.getAttribute("src") !== a.avatarUrl) { const image = document.createElement("img"); image.className = "creator-avatar"; image.src = a.avatarUrl; image.alt = ""; wireAvatarFallback(image, a.username); oldAvatar.replaceWith(image); } follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; applyCreatorFollowers(el, metadata); };
+  // Avatar and follower count only; Community reads follow state separately.
+  el.applyCreatorProfile = metadata => { a.avatarUrl = metadata.avatarUrl; const oldAvatar = el.querySelector(".creator-avatar"); if (a.avatarUrl && oldAvatar && oldAvatar.getAttribute("src") !== a.avatarUrl) { const image = document.createElement("img"); image.className = "creator-avatar"; image.src = a.avatarUrl; image.alt = ""; wireAvatarFallback(image, a.username); oldAvatar.replaceWith(image); } applyCreatorFollowers(el, metadata); };
+  el.applyCreatorMetadata = metadata => { a.following = !!metadata.following; a.userId = metadata.userId; el.applyCreatorProfile(metadata); follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; };
   el.clearAccountMetadata = () => { a.following = false; follow.classList.remove("is-following"); follow.textContent = "+ Follow"; };
   el.setAttribute('aria-busy', 'true');
   paint(); return el;

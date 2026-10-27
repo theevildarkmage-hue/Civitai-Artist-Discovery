@@ -37,10 +37,18 @@ try:
     ids=parse_qs(urlsplit(route.request.url).query).get('userId',[])
     reply(route,{'accountId':7,'following':{value:int(value)%2==1 for value in ids}})
    page.route('**/api/follow-status?*',follows)
+   def metadata(route):
+    query=parse_qs(urlsplit(route.request.url).query)
+    if query.get('follow')!=['0']:return route.fallback()  # Daily gallery cards
+    # No following field: a profile reply must not clear the follow state above.
+    reply(route,{'creators':{name.lower():{'username':name,'avatarUrl':f'https://image.civitai.com/fixture/{900+int(name[9:])}.svg'} for name in query.get('username',[])}})
+   page.route('**/api/creator-metadata?*',metadata)
    page.goto(base,wait_until='networkidle');page.locator('#tabCommunity').click()
    page.wait_for_function('()=>document.querySelectorAll("#communityGrid .creator-card").length>=4')
    page.locator('#communityGrid [data-username="synthetic1"] .follow-button').filter(has_text='Following').wait_for()
    page.locator('#communityGrid [data-username="synthetic2"] .follow-button').filter(has_text='+ Follow').wait_for()
+   page.wait_for_function('()=>document.querySelector(\'#communityGrid [data-username="synthetic1"] img.creator-avatar\')?.getAttribute("src")?.endsWith("/901.svg")')
+   page.locator('#communityGrid [data-username="synthetic1"] .follow-button').filter(has_text='Following').wait_for()
    page.locator('#filterToggle').click()
    page.locator('#mediaType').wait_for(state='visible')
    page.locator('.model-search').wait_for(state='visible')

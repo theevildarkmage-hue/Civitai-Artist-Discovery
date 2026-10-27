@@ -70,5 +70,13 @@ with tempfile.TemporaryDirectory(prefix="civitai-profile-cache-", ignore_cleanup
         assert server.creator_follow_status([1, 3])['following'] == {'1': False, '3': True}
         assert transport.return_value.query.call_count == 2
 
+    # Avatar-only reads use cached profiles and skip the account's following list.
+    write({"ana": {"id": 1, "username": "Ana", "profilePicture": {"url": "avatar-ana"}}})
+    with patch.object(server, 'SocialClient') as transport, patch.object(server, 'auth_status') as identity:
+        result = server.enrich_creator_metadata(["Ana"], include_follow=False)["ana"]
+        assert result["userId"] == 1 and result["avatarUrl"] and "following" not in result, result
+        transport.return_value.query.assert_not_called()
+        identity.assert_not_called()
+
 print({"missingFileEmpty": True, "parsedOncePerVersion": True, "rewriteSeenImmediately": True,
        "callerEditsDoNotLeak": True, "corruptFileSafe": True})
