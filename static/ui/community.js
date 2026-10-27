@@ -4,7 +4,6 @@ import { api } from './api.js';
 import { bindDialog } from './dialog.js';
 import { showGallerySkeleton } from './feedback.js';
 import { createInfinitePager } from './pagination.js';
-import { showArtwork, showVideoPoster } from './artwork.js';
 
 const post = (artwork, idempotencyKey) => api('/api/community/recommend', {method:'POST', body:JSON.stringify({artwork, idempotencyKey})});
 const disabledNotice = 'Community is currently disabled or under maintenance. Your Daily Gallery still works.';
@@ -38,13 +37,13 @@ export function mountCommunity() {
     const blocked=busy || checkingRecommendation || verifyingRecommendation || !authorized || !submissions;
     el('communityLoad').disabled=blocked;
     el('communitySubmit').disabled=blocked || !previewReady || reviewedValue!==el('communityLink').value.trim();
+    el('communitySubmit').textContent=busy ? 'Submitting…' : previewReady ? 'Recommend this artwork' : 'Load artwork first';
   }
   function clearRecommendationPreview() {
     ++previewVersion;previewRequest?.abort();previewRequest=null;
     verifyingRecommendation=false;reviewedArtwork=null;reviewedValue='';previewReady=false;
-    el('communityPreview').querySelector('img')?.cancelArtwork?.();
-    const video=el('communityPreview').querySelector('video');
-    if(video){video.pause();video.removeAttribute('src');video.load();}
+    const card=el('communityPreview').querySelector('.creator-card');
+    if(card)window.DiscoveryGallery.releaseCard(card);
     el('communityPreview').replaceChildren();el('communityPreview').hidden=true;
     requestKey=null;requestValue=null;
   }
@@ -379,46 +378,53 @@ export function mountCommunity() {
   }
   function renderRecommendationPreview(art, version) {
     const host=el('communityPreview');host.hidden=false;
-    const card=document.createElement('article');card.className='creator-card';
-    card.innerHTML='<div class="image-stage"><img alt="Artwork to recommend"></div><div class="recommendation-details"><a class="recommendation-creator" target="_blank" rel="noopener noreferrer"></a><p class="recommendation-metadata"></p><p class="recommendation-tags"></p></div>';
-    host.append(card);
-    const creator=card.querySelector('a');creator.textContent='@'+art.username;creator.href=art.profileUrl;
-    const rating={1:'PG',2:'PG-13',4:'R',8:'X',16:'XXX'}[art.browsingLevel] || 'Unknown rating';
-    card.querySelector('.recommendation-metadata').textContent=[art.type==='video'?'Video':'Image',art.baseModel || 'Unknown model',rating].join(' · ');
-    card.querySelector('.recommendation-tags').textContent=(art.tagState?.tags || []).map(tag=>tag.name).join(', ');
-    const image=card.querySelector('img');
-    const video=art.type==='video' ? document.createElement('video') : null;
-    const current=()=>version===previewVersion && dialog.open && image.isConnected && reviewedValue===el('communityLink').value.trim();
+    art={...art,civitaiUrl:art.imageUrl};
+    const artist={username:art.username,userId:art.creatorId,profileUrl:art.profileUrl,
+      representative:art,imageCount:1};
+    const card=window.DiscoveryGallery.createCard(artist,{
+      images:[art],date:'',segment:'all',models:'',
+      cardImageObserver:{observe(){},unobserve(){}},seenObserver:{observe(){},unobserve(){}},
+      loadMore:async()=>{},canWrite:()=>false,
+      // The review is read-only; inspect the public artwork in its own tab.
+      showDetails:()=>window.open(art.imageUrl,'_blank','noopener,noreferrer'),
+    });
+    const image=card.querySelector('.image-button img');
+    const current=()=>version===previewVersion && dialog.open && card.isConnected && reviewedValue===el('communityLink').value.trim();
     const ready=()=>{
       if(!current())return;
       previewReady=true;el('communityDialogMessage').textContent='Review the artwork, then recommend it.';
       updateRecommendationButtons();
     };
+    const failed=()=>{
+      if(!current())return;
+      previewReady=false;updateRecommendationButtons();
+      el('communityDialogMessage').textContent='The preview could not load. Load the artwork again to retry.';
+    };
     image.addEventListener('load',async()=>{
       try {await image.decode();} catch (_) {return;}
-      if(!current() || !image.naturalWidth)return;
-      if(video){video.poster=image.currentSrc || image.src;video.hidden=false;image.hidden=true;}
-      ready();
+      if(current() && image.naturalWidth)ready();
     });
-    image.addEventListener('error',()=>{
-      if(!current() || (video?.readyState>=2 && video.videoWidth))return;
-      previewReady=false;updateRecommendationButtons();
-      el('communityDialogMessage').textContent='The preview could not load. Retry loading the artwork before recommending it.';
+    image.addEventListener('error',failed);
+    card.addEventListener('loadeddata',event=>{if(event.target.videoWidth)ready();},true);
+    card.onUnavailableCardRemoved=()=>{previewReady=false;updateRecommendationButtons();};
+    card.querySelector('.image-button').setAttribute('aria-label','Open artwork on Civitai');
+    card.querySelector('.more-menu').hidden=true;
+    card.querySelector('.image-overlay').hidden=true;
+    // Shared card buttons must never submit the surrounding load-artwork form.
+    card.addEventListener('click',event=>{if(event.target.closest('button'))event.preventDefault();});
+    const follow=card.querySelector('.follow-button');follow.textContent='Checking follow status…';
+    follow.title='Your current follow status';
+    let metadataKnown=false;
+    const applyMetadata=card.applyCreatorMetadata;
+    card.applyCreatorMetadata=metadata=>{
+      if(!current())return;
+      metadataKnown=true;applyMetadata(metadata);
+    };
+    host.append(card);card.scrollIntoView({block:'nearest'});
+    card.prepareArtwork().catch(failed);
+    window.DiscoveryGallery.enrichCards([artist],[card]).then(()=>{
+      if(current() && !metadataKnown)follow.textContent='Follow status unavailable';
     });
-    if(video){
-      video.controls=true;video.playsInline=true;video.preload='metadata';video.hidden=true;
-      video.addEventListener('loadeddata',()=>{
-        if(!current() || !video.videoWidth)return;
-        video.hidden=false;image.hidden=true;ready();
-      });
-      video.addEventListener('error',()=>{
-        if(!current() || image.naturalWidth)return;
-        previewReady=false;updateRecommendationButtons();
-        el('communityDialogMessage').textContent='The video preview could not load. Load the artwork again to retry.';
-      });
-      card.querySelector('.image-stage').append(video);video.src=art.videoUrl;
-      showVideoPoster(image,art);
-    } else showArtwork(image,art.thumbnailUrl,art.url,art);
   }
   async function loadRecommendationPreview() {
     if(busy || checkingRecommendation || !authorized || !submissions)return;

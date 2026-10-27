@@ -11,9 +11,9 @@
 .community-input { display:flex; gap:12px; margin-top:12px; flex-wrap:wrap; }
 .community-input input { flex:1; min-width:200px; padding:12px; }
 .community-input input { border:1px solid var(--line); border-radius:var(--radius-sm, 8px); background:var(--bg); color:var(--text); font:inherit; }
-#communityRefresh, .community-input button, .community-dialog button { padding:10px 14px; border:1px solid var(--line); border-radius:var(--radius-sm, 8px); background:var(--surface-raised, #282b31); color:var(--text); cursor:pointer; }
+#communityRefresh, .community-input button, .community-dialog .loading-actions > button, #communityReportForm > button { padding:10px 14px; border:1px solid var(--line); border-radius:var(--radius-sm, 8px); background:var(--surface-raised, #282b31); color:var(--text); cursor:pointer; }
 .community-input button, #communityConfirm { border-color:var(--accent); }
-#community button:disabled, .community-dialog button:disabled { opacity:.55; cursor:wait; }
+#community button:disabled, .community-dialog .loading-actions > button:disabled, .community-input button:disabled, #communityReportForm > button:disabled { opacity:.55; cursor:wait; }
 .community-credit { padding:0 14px 12px; margin:0; color:var(--muted, #a7b1c3); font-size:.85rem; }
 .community-dialog { max-width:580px; width:calc(100% - 40px); border:1px solid #48505c; border-radius:16px; padding:24px; background:var(--panel, #171c25); color:inherit; }
 .community-dialog::backdrop { background:#000b; }
@@ -47,12 +47,6 @@
   .community-updates { grid-row:3; }
 }
 
-.recommendation-preview { margin:16px 0; }
-.recommendation-preview .creator-card { width:100%; }
-.recommendation-preview .image-stage { height:auto; min-height:160px; max-height:360px; background:var(--bg); overflow:hidden; }
-.recommendation-preview .image-stage img, .recommendation-preview .image-stage video { display:block; width:100%; max-height:360px; object-fit:contain; }
-.recommendation-preview .image-stage [hidden] { display:none; }
-.recommendation-details { padding:12px; }
-.recommendation-creator { color:var(--accent); font-weight:600; }
-.recommendation-metadata, .recommendation-tags { color:var(--muted); margin:6px 0 0; }
-.recommendation-tags { font-size:.85rem; max-height:4em; overflow:auto; }
+.recommendation-preview { margin:16px auto; width:min(100%, 360px); }
+.recommendation-preview .image-stage { height:auto; min-height:0; aspect-ratio:3/4; }
+.recommendation-preview .image-overlay, .recommendation-preview .more-menu { display:none; }

@@ -37,6 +37,7 @@ try:
    page.locator('#communityDialogTitle').wait_for(state='visible')
    assert page.locator('#communityLink').input_value()=='1'
    assert page.locator('#communitySubmit').is_disabled()
+   assert page.locator('#communitySubmit').inner_text()=='Load artwork first'
    page.locator('#communityLink').fill('1002')
    hold[0]=False
    reply(held.pop(),{'quota':{'used':0,'remaining':3,'limit':3},'beta':{'available':True,'submissions':True}})
@@ -44,16 +45,25 @@ try:
    assert page.locator('#communityLink').input_value()=='1002'
    media=[]
    page.route('**/recommend-preview.svg',lambda route:media.append(route))
+   page.route('**/recommend-preview.mp4',lambda route:route.fulfill(content_type='video/mp4',body=(ROOT/'tests/fixtures/recovery.mp4').read_bytes()))
+   page.route('**/api/creator-metadata?*',lambda route:reply(route,{'creators':{'previewartist':{'userId':55,'following':True,'followers':20}}}))
    page.route('**/api/community/verify',lambda route:reply(route,{'artwork':{
     'id':1002,'username':'PreviewArtist','profileUrl':'https://civitai.red/user/PreviewArtist',
-    'type':'image','browsingLevel':1,'baseModel':'SDXL','url':base+'/recommend-preview.svg',
+    'type':'video' if width==1440 else 'image','videoUrl':base+'/recommend-preview.mp4','browsingLevel':1,'baseModel':'SDXL','url':base+'/recommend-preview.svg',
     'thumbnailUrl':base+'/recommend-preview.svg'}}))
    page.locator('#communityLoad').click()
-   page.locator('#communityPreview img').wait_for(state='attached')
+   page.locator('#communityPreview .image-button img').wait_for(state='attached')
    assert page.locator('#communitySubmit').is_disabled() and not writes
+   for _ in range(100):
+    if media:break
+    page.wait_for_timeout(10)
    reply_route=media.pop()
    reply_route.fulfill(content_type='image/svg+xml',body='<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="blue"/></svg>')
    page.wait_for_function("()=>!document.querySelector('#communitySubmit').disabled")
+   page.locator('#communityPreview .follow-button').filter(has_text='Following').wait_for()
+   assert page.locator('#communityPreview .image-stage').evaluate('(e)=>e.clientHeight>e.clientWidth')
+   if width==1440:
+    page.wait_for_function("()=>{const v=document.querySelector('#communityPreview video');return v && v.loop && !v.paused;}")
    page.screenshot(path=str(test_safety.REPORTS/f'recommend-preview-{width}.png'))
    page.locator('#communityLink').fill('1003')
    assert page.locator('#communitySubmit').is_disabled() and page.locator('#communityPreview').is_hidden()
