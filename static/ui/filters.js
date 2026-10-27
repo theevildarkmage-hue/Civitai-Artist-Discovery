@@ -22,6 +22,7 @@ export function mountFilters(actions) {
   const paintRestrictions = () => {
     const detail = {...sharedControls, hiddenTags: actions.state().applyTagFilters === false ? 0 : sharedControls.hiddenTags};
     if (actions.state().applyAccountFilters === false) { detail.hiddenCreators = 0; detail.blockedUsers = 0; }
+    if (actions.state().applyImageFilters === false) detail.hiddenArtworks = 0;
     const parts = [[detail.hiddenCreators,'hidden creators'],[detail.blockedUsers,'blocked users'],
       [detail.hiddenTags,'hidden tags'],[detail.hiddenArtworks,'hidden artworks']].filter(([n]) => n > 0);
     restrictions.textContent = parts.map(([n,label]) => `${n} ${label}`).join(' · ');
@@ -53,6 +54,12 @@ export function mountFilters(actions) {
   content.append(accountFilter);
   const accountCheckbox = accountFilter.querySelector('input');
   accountCheckbox.onchange = () => actions.setAccountFilters(accountCheckbox.checked);
+  const imageFilter = document.createElement('label');
+  imageFilter.className = 'filter-row image-filter-toggle';
+  imageFilter.innerHTML = '<input id="applyImageFilters" type="checkbox" checked><span>Apply hidden artworks<small>Includes images hidden after reporting them.</small></span>';
+  content.append(imageFilter);
+  const imageCheckbox = imageFilter.querySelector('input');
+  imageCheckbox.onchange = () => actions.setImageFilters(imageCheckbox.checked);
   const media = document.createElement('label');
   media.className = 'preference-field media-filter';
   media.innerHTML = '<span>Media type</span><select id="mediaType" aria-label="Media type"><option value="all">All</option><option value="image">Images only</option><option value="video">Videos only</option></select>';
@@ -125,15 +132,17 @@ export function mountFilters(actions) {
 
   const paint = () => {
     applyModelSearch();
-    const { models, levels, media = 'all', applyTagFilters = true, applyAccountFilters = true, controlFiltersSaving = false } = actions.state();
+    const { models, levels, media = 'all', applyTagFilters = true, applyAccountFilters = true, applyImageFilters = true, controlFiltersSaving = false } = actions.state();
     tagCheckbox.checked = applyTagFilters;
     if (tagCheckbox.disabled !== controlFiltersSaving) tagCheckbox.disabled = controlFiltersSaving;
     accountCheckbox.checked = applyAccountFilters;
     if (accountCheckbox.disabled !== controlFiltersSaving) accountCheckbox.disabled = controlFiltersSaving;
+    imageCheckbox.checked = applyImageFilters;
+    if (imageCheckbox.disabled !== controlFiltersSaving) imageCheckbox.disabled = controlFiltersSaving;
     paintRestrictions();
     mediaSelect.value = media;
     const ratingChanged = levels.length !== 2 || !levels.includes(1) || !levels.includes(2);
-    const count = models.length + Number(ratingChanged) + Number(media !== 'all') + Number(!applyTagFilters) + Number(!applyAccountFilters);
+    const count = models.length + Number(ratingChanged) + Number(media !== 'all') + Number(!applyTagFilters) + Number(!applyAccountFilters) + Number(!applyImageFilters);
     button.textContent = count ? `Filters · ${count}` : 'Filters';
     button.dataset.activeCount = String(count);
     panel.querySelector('.filter-reset').disabled = !count;

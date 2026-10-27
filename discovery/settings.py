@@ -50,6 +50,9 @@ class AppSettings:
                 levels = browsing_levels(raw.get("browsingLevels"))
             except ValueError:
                 levels = levels_for_rating(rating)
+            apply_image_filters = raw.get("applyImageFilters", True)
+            if not isinstance(apply_image_filters, bool):
+                apply_image_filters = True
             apply_account_filters = raw.get("applyAccountFilters", True)
             if not isinstance(apply_account_filters, bool):
                 apply_account_filters = True
@@ -120,6 +123,7 @@ class AppSettings:
                     "browsingLevels": list(levels),
                     "applyTagFilters": apply_tag_filters,
                     "applyAccountFilters": apply_account_filters,
+                    "applyImageFilters": apply_image_filters,
                     "dimSeenCards": dim_seen_cards,
                     "detailVideoSound": detail_video_sound,
                     "checkForUpdates": check_for_updates,
@@ -162,6 +166,7 @@ class AppSettings:
                content_rating_value: object = None,
                apply_tag_filters_value: object = None,
                apply_account_filters_value: object = None,
+               apply_image_filters_value: object = None,
                dim_seen_cards_value: object = None,
                detail_video_sound_value: object = None,
                check_for_updates_value: object = None,
@@ -181,6 +186,9 @@ class AppSettings:
             levels = levels_for_rating(content_rating_value)
         else:
             levels = tuple(current["browsingLevels"])
+        apply_image_filters = current["applyImageFilters"] if apply_image_filters_value is None else apply_image_filters_value
+        if not isinstance(apply_image_filters, bool):
+            raise ValueError("applyImageFilters must be true or false")
         apply_account_filters = (current["applyAccountFilters"] if apply_account_filters_value is None
                                  else apply_account_filters_value)
         if not isinstance(apply_account_filters, bool):
@@ -248,6 +256,7 @@ class AppSettings:
                  "browsingLevels": list(levels),
                  "applyTagFilters": apply_tag_filters,
                  "applyAccountFilters": apply_account_filters,
+                 "applyImageFilters": apply_image_filters,
                  "dimSeenCards": dim_seen_cards,
                  "detailVideoSound": detail_video_sound,
                  "checkForUpdates": check_for_updates,

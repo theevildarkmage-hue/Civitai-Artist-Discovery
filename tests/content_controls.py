@@ -90,6 +90,19 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
         HIDDEN if procedure == "hiddenPreferences.getHidden" else {})
     store.import_hidden_preferences()
 
+    # Rating votes are not personal hidden tags or direct image hides.
+    rating_controls = {**HIDDEN, 'hiddenTags': HIDDEN['hiddenTags'] + [
+        {'id': 99, 'name': 'rating-topic', 'nsfwLevel': 16}],
+        'hiddenImagesImplicit': [{'id': 9303, 'tagId': 99}]}
+    taste.SocialClient.query = lambda *args: rating_controls
+    store.import_hidden_preferences()
+    assert 'rating-topic' not in store.hidden_tag_names()
+    assert 9303 in store.hidden_image_ids(levels=(1, 2), include_tags=False)
+    assert 9303 not in store.hidden_image_ids(levels=(1, 2, 4, 8, 16))
+    assert 9302 not in store.hidden_image_ids(include_images=False)
+    taste.SocialClient.query = lambda *args: HIDDEN
+    store.import_hidden_preferences()
+
     env = {**os.environ, "CIVITAI_HISTORY_DATA_DIR": temporary}
     process = subprocess.Popen([sys.executable, str(ROOT / "server.py"), "--port", str(PORT),
                                 "--no-browser"], cwd=ROOT, env=env)

@@ -33,10 +33,12 @@ try:
     # Explicit artwork hides and rating selection still apply with both switches off.
     h.control('hidden', member=1, controls={**controls, 'hiddenImages': [1002]})
     assert images() == {1007, 1012}
+    h.endpoint.request('/api/settings', {'applyImageFilters': False})
+    assert images() == {1002, 1007, 1012}
     h.endpoint.request('/api/settings', {'browsingLevels': [1]})
     assert images() == set()
     h.endpoint.request('/api/settings', {'browsingLevels': [1, 2, 4, 8, 16],
-                                         'applyTagFilters': True, 'applyAccountFilters': True})
+                                         'applyTagFilters': True, 'applyAccountFilters': True, 'applyImageFilters': True})
     assert images() == set()
     assert len(h.snapshot()['recommendations']) == 3
     print('PASS: independent Community tag/account switches, direct hides and ratings preserved, ledger unchanged; synthetic transport only')

@@ -142,7 +142,7 @@ class CommunityTests(unittest.TestCase):
             self.assertTrue(ContentProfile(levels=frozenset((level,))).allows(art))
 
     def test_upstream_compact_implicit_and_bidirectional_blocks(self):
-        hidden={'__v':2,'hiddenUsers':[], 'hiddenTags':[], 'hiddenImages':[],
+        hidden={'__v':2,'hiddenUsers':[], 'hiddenTags':[{'id':11,'name':'landscape','hidden':True}], 'hiddenImages':[],
                 'hiddenImagesImplicit':[{'id':1001,'tagId':11,'hidden':True}],
                 'blockedUsers':[{'id':102,'username':'DemoArtist2','hidden':True}],
                 'blockedByUsers':[{'id':103,'username':'DemoArtist3','hidden':True}]}

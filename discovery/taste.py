@@ -713,9 +713,10 @@ class TasteStore:
                                          ("blocked", payload.get("blockedUsers")))
                     for row in named(rows) if row.get("id")]
         tags = [(int(row["id"]), str(row.get("name") or "").casefold())
-                for row in named(payload.get("hiddenTags")) if row.get("id") and row.get("name")]
+                for row in named(payload.get("hiddenTags")) if row.get("id") and row.get("name") and not row.get("nsfwLevel")]
         images = []
-        for row in (payload.get("hiddenImages") or []) + (payload.get("hiddenImagesImplicit") or []):
+        for row in payload.get("hiddenImages") or []:
+            if isinstance(row,dict) and row.get("tagId") is not None:continue
             if isinstance(row,dict) and row.get('hidden') is False:continue
             value = row.get("id") if isinstance(row, dict) else row
             try:
@@ -733,6 +734,8 @@ class TasteStore:
                            "VALUES(?,?,?)", creators)
             db.executemany("INSERT OR REPLACE INTO hidden_tags(tag_id, tag_name) VALUES(?,?)", tags)
             db.executemany("INSERT OR REPLACE INTO hidden_images(image_id) VALUES(?)", images)
+            self._set_state(db, "hidden_image_preferences", json.dumps({
+                key: payload.get(key, []) for key in ('hiddenTags', 'hiddenImages', 'hiddenImagesImplicit')}))
             self._set_state(db, "hidden_imported_at", _now())
         return {"creators": len(creators), "tags": len(tags), "images": len(images)}
 
@@ -745,23 +748,35 @@ class TasteStore:
         with self.connect() as db:
             return {row["tag_name"] for row in db.execute("SELECT tag_name FROM hidden_tags")}
 
-    def hidden_image_ids(self, *, include_tags: bool = True) -> set[int]:
-        """Images hidden outright, plus any whose known tags the account hides.
+    def ensure_hidden_preferences_current(self):
+        # Older imports discarded provenance. Re-read once; never guess its source.
+        with self.lock:
+            with self.connect() as db:
+                refresh = self._state(db, 'hidden_imported_at') and not self._state(db, 'hidden_image_preferences')
+            if refresh: self.import_hidden_preferences()
 
-        Tags are only known for images the app has already read them for, so this is a
-        floor rather than a guarantee — which is why creators, where the match is exact,
-        do the heavy lifting.
-        """
+    def hidden_image_ids(self, *, include_tags: bool = True, include_images: bool = True,
+                         levels=(1, 2)) -> set[int]:
+        """Resolve saved exclusions using their source and the active viewing filters."""
+        from dataclasses import replace
+        from .community import content_profile
+        self.ensure_hidden_preferences_current()
         with self.connect() as db:
-            direct = {row["image_id"] for row in db.execute("SELECT image_id FROM hidden_images")}
-            if not include_tags:
-                return direct
-            tagged = {row["image_id"] for row in db.execute(
-                "SELECT DISTINCT image_id FROM archive_image_tags "
-                "WHERE tag_name IN (SELECT tag_name FROM hidden_tags)")}
+            raw = self._state(db, 'hidden_image_preferences')
+            if raw:
+                profile = content_profile({**json.loads(raw), 'hiddenUsers': [],
+                    'blockedUsers': [], 'blockedByUsers': []}, levels)
+                direct = replace(profile, apply_tag_filters=include_tags,
+                                 apply_image_filters=include_images).excluded_image_ids()
+            else:
+                direct = {row[0] for row in db.execute('SELECT image_id FROM hidden_images')} if include_images else set()
+            tagged = {row[0] for row in db.execute(
+                'SELECT DISTINCT image_id FROM archive_image_tags '
+                'WHERE tag_name IN (SELECT tag_name FROM hidden_tags)')} if include_tags else set()
         return direct | tagged
 
     def hidden_summary(self) -> dict:
+        self.ensure_hidden_preferences_current()
         with self.connect() as db:
             counts = {name: db.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
                       for name, table in (("creators", "hidden_creators"),

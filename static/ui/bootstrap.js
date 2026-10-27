@@ -54,6 +54,7 @@ controller.onload = () => {
     setMedia: value => window.setGalleryMedia(value),
     setTagFilters: value => window.setGalleryTagFilters(value),
     setAccountFilters: value => window.setGalleryAccountFilters(value),
+    setImageFilters: value => window.setGalleryImageFilters(value),
     toggleLevel: level => window.toggleBrowsingLevel(level),
   });
   window.updateGalleryFilters = filters.update;
