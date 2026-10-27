@@ -31,10 +31,10 @@ class Video extends EventTarget {
   load(){}
   remove(){this.removed=true}
 }
-function fixture({card=true,budget=new Map(),make=()=>new Video(),clock=new Clock(),reserve=at=>at}={}){
+function fixture({card=true,muted,budget=new Map(),make=()=>new Video(),clock=new Clock(),reserve=at=>at}={}){
   const videos=[],renders=[],events=[];
   let eligible=true,online=true;
-  const controller=createMediaLifecycle({card,clock,budget,policy:VIDEO_POLICY,...(reserve ? {reserve} : {}),
+  const controller=createMediaLifecycle({card,...(muted===undefined ? {} : {muted}),clock,budget,policy:VIDEO_POLICY,...(reserve ? {reserve} : {}),
     createVideo:()=>{const v=make();videos.push(v);return v},mount(){},
     eligible:()=>eligible,online:()=>online,render:v=>renders.push(v),diagnose:(...args)=>events.push(args)});
   controller.setItem({id:'1',source:'https://image.civitai.com/fixture.mp4'});
@@ -105,6 +105,23 @@ for(const action of ['pause','offscreen','carousel','close','hidden','replace'])
  let resolve;const f=fixture({make:()=>{const v=new Video();v.pending=new Promise(r=>resolve=r);return v}});
  f.controller.start();f.controller.pause();resolve();await Promise.resolve();await Promise.resolve();
  assert.equal(f.controller.state,'user-paused');assert.equal(f.videos[0].src,'');
+}
+// Details honor the sound preference; cards always start muted.
+{
+ const detail=fixture({card:false,muted:false});detail.controller.start();
+ assert.equal(detail.videos[0].muted,false);detail.controller.release();
+ const card=fixture({card:true,muted:false});card.controller.start();
+ assert.equal(card.videos[0].muted,true);card.controller.release();
+ const quiet=fixture({card:false,muted:true});quiet.controller.start();
+ assert.equal(quiet.videos[0].muted,true);quiet.controller.release();
+}
+// A browser that refuses audible playback gets muted playback, not a stop.
+{
+ const f=fixture({card:false,muted:false,make:()=>{const v=new Video();v.play=function(){this.plays=(this.plays||0)+1;
+  if(!this.muted)return Promise.reject({name:'NotAllowedError'});this.paused=false;return Promise.resolve()};return v}});
+ f.controller.start();f.videos[0].dispatchEvent(new Event('loadedmetadata'));await f.clock.advance(1000);
+ assert.equal(f.videos.length,1);assert.equal(f.videos[0].muted,true);assert.equal(f.videos[0].plays,2);
+ assert.notEqual(f.controller.state,'awaiting-gesture');f.controller.release();
 }
 // Browser policy denial isn't a network retry; unsupported media isn't blindly reloaded.
 for(const name of ['NotAllowedError','NotSupportedError']){

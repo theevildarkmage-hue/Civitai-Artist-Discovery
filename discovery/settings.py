@@ -40,6 +40,10 @@ class AppSettings:
             dim_seen_cards = raw.get("dimSeenCards", True)
             if not isinstance(dim_seen_cards, bool):
                 dim_seen_cards = True
+            # Video details open with sound unless the user chose otherwise.
+            mute_detail_videos = raw.get("muteDetailVideos", False)
+            if not isinstance(mute_detail_videos, bool):
+                mute_detail_videos = False
             check_for_updates = raw.get("checkForUpdates", True)
             if not isinstance(check_for_updates, bool):
                 check_for_updates = True
@@ -91,6 +95,7 @@ class AppSettings:
                     "contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),
                     "dimSeenCards": dim_seen_cards,
+                    "muteDetailVideos": mute_detail_videos,
                     "checkForUpdates": check_for_updates,
                     "hideHighVolumeCreators": hide_high_volume,
                     "highVolumeThreshold": high_volume_threshold,
@@ -130,6 +135,7 @@ class AppSettings:
     def _update(self, *, media_type_value: object = None, browsing_levels_value: object = None,
                content_rating_value: object = None,
                dim_seen_cards_value: object = None,
+               mute_detail_videos_value: object = None,
                check_for_updates_value: object = None,
                hide_high_volume_creators_value: object = None,
                high_volume_threshold_value: object = None,
@@ -151,6 +157,10 @@ class AppSettings:
                           else dim_seen_cards_value)
         if not isinstance(dim_seen_cards, bool):
             raise ValueError("dimSeenCards must be true or false")
+        mute_detail_videos = (current["muteDetailVideos"] if mute_detail_videos_value is None
+                              else mute_detail_videos_value)
+        if not isinstance(mute_detail_videos, bool):
+            raise ValueError("muteDetailVideos must be true or false")
         check_for_updates = (current["checkForUpdates"] if check_for_updates_value is None
                              else check_for_updates_value)
         if not isinstance(check_for_updates, bool):
@@ -201,6 +211,7 @@ class AppSettings:
                  "contentRating": rating_for_levels(levels),
                  "browsingLevels": list(levels),
                  "dimSeenCards": dim_seen_cards,
+                 "muteDetailVideos": mute_detail_videos,
                  "checkForUpdates": check_for_updates,
                  "hideHighVolumeCreators": hide_high_volume,
                  "highVolumeThreshold": high_volume_threshold,

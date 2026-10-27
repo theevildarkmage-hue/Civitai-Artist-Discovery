@@ -14,7 +14,7 @@ export function resetVideoRecoveryBudget() { sharedBudget.clear(); nextRecoveryA
 // One small lifecycle shared by the existing card and native detail adapters. Each
 // attempt owns its element/listeners; replacing it cannot deliver old events to a new player.
 export function createMediaLifecycle({ createVideo, mount, eligible, render, diagnose = () => {},
-  card = false, policy = VIDEO_POLICY, clock = realClock, budget = sharedBudget,
+  card = false, muted = true, policy = VIDEO_POLICY, clock = realClock, budget = sharedBudget,
   reserve = reserveRecovery, online = () => navigator.onLine !== false }) {
   let item = null, scope = null, generation = 0, revision = 0, wanted = false;
   let state = 'idle', message = '', retryable = false, disposed = false, snapshot = null;
@@ -131,6 +131,8 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
     }).catch(error => {
       if (!valid(s) || r !== revision || !wanted || error?.name === 'AbortError') return;
       if (!eligible()) { cancel('ineligible'); return; }
+      // A browser may refuse audible playback; fall back to muted instead of stopping.
+      if (error?.name === 'NotAllowedError' && !v.muted) { v.muted = true; s.playRequested = false; requestPlay(s); return; }
       if (error?.name === 'NotAllowedError') { retire(); emit('awaiting-gesture', 'Press Play to start the video.'); }
       else if (error?.name === 'NotSupportedError') fail('Video unavailable or unsupported. Try opening it on Civitai.');
       else recover('play-request-failed');
@@ -145,7 +147,7 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
       restoring: !!snapshot?.time, seekRequested: false, playRequested: false };
     scope = s;
     v.loop = true; v.playsInline = true; v.preload = 'auto';
-    v.muted = card ? true : (snapshot?.muted ?? true);
+    v.muted = card ? true : (snapshot?.muted ?? muted);
     v.volume = snapshot?.volume ?? 1; v.playbackRate = snapshot?.rate ?? 1;
     if (item.poster) v.poster = item.poster;
     const listen = (name, fn) => v.addEventListener(name, () => {
@@ -305,12 +307,12 @@ export function attachCardVideo(el, main) {
   };
 }
 
-export function showDetailVideo(artwork, url, imageId = '') {
+export function showDetailVideo(artwork, url, imageId = '', { muted = true } = {}) {
   clearDetailVideo();
   if (!url) return;
   const owner = artwork.closest('dialog');
   const status = feedback(owner, 'detail-video-status');
-  const controller = createMediaLifecycle({
+  const controller = createMediaLifecycle({ muted,
     createVideo: () => { const v = document.createElement('video'); v.id = 'detailVideo'; v.controls = true; return v; },
     mount: v => artwork.after(v),
     eligible: () => !!owner?.open && visibleElement(owner),

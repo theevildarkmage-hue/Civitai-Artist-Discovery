@@ -69,9 +69,11 @@ export function mountPreferences() {
     detail: values[Number(slider.value)],
   }));
 
+  const muteRow = document.getElementById('prefMuteDetailVideos').closest('label');
+  frequent.after(muteRow);
   const application = document.createElement('h3');
   application.textContent = 'Application';
-  frequent.after(application);
+  muteRow.after(application);
   const profileSettings = document.getElementById('profileSettings');
   for (const preference of profileSettings.querySelectorAll('.update-preference')) {
     panel.append(preference);

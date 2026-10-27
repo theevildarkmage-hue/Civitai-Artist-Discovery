@@ -24,11 +24,20 @@ try:
    page.route('**/api/community/status*',lambda r:reply(r,{'member':{'id':7},'quota':{'remaining':3},'beta':{'available':True,'submissions':True}}))
    page.route('**/api/community/gallery*',lambda r:reply(r,{'items':[{'artwork':art,'recommender':'SyntheticMember','submittedAt':'2026-10-24T12:00:00Z'}],'nextCursor':None}))
    page.route('**/api/community/detail*',lambda r:reply(r,{**art,'detailImageUrl':art['thumbnailUrl'],'civitaiUrl':art['imageUrl'],'known':True,'tags':[],'prompt':''}))
-   page.goto(base,wait_until='domcontentloaded');page.locator('#tabCommunity').click()
+   page.goto(base,wait_until='domcontentloaded')
+   muted=width==1440
+   if muted:
+    # Opting into muted details is saved like the other gallery preferences.
+    page.locator('#galleryPreferences').click();page.locator('#prefMuteDetailVideos').check()
+    page.wait_for_function('()=>document.querySelector("#prefMuteDetailVideos").checked&&!document.querySelector("#prefMuteDetailVideos").disabled')
+    page.keyboard.press('Escape')
+   page.locator('#tabCommunity').click()
    card=page.locator('#communityGrid .creator-card');card.wait_for()
    page.wait_for_function('()=>[...document.querySelectorAll("#communityGrid video")].some(v=>v.readyState>=2&&v.currentTime>0)',timeout=30000)
    card.locator('.info-button').click()
-   page.wait_for_function('()=>document.querySelector("#detailVideo")?.readyState>=2',timeout=30000)
+   page.wait_for_function('()=>document.querySelector("#detailVideo")?.currentTime>0',timeout=30000)
+   # Details play with sound by default; the preference starts them muted.
+   assert page.evaluate('document.querySelector("#detailVideo").muted')==muted,width
    page.locator('#detailMeta dt').filter(has_text='Video').wait_for()
    page.locator('#close').click()
    page.wait_for_function('()=>!document.querySelector("#detailVideo")')
@@ -39,5 +48,5 @@ try:
    page.screenshot(path=str(test_safety.REPORTS/f'community-video-{width}.png'))
    page.close()
   browser.close()
- print('PASS: desktop/mobile Community video decoding, details, cleanup and media filtering; synthetic artwork, no hosted writes')
+ print('PASS: desktop/mobile Community video decoding, details with sound or muted by preference, cleanup and media filtering; synthetic artwork, no hosted writes')
 finally:server.shutdown();server.server_close()
