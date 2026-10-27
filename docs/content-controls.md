@@ -2,7 +2,27 @@
 
 Added 2026-08-05. The app builds its gallery from Civitai's own artwork, so ignoring the
 account's Content Controls would put back precisely what the user asked Civitai not to
-show them. These are imported and enforced rather than treated as advisory.
+show them. These are imported and applied by default. The Filters menu has independent local
+viewing switches for **Apply my tag filters** and **Apply hidden and blocked accounts**.
+
+## Local viewing switches
+
+Both switches are on by default, including when upgrading an existing settings file.
+Their values persist in `settings.json` as `applyTagFilters` and `applyAccountFilters`.
+Turning either off pauses that category locally in Daily and Community galleries;
+turning it back on uses the same imported rules. Reset filters turns both back on.
+These switches never edit Civitai preferences or erase imported rules or archives.
+
+Tag filtering can be paused without disabling account exclusions, and account exclusions
+can be paused without disabling hidden tags. The account switch covers hidden creators,
+blocked users, and accounts that blocked the viewer. It only affects local filtering of
+accessible artwork: it cannot bypass Civitai's access restrictions. Explicitly hidden
+artwork, selected browsing levels, and the hosted Community access policy still apply.
+
+When tag filtering is off, preview-time tag verification is skipped. Details may still
+show imported hidden-tag annotations, but those annotations do not remove the image.
+When on, unknown tags continue to block previews until verified. Filter changes invalidate
+the current gallery and notify other open tabs so they use the saved switches too.
 
 ## Where the data comes from
 

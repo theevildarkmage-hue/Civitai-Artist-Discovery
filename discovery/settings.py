@@ -50,6 +50,12 @@ class AppSettings:
                 levels = browsing_levels(raw.get("browsingLevels"))
             except ValueError:
                 levels = levels_for_rating(rating)
+            apply_account_filters = raw.get("applyAccountFilters", True)
+            if not isinstance(apply_account_filters, bool):
+                apply_account_filters = True
+            apply_tag_filters = raw.get("applyTagFilters", True)
+            if not isinstance(apply_tag_filters, bool):
+                apply_tag_filters = True
             dim_seen_cards = raw.get("dimSeenCards", True)
             if not isinstance(dim_seen_cards, bool):
                 dim_seen_cards = True
@@ -112,6 +118,8 @@ class AppSettings:
             return {"mediaType": raw.get("mediaType") if raw.get("mediaType") in ("all", "image", "video") else "all",
                     "contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),
+                    "applyTagFilters": apply_tag_filters,
+                    "applyAccountFilters": apply_account_filters,
                     "dimSeenCards": dim_seen_cards,
                     "detailVideoSound": detail_video_sound,
                     "checkForUpdates": check_for_updates,
@@ -152,6 +160,8 @@ class AppSettings:
 
     def _update(self, *, media_type_value: object = None, browsing_levels_value: object = None,
                content_rating_value: object = None,
+               apply_tag_filters_value: object = None,
+               apply_account_filters_value: object = None,
                dim_seen_cards_value: object = None,
                detail_video_sound_value: object = None,
                check_for_updates_value: object = None,
@@ -171,6 +181,14 @@ class AppSettings:
             levels = levels_for_rating(content_rating_value)
         else:
             levels = tuple(current["browsingLevels"])
+        apply_account_filters = (current["applyAccountFilters"] if apply_account_filters_value is None
+                                 else apply_account_filters_value)
+        if not isinstance(apply_account_filters, bool):
+            raise ValueError("applyAccountFilters must be true or false")
+        apply_tag_filters = (current["applyTagFilters"] if apply_tag_filters_value is None
+                             else apply_tag_filters_value)
+        if not isinstance(apply_tag_filters, bool):
+            raise ValueError("applyTagFilters must be true or false")
         dim_seen_cards = (current["dimSeenCards"] if dim_seen_cards_value is None
                           else dim_seen_cards_value)
         if not isinstance(dim_seen_cards, bool):
@@ -228,6 +246,8 @@ class AppSettings:
         value = {"mediaType": media_type(current["mediaType"] if media_type_value is None else media_type_value),
                  "contentRating": rating_for_levels(levels),
                  "browsingLevels": list(levels),
+                 "applyTagFilters": apply_tag_filters,
+                 "applyAccountFilters": apply_account_filters,
                  "dimSeenCards": dim_seen_cards,
                  "detailVideoSound": detail_video_sound,
                  "checkForUpdates": check_for_updates,
