@@ -41,7 +41,7 @@ try:
                 page.locator('#communityRecommend').click()
                 page.locator('#communityLink').fill(f'https://civitai.com/images/{image}')
                 assert len(h.snapshot()['recommendations'])==(member-1)*3+index
-                page.locator('#communitySubmit').click();page.locator('#communityDialogTitle').wait_for(state='hidden')
+                page.locator('#communityLoad').click();page.locator('#communitySubmit').click();page.locator('#communityDialogTitle').wait_for(state='hidden')
                 assert len(h.snapshot()['recommendations'])==(member-1)*3+index+1
             page.locator('#communityQuota').filter(has_text='0 left').wait_for()
         page.locator('#communityRefresh').click();page.wait_for_function("()=>document.querySelectorAll('#communityGrid .image-progress button').length>=24")

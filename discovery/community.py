@@ -613,10 +613,10 @@ class CommunityClient:
         return art,info
 
     @staticmethod
-    def browser_artwork(art):
+    def browser_artwork(art, *, thumbnail_proxy=True):
         value=art.browser()
         value['tagState']={'known':art.tags_known,'tags':[{'name':name,'hidden':False} for name in art.tags]}
-        if urllib.parse.urlsplit(art.preview).hostname == 'image.civitai.com':
+        if thumbnail_proxy and urllib.parse.urlsplit(art.preview).hostname == 'image.civitai.com':
             value['thumbnailUrl']=value['url']=f'/api/community/thumbnail/{art.id}'
         return value
 
@@ -678,7 +678,7 @@ class CommunityClient:
                 **({'idempotencyKey':payload['idempotencyKey']} if 'idempotencyKey' in payload else {})})
             if hasattr(self,'artwork_cache'):self.artwork_cache.remember(art)
             if operation == "verify":
-                result["artwork"] = self.browser_artwork(art)
+                result["artwork"] = self.browser_artwork(art, thumbnail_proxy=False)
             if operation=='recommend' and hasattr(self,'store'):
                 identity=self._identity(token)
                 key=f'{self.mode}:member:{identity}:status:first:24'

@@ -40,8 +40,23 @@ try:
    page.locator('#communityLink').fill('1002')
    hold[0]=False
    reply(held.pop(),{'quota':{'used':0,'remaining':3,'limit':3},'beta':{'available':True,'submissions':True}})
-   page.wait_for_function("()=>!document.querySelector('#communitySubmit').disabled")
+   page.wait_for_function("()=>!document.querySelector('#communityLoad').disabled")
    assert page.locator('#communityLink').input_value()=='1002'
+   media=[]
+   page.route('**/recommend-preview.svg',lambda route:media.append(route))
+   page.route('**/api/community/verify',lambda route:reply(route,{'artwork':{
+    'id':1002,'username':'PreviewArtist','profileUrl':'https://civitai.red/user/PreviewArtist',
+    'type':'image','browsingLevel':1,'baseModel':'SDXL','url':base+'/recommend-preview.svg',
+    'thumbnailUrl':base+'/recommend-preview.svg'}}))
+   page.locator('#communityLoad').click()
+   page.locator('#communityPreview img').wait_for(state='attached')
+   assert page.locator('#communitySubmit').is_disabled() and not writes
+   reply_route=media.pop()
+   reply_route.fulfill(content_type='image/svg+xml',body='<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="blue"/></svg>')
+   page.wait_for_function("()=>!document.querySelector('#communitySubmit').disabled")
+   page.screenshot(path=str(test_safety.REPORTS/f'recommend-preview-{width}.png'))
+   page.locator('#communityLink').fill('1003')
+   assert page.locator('#communitySubmit').is_disabled() and page.locator('#communityPreview').is_hidden()
    assert len(status_calls)==1 and not writes
    page.locator('#communityCancel').click()
    # A denial is visible from Daily, rather than a dead card action.

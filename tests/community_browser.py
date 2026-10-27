@@ -66,8 +66,10 @@ def run(mode):
                     page.locator('#communityRecommend').click()
                     page.locator('#communityLink').fill(value)
                     assert page.locator('dialog[open]').count()==1
+                def preview(value):
+                    open_modal(value);page.locator('#communityLoad').click()
                 def submit(value):
-                    open_modal(value);page.locator('#communitySubmit').click()
+                    preview(value);page.locator('#communitySubmit').click()
                 # Keyboard opening, native focus and Escape restoration.
                 page.locator('#communityRecommend').focus();page.keyboard.press('Enter')
                 page.wait_for_function("()=>document.querySelector('#communityLink')===document.activeElement")
@@ -91,17 +93,17 @@ def run(mode):
                 page.get_by_role('menuitem',name='Recommend to Community').click()
                 page.locator('#communityDialogTitle').wait_for(state='visible')
                 assert page.locator('#communityLink').input_value()=='1001' and len(requests)==1
-                page.locator('#communitySubmit').click()
+                page.locator('#communityLoad').click()
                 page.locator('#communityDialogMessage').filter(has_text='already been recommended').wait_for()
                 assert page.locator('#communityLink').input_value()=='1001'
                 page.locator('#communityCancel').click()
                 for value,expected in [('1099',"can't recommend your own"),('999999','Artwork unavailable'),
                                        ('https://evil.test/images/1001','Artwork unavailable')]:
-                    submit(value);page.locator('#communityDialogMessage').filter(has_text=expected).wait_for()
+                    preview(value);page.locator('#communityDialogMessage').filter(has_text=expected).wait_for()
                     assert page.locator('#communityLink').input_value()==value
                     assert request('/api/community/status')['quota']['used']==1
                     page.locator('#communityCancel').click()
-                submit('1003')
+                preview('1003')
                 page.locator('#communityDialogMessage').filter(has_text='outside your current content controls').wait_for()
                 page.locator('#communityCancel').click()
                 # Server commits but loses its reply: same key retries to success once.
@@ -119,7 +121,7 @@ def run(mode):
                 assert json.loads(requests[-1].post_data)['idempotencyKey']==first
                 assert request('/api/community/status')['quota']['used']==2
                 submit('1011');page.locator('#communityDialogTitle').wait_for(state='hidden')
-                submit('1016');page.locator('#communityDialogMessage').filter(has_text='all three recommendations').wait_for()
+                preview('1016');page.locator('#communityDialogMessage').filter(has_text='all three recommendations').wait_for()
                 assert request('/api/community/status')['quota']['used']==3
                 reports=test_safety.REPORTS;reports.mkdir(exist_ok=True)
                 page.screenshot(path=str(reports/'submission-synthetic-desktop.png'))
