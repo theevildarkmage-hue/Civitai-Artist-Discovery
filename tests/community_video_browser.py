@@ -27,16 +27,19 @@ try:
    page.goto(base,wait_until='domcontentloaded')
    muted=width==1440
    if muted:
-    # Opting into muted details is saved like the other gallery preferences.
-    page.locator('#galleryPreferences').click();page.locator('#prefMuteDetailVideos').check()
-    page.wait_for_function('()=>document.querySelector("#prefMuteDetailVideos").checked&&!document.querySelector("#prefMuteDetailVideos").disabled')
+    # Turning sound off is saved like the other gallery preferences.
+    page.locator('#galleryPreferences').click()
+    sound=page.locator('#prefDetailVideoSound');assert sound.is_checked();sound.uncheck()
+    page.wait_for_function('()=>!document.querySelector("#prefDetailVideoSound").checked&&!document.querySelector("#prefDetailVideoSound").disabled')
+    # It sits directly after the viewed-card dimming checkbox.
+    assert page.evaluate('document.querySelector("#prefDimSeen").closest("label").nextElementSibling.contains(document.querySelector("#prefDetailVideoSound"))')
     page.keyboard.press('Escape')
    page.locator('#tabCommunity').click()
    card=page.locator('#communityGrid .creator-card');card.wait_for()
    page.wait_for_function('()=>[...document.querySelectorAll("#communityGrid video")].some(v=>v.readyState>=2&&v.currentTime>0)',timeout=30000)
    card.locator('.info-button').click()
    page.wait_for_function('()=>document.querySelector("#detailVideo")?.currentTime>0',timeout=30000)
-   # Details play with sound by default; the preference starts them muted.
+   # Details play with sound by default; turning the preference off starts them muted.
    assert page.evaluate('document.querySelector("#detailVideo").muted')==muted,width
    page.locator('#detailMeta dt').filter(has_text='Video').wait_for()
    page.locator('#close').click()

@@ -53,7 +53,10 @@ export function mountPreferences() {
   const frequent = document.createElement('label');
   frequent.className = 'preference-field frequent-posters';
   frequent.innerHTML = '<span><b>Hide frequent posters</b><small>Hide creators who posted at least this many images that day.</small></span><div class="preference-slider"><input id="highVolumeSlider" type="range" min="0" max="4" step="1"><div class="slider-labels"><span>Off</span><span>50</span><span>100</span><span>150</span><span>200/day</span></div></div>';
-  dimRow.after(frequent);
+  // Sound sits beside the other card-viewing checkbox, ahead of the slider.
+  const soundRow = document.getElementById('prefDetailVideoSound').closest('label');
+  dimRow.after(soundRow);
+  soundRow.after(frequent);
   const slider = frequent.querySelector('input');
   const values = [0, 50, 100, 150, 200];
   const update = () => {
@@ -69,11 +72,9 @@ export function mountPreferences() {
     detail: values[Number(slider.value)],
   }));
 
-  const muteRow = document.getElementById('prefMuteDetailVideos').closest('label');
-  frequent.after(muteRow);
   const application = document.createElement('h3');
   application.textContent = 'Application';
-  muteRow.after(application);
+  frequent.after(application);
   const profileSettings = document.getElementById('profileSettings');
   for (const preference of profileSettings.querySelectorAll('.update-preference')) {
     panel.append(preference);

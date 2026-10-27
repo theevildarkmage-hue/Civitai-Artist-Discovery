@@ -79,7 +79,7 @@ with tempfile.TemporaryDirectory(prefix="gallery-preferences-", ignore_cleanup_e
 app = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
 assert 'id="galleryPreferences"' in app and 'id="preferencesMenu"' in app
 assert 'id="prefDimSeen"' in app and 'id="seenDimming"' not in app
-assert 'id="prefMuteDetailVideos"' in app and "muted: muteDetailVideos" in app
+assert 'id="prefDetailVideoSound"' in app and "muted: !detailVideoSound" in app
 preferences = (ROOT / "static" / "ui" / "preferences.js").read_text(encoding="utf-8")
 profile = (ROOT / "static" / "ui" / "profile.js").read_text(encoding="utf-8")
 assert "reset.classList.remove('hidden')" in preferences
