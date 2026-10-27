@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import sys
+import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -38,12 +39,25 @@ with tempfile.TemporaryDirectory(prefix="civitai-content-cache-") as temporary:
     archive.build_artist_index(DAY)
     assert archive.day_summary(DAY)["artistCount"] == 1
 
+    # An automatic capture of another block must not lock the current gallery's
+    # filters or change the coverage/cancellation state of that capture.
+    active = "2026-08-12#morning"
+    archive.jobs[active] = {"state": "loading", "contentRating": "X"}
+    archive.cancel_events[active] = threading.Event()
+    with archive.connect() as db:
+        db.execute("INSERT INTO days(day,complete,content_rating) VALUES(?,0,'X')", (active,))
+
     # Changing the preference itself must not eagerly rebuild every completed block.
     original_build = archive.build_artist_index
     archive.build_artist_index = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         AssertionError("content preference change rebuilt an index eagerly"))
     archive.set_content_filter([4])
     archive.build_artist_index = original_build
+    assert archive.visible_levels == (4,)
+    assert archive.jobs[active] == {"state": "loading", "contentRating": "X"}
+    assert not archive.cancel_events[active].is_set()
+    assert archive.status(active)["archiveContentRating"] == "X"
+    assert not archive.status(active)["needsUpgrade"]
 
     # The first use of a combination builds it once.
     assert archive.day_summary(DAY)["artistCount"] == 1
