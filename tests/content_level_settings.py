@@ -89,6 +89,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
     chosen.update(capture_coverage_value="X", content_rating_value="Soft")
     assert chosen.update(content_rating_value="Mature")["captureCoverage"] == "X"
 
+    # Each switch persists independently without altering the imported controls.
+    switches = AppSettings(path.with_name('switches.json'))
+    paused = switches.update(apply_tag_filters_value=False)
+    assert paused['applyTagFilters'] is False and paused['applyAccountFilters'] is True
+    assert AppSettings(switches.path).load() == paused
+    paused = switches.update(apply_tag_filters_value=True, apply_account_filters_value=False)
+    assert paused['applyTagFilters'] is True and paused['applyAccountFilters'] is False
+
     try:
         settings.update(browsing_levels_value=[])
         raise AssertionError("an empty browsing-level selection was saved")
