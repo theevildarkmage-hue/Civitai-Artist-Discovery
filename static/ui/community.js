@@ -173,6 +173,11 @@ export function mountCommunity() {
         },
       });
       card.classList.add('community-card');
+      const follow=card.querySelector('.follow-button'), permissionDisabled=follow.disabled;
+      follow.textContent=artist.userId ? 'Checking…' : 'Status unavailable';follow.disabled=true;
+      card.addEventListener('creatorfollow',()=>{
+        follow.dataset.followKnown='true';follow.disabled=permissionDisabled;
+      },{once:true});
       if (reportingUiEnabled) {
         const reportButton=document.createElement('button');reportButton.type='button';
         reportButton.className='community-report';reportButton.textContent='Report recommendation';reportButton.hidden=!reporting;
@@ -187,9 +192,27 @@ export function mountCommunity() {
       addedArtists.push(artist); addedCards.push(card);
     }
     if(remember)window.dispatchEvent(new Event('community-model-catalog-changed'));
-    // All cards use the shared Daily metadata, tag gate and media loader.
-    // Optional creator/reaction enrichment must not fan out Civitai requests on
-    // gallery navigation. Explicit personal actions remain available on cards.
+    // IDs already came from verified artwork. Batch follow state without fetching
+    // every creator's profile or holding up artwork rendering.
+    for(let offset=0;offset<addedArtists.length;offset+=100) {
+      const batchArtists=addedArtists.slice(offset,offset+100), batchCards=addedCards.slice(offset,offset+100);
+      const account=String(accountId), query=new URLSearchParams();
+      batchArtists.forEach(artist=>{if(artist.userId)query.append('userId',artist.userId);});
+      if(query.size)api(`/api/follow-status?${query}`).then(result=>{
+        if(account!==String(accountId) || String(result.accountId)!==String(accountId))return;
+        batchArtists.forEach((artist,index)=>{
+          const card=batchCards[index], button=card.querySelector('.follow-button');
+          const following=result.following?.[String(artist.userId)];
+          if(card.isConnected && !button.dataset.followKnown && typeof following==='boolean')
+            card.dispatchEvent(new CustomEvent('creatorfollow',{detail:{following,userId:artist.userId}}));
+        });
+      }).catch(()=>{}).finally(()=>{
+        batchCards.forEach(card=>{
+          const button=card.querySelector('.follow-button');
+          if(card.isConnected && !button.dataset.followKnown)button.textContent='Status unavailable';
+        });
+      });
+    }
   }
   async function load(more = false, refresh = false) {
     if (more) return pages.request(true);

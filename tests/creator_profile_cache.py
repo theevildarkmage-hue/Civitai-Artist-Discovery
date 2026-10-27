@@ -13,6 +13,7 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -55,6 +56,19 @@ with tempfile.TemporaryDirectory(prefix="civitai-profile-cache-", ignore_cleanup
     # Corrupt content falls back to empty rather than failing the gallery.
     server.CREATOR_PROFILES.write_text("{not json", encoding="utf-8")
     assert server.creator_profiles() == {}, "unreadable file must not raise"
+
+    # Follow reads reuse one complete list and never cross account boundaries.
+    with patch.object(server, 'connected_user_id', return_value=42) as account, \
+            patch.object(server, 'SocialClient') as transport:
+        server.FOLLOW_STATUS_CACHE.clear()
+        transport.return_value.query.return_value = [1, 2]
+        assert server.creator_follow_status([1, 3])['following'] == {'1': True, '3': False}
+        server.creator_follow_status([2])
+        transport.return_value.query.assert_called_once_with('user.getFollowingUsers', {})
+        account.return_value = 43
+        transport.return_value.query.return_value = [3]
+        assert server.creator_follow_status([1, 3])['following'] == {'1': False, '3': True}
+        assert transport.return_value.query.call_count == 2
 
 print({"missingFileEmpty": True, "parsedOncePerVersion": True, "rewriteSeenImmediately": True,
        "callerEditsDoNotLeak": True, "corruptFileSafe": True})

@@ -843,6 +843,25 @@ def _follower_fields(profile: object) -> dict:
     return {"followers": count, "emerging": count is not None and count < EMERGING_FOLLOWERS}
 
 
+FOLLOW_STATUS_LOCK = threading.Lock()
+FOLLOW_STATUS_CACHE = {}
+
+
+def creator_follow_status(user_ids: list[int]) -> dict:
+    """One account-scoped following-list read; no per-creator profile lookups."""
+    account = connected_user_id()
+    if account is None: raise CommunityError('AUTH_REQUIRED', 401)
+    with FOLLOW_STATUS_LOCK:
+        if FOLLOW_STATUS_CACHE.get('account') != account or time.monotonic() >= FOLLOW_STATUS_CACHE.get('expires', 0):
+            payload = SocialClient().query('user.getFollowingUsers', {})
+            if not isinstance(payload, list) and not (isinstance(payload, dict) and
+                    any(isinstance(payload.get(key), list) for key in ('items', 'users', 'following'))):
+                raise RuntimeError('Civitai follow status is unavailable')
+            if connected_user_id() != account: raise CommunityError('AUTH_EXPIRED', 401)
+            FOLLOW_STATUS_CACHE.update(account=account, expires=time.monotonic()+60, ids=following_ids(payload))
+        return {'accountId': account, 'following': {str(user): user in FOLLOW_STATUS_CACHE['ids'] for user in user_ids}}
+
+
 def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
     """Resolve visible creators and cache their avatars and follow state."""
     clean = list(dict.fromkeys(name.strip() for name in usernames if name.strip()))[:100]
@@ -1632,6 +1651,17 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("History artist page", error)
             return
+        if parsed.path == '/api/follow-status':
+            try:
+                raw = query.get('userId', [])
+                if not 1 <= len(raw) <= 100: raise ValueError('Provide 1 to 100 creator IDs')
+                ids = list(dict.fromkeys(int(value) for value in raw))
+                if any(value <= 0 for value in ids): raise ValueError('Invalid creator ID')
+                self.json_response(creator_follow_status(ids))
+            except CommunityError as error:self.json_response(error.response(), error.status)
+            except ValueError as error:self.json_response({'error': str(error)}, 400)
+            except Exception as error:self.internal_error('Follow status', error)
+            return
         if parsed.path == "/api/creator-metadata":
             try:
                 if not connected_or_false():
@@ -2341,6 +2371,7 @@ class Handler(BaseHTTPRequestHandler):
                 "usernames": sorted(names.values(), key=str.casefold)}, indent=2), encoding="utf-8")
             temporary.replace(FOLLOW_CACHE)
         TASTE.set_following(user_id, desired)
+        with FOLLOW_STATUS_LOCK: FOLLOW_STATUS_CACHE.clear()
         self.json_response({"userId": user_id, "following": desired, "changed": changed})
 
     def log_message(self, format: str, *args: object) -> None:
