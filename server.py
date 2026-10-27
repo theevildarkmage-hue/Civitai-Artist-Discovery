@@ -115,11 +115,18 @@ def community_content_profile(token):
     if not isolated and not TASTE.ensure_current_account():raise CommunityError('AUTH_REQUIRED',401)
     with TASTE.connect() as db:imported=TASTE._state(db,'hidden_imported_at')
     if not imported and not isolated:TASTE.import_hidden_preferences()
+    if not isolated:TASTE.ensure_hidden_preferences_current()
     with TASTE.connect() as db:
         settings = SETTINGS.load()
+        raw = TASTE._state(db, 'hidden_image_preferences')
+        from discovery.community import content_profile
+        rules = content_profile({**json.loads(raw), 'hiddenUsers': [], 'blockedUsers': [],
+            'blockedByUsers': []}, settings['browsingLevels']) if raw else ContentProfile()
         return ContentProfile(levels=frozenset(settings['browsingLevels']),
             apply_tag_filters=settings['applyTagFilters'],
             apply_account_filters=settings['applyAccountFilters'],
+            apply_image_filters=settings['applyImageFilters'],
+            implicit_images=rules.implicit_images, rating_tags=rules.rating_tags,
             creators=frozenset(r[0] for r in db.execute('select creator_id from hidden_creators')),
             usernames=frozenset(r[0] for r in db.execute('select username_key from hidden_creators where username_key is not null')),
             images=frozenset(r[0] for r in db.execute('select image_id from hidden_images')),
@@ -393,9 +400,11 @@ def visible_creator_keys(key: str, hidden_images: set) -> set:
 
 def hidden_preferences() -> tuple[set, set]:
     """Active local exclusions; imported rules remain stored when paused."""
+    TASTE.ensure_hidden_preferences_current()
     settings = SETTINGS.load()
     creators = TASTE.hidden_creator_keys() if settings["applyAccountFilters"] else set()
-    return creators, TASTE.hidden_image_ids(include_tags=settings["applyTagFilters"])
+    return creators, TASTE.hidden_image_ids(include_tags=settings["applyTagFilters"],
+        include_images=settings["applyImageFilters"], levels=settings["browsingLevels"])
 
 
 GALLERY_VIEWS = ("discovery", "followed", "new", "emerging", "foryou")
@@ -2004,7 +2013,7 @@ class Handler(BaseHTTPRequestHandler):
                 with OAUTH_LOCK: OAUTH_JOB.update({"state": "idle", "error": None})
                 self.json_response({"connected": False}); return
             if parsed.path == "/api/settings":
-                content_change = ("browsingLevels" in body or "contentRating" in body or "applyTagFilters" in body or "applyAccountFilters" in body)
+                content_change = ("browsingLevels" in body or "contentRating" in body or "applyTagFilters" in body or "applyAccountFilters" in body or "applyImageFilters" in body)
                 gallery_change = any(name in body for name in (
                     "hideHighVolumeCreators", "highVolumeThreshold",
                     "emergingReactionMode", "emergingReactionLimit", "mediaType"))
@@ -2012,6 +2021,7 @@ class Handler(BaseHTTPRequestHandler):
                                         effect=(lambda value: HISTORY.set_content_filter(value["browsingLevels"])) if content_change else None,
                                         apply_tag_filters_value=body.get("applyTagFilters"),
                                         apply_account_filters_value=body.get("applyAccountFilters"),
+                                        apply_image_filters_value=body.get("applyImageFilters"),
                                         media_type_value=body.get("mediaType"),
                                         browsing_levels_value=body.get("browsingLevels"),
                                         content_rating_value=body.get("contentRating"),

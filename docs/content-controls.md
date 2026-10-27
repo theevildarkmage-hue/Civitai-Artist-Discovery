@@ -3,21 +3,35 @@
 Added 2026-08-05. The app builds its gallery from Civitai's own artwork, so ignoring the
 account's Content Controls would put back precisely what the user asked Civitai not to
 show them. These are imported and applied by default. The Filters menu has independent local
-viewing switches for **Apply my tag filters** and **Apply hidden and blocked accounts**.
+viewing switches for **Apply my tag filters**, **Apply hidden and blocked accounts**,
+and **Apply hidden artworks**.
 
 ## Local viewing switches
 
-Both switches are on by default, including when upgrading an existing settings file.
-Their values persist in `settings.json` as `applyTagFilters` and `applyAccountFilters`.
-Turning either off pauses that category locally in Daily and Community galleries;
-turning it back on uses the same imported rules. Reset filters turns both back on.
+All three switches are on by default, including when upgrading an existing settings file.
+Their values persist in `settings.json` as `applyTagFilters`, `applyAccountFilters`, and
+`applyImageFilters`.
+Turning a switch off pauses that category locally in Daily and Community galleries;
+turning it back on uses the same imported rules. Reset filters turns all three back on.
 These switches never edit Civitai preferences or erase imported rules or archives.
 
 Tag filtering can be paused without disabling account exclusions, and account exclusions
 can be paused without disabling hidden tags. The account switch covers hidden creators,
 blocked users, and accounts that blocked the viewer. It only affects local filtering of
-accessible artwork: it cannot bypass Civitai's access restrictions. Explicitly hidden
-artwork, selected browsing levels, and the hosted Community access policy still apply.
+accessible artwork: it cannot bypass Civitai's access restrictions. The artwork switch controls direct image-hide records. Civitai can create these from
+"Hide this image" or a Terms of Service report; its preferences response does not identify
+which action created a record. Selected browsing levels and hosted Community access
+policy still apply even when all three switches are off.
+
+Civitai also returns implicit image exclusions with a `tagId`. These are retained
+separately: personal-tag votes follow the tag switch; rating-tag votes are excluded only
+when their rating exceeds the selected browsing ceiling. Moderated tags carrying
+`nsfwLevel` are not imported as personal hidden tags.
+
+Older imports merged direct and implicit hides. The next read refreshes preferences from
+Civitai once, preserving source information in the existing `sync_state` table. This is a
+read-only upstream request; it never edits reports or account preferences. A connection
+to Civitai is required to recover that previously discarded information.
 
 When tag filtering is off, preview-time tag verification is skipped. Details may still
 show imported hidden-tag annotations, but those annotations do not remove the image.
