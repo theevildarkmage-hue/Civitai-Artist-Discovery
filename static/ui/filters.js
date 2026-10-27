@@ -50,13 +50,13 @@ export function mountFilters(actions) {
   tagCheckbox.onchange = () => actions.setTagFilters(tagCheckbox.checked);
   const accountFilter = document.createElement('label');
   accountFilter.className = 'filter-row account-filter-toggle';
-  accountFilter.innerHTML = '<input id="applyAccountFilters" type="checkbox" checked><span>Apply hidden and blocked accounts</span>';
+  accountFilter.innerHTML = '<input id="applyAccountFilters" type="checkbox" checked><span>Exclude hidden and blocked accounts</span>';
   content.append(accountFilter);
   const accountCheckbox = accountFilter.querySelector('input');
   accountCheckbox.onchange = () => actions.setAccountFilters(accountCheckbox.checked);
   const imageFilter = document.createElement('label');
   imageFilter.className = 'filter-row image-filter-toggle';
-  imageFilter.innerHTML = '<input id="applyImageFilters" type="checkbox" checked><span>Apply hidden artworks<small>Includes images hidden after reporting them.</small></span>';
+  imageFilter.innerHTML = '<input id="applyImageFilters" type="checkbox" checked><span>Exclude hidden artworks<small>Includes images hidden after reporting them.</small></span>';
   content.append(imageFilter);
   const imageCheckbox = imageFilter.querySelector('input');
   imageCheckbox.onchange = () => actions.setImageFilters(imageCheckbox.checked);

@@ -3,8 +3,8 @@
 Added 2026-08-05. The app builds its gallery from Civitai's own artwork, so ignoring the
 account's Content Controls would put back precisely what the user asked Civitai not to
 show them. These are imported and applied by default. The Filters menu has independent local
-viewing switches for **Apply my tag filters**, **Apply hidden and blocked accounts**,
-and **Apply hidden artworks**.
+viewing switches for **Apply my tag filters**, **Exclude hidden and blocked accounts**,
+and **Exclude hidden artworks**.
 
 ## Local viewing switches
 
