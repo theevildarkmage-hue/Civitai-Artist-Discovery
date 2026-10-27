@@ -86,6 +86,7 @@ export function createCreatorCard(a, context) {
   el.querySelector('.info-button').setAttribute('aria-label', 'Image details');
   el.querySelector('.more-menu').setAttribute('aria-label', `More actions for ${a.username}`);
   el.querySelector('.more-menu').setAttribute('aria-expanded', 'false');
+  el.querySelector('.more-menu').innerHTML = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>';
   const actionMenu = document.createElement('div');
   actionMenu.className = 'card-action-menu hidden';
   actionMenu.setAttribute('role', 'menu');
