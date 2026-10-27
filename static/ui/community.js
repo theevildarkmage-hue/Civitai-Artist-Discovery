@@ -19,8 +19,8 @@ export function mountCommunity() {
   section.innerHTML = `<div class="community-heading"><h2>Community Gallery</h2><p id="communityUpdates" class="community-updates" role="status" aria-live="polite" aria-atomic="true"></p><div class="community-tools"><button id="communityRecommend" type="button" class="primary-button" aria-haspopup="dialog">Recommend Art</button><button id="communityRefresh" type="button">Refresh</button><span id="communityQuota" role="status"></span></div></div><p id="communityMessage" class="discovery-message" role="status" aria-live="polite"></p><button id="communityReconnect" type="button" hidden>Reconnect Community</button><div id="communityGrid" class="gallery"></div><div id="communitySentinel" class="load-sentinel"></div><details id="communityDiagnostics" class="community-diagnostics hidden"><summary>Development diagnostics</summary><p id="communityMode"></p><div id="communityMemberHost"></div><p id="communityCounts"></p></details>`;
   document.querySelector('main').append(section);
   document.getElementById('discovery').append(document.getElementById('communityDiagnostics'));
-  const dialog = document.createElement('dialog'); dialog.className = 'community-dialog';
-  dialog.innerHTML = `<h2 id="communityDialogTitle">Recommend Art</h2><form id="communityForm"><p class="community-rules">Recommend someone else's public artwork. Each member can recommend three artworks per week; each artist can be featured three times. Resets Monday at 00:00 UTC.</p><p id="communityFormQuota"></p><label for="communityLink">Civitai artwork URL or image ID</label><div class="community-input"><input id="communityLink" maxlength="512" autocomplete="off" placeholder="https://civitai.red/images/12345" aria-describedby="communityDialogMessage" required autofocus><button id="communityLoad" type="submit">Load artwork</button></div><p id="communityDialogMessage" role="status" aria-live="polite"></p><div id="communityPreview" class="recommendation-preview" hidden></div><div class="loading-actions"><button id="communitySubmit" type="button" class="primary-button" disabled>Recommend this artwork</button><button id="communityCancel" type="button">Close</button></div></form>`;
+  const dialog = document.createElement('dialog'); dialog.className = 'community-dialog community-recommend-dialog';
+  dialog.innerHTML = `<h2 id="communityDialogTitle">Recommend Art</h2><form id="communityForm"><div class="recommendation-layout"><div id="communityPreviewPanel" class="recommendation-preview-panel" aria-label="Artwork preview" aria-busy="false"><div id="communityPreviewPlaceholder" class="recommendation-preview-placeholder"><span id="communityPreviewSpinner" class="card-nav-spinner" aria-hidden="true" hidden></span><p id="communityPreviewHint">Paste an artwork URL or image ID to see its preview.</p></div><div id="communityPreview" class="recommendation-preview" hidden></div></div><div class="recommendation-fields"><p class="community-rules">Recommend someone else's public artwork. Each member can recommend three artworks per week; each artist can be featured three times. Resets Monday at 00:00 UTC.</p><p id="communityFormQuota"></p><label for="communityLink">Civitai artwork URL or image ID</label><div class="community-input"><input id="communityLink" maxlength="512" autocomplete="off" placeholder="https://civitai.red/images/12345" aria-describedby="communityDialogMessage communityPreviewNote" required autofocus><button id="communityLoad" type="submit">Load artwork</button></div><p id="communityPreviewNote" class="community-preview-note">Previewing does not use a recommendation. Save only when you confirm below.</p><p id="communityDialogMessage" role="status" aria-live="polite" aria-atomic="true"></p></div><div class="loading-actions"><button id="communitySubmit" type="button" class="primary-button" disabled>Recommend this artwork</button><button id="communityCancel" type="button">Close</button></div></div></form>`;
   document.body.append(dialog);
   bindDialog(dialog, {labelledBy:'communityDialogTitle', closeButtons:[dialog.querySelector('#communityCancel')]});
   const reportDialog=document.createElement('dialog');reportDialog.className='community-dialog';
@@ -32,7 +32,22 @@ export function mountCommunity() {
   let reporting=false,reportTarget=null,reportBusy=false;
   let authenticationFailed=false, checkingRecommendation=false;
   let verifyingRecommendation=false, reviewedArtwork=null, reviewedValue='', previewReady=false;
-  let previewVersion=0, previewRequest=null;
+  let previewVersion=0, previewRequest=null, previewTimer=null;
+  const previewable=value=>/^(?:[1-9][0-9]{0,14}|https:\/\/(?:www\.)?civitai\.(?:com|red)\/images\/[1-9][0-9]{0,14}\/?)$/.test(value);
+  function previewFeedback(text, loading=false) {
+    el('communityDialogMessage').textContent=text;
+    el('communityPreviewHint').textContent=text || 'Paste an artwork URL or image ID to see its preview.';
+    el('communityPreviewSpinner').hidden=!loading;
+    el('communityPreviewPanel').setAttribute('aria-busy',String(loading));
+  }
+  function queueRecommendationPreview(delay=500) {
+    clearTimeout(previewTimer);previewTimer=null;
+    const value=el('communityLink').value.trim();
+    if(!value) {previewFeedback('');return;}
+    if(!previewable(value)) {previewFeedback('Enter a public Civitai artwork URL or numeric image ID.');return;}
+    previewFeedback('Preparing artwork preview\u2026',true);
+    previewTimer=setTimeout(()=>{previewTimer=null;loadRecommendationPreview();},delay);
+  }
   function updateRecommendationButtons() {
     const blocked=busy || checkingRecommendation || verifyingRecommendation || !authorized || !submissions;
     el('communityLoad').disabled=blocked;
@@ -40,11 +55,12 @@ export function mountCommunity() {
     el('communitySubmit').textContent=busy ? 'Submitting…' : previewReady ? 'Recommend this artwork' : 'Load artwork first';
   }
   function clearRecommendationPreview() {
-    ++previewVersion;previewRequest?.abort();previewRequest=null;
+    ++previewVersion;clearTimeout(previewTimer);previewTimer=null;previewRequest?.abort();previewRequest=null;
     verifyingRecommendation=false;reviewedArtwork=null;reviewedValue='';previewReady=false;
     const card=el('communityPreview').querySelector('.creator-card');
     if(card)window.DiscoveryGallery.releaseCard(card);
     el('communityPreview').replaceChildren();el('communityPreview').hidden=true;
+    el('communityPreviewPlaceholder').hidden=false;previewFeedback('');
     requestKey=null;requestValue=null;
   }
   el('communityRecommend').disabled=true;
@@ -355,7 +371,7 @@ export function mountCommunity() {
     clearRecommendationPreview();
     checkingRecommendation=true;
     el('communityLink').value = String(value);
-    el('communityDialogMessage').textContent = 'Checking Community access…';
+    previewFeedback('Checking Community access\u2026',true);
     updateRecommendationButtons();
     requestKey = null; requestValue = null;
     dialog.showModal();
@@ -368,16 +384,17 @@ export function mountCommunity() {
       authenticationFailed=false;quota(status.quota);applyPolicy(status);
       if(!submissions) { window.toast(el('communityMessage').textContent); return; }
       updateRecommendationButtons();
-      el('communityDialogMessage').textContent = '';
+      queueRecommendationPreview();
     } catch(error) {
       if(version!==draftVersion || !authorized || !dialog.open)return;
-      accessError(error);window.toast(el('communityMessage').textContent);
+      previewFeedback(error.message);accessError(error);window.toast(el('communityMessage').textContent);
     } finally {
       if(version===draftVersion)checkingRecommendation=false;
     }
   }
   function renderRecommendationPreview(art, version) {
-    const host=el('communityPreview');host.hidden=false;
+    const host=el('communityPreview');host.hidden=false;el('communityPreviewPlaceholder').hidden=true;
+    previewFeedback('Loading artwork preview\u2026',true);
     art={...art,civitaiUrl:art.imageUrl};
     const artist={username:art.username,userId:art.creatorId,profileUrl:art.profileUrl,
       representative:art,imageCount:1};
@@ -392,13 +409,15 @@ export function mountCommunity() {
     const current=()=>version===previewVersion && dialog.open && card.isConnected && reviewedValue===el('communityLink').value.trim();
     const ready=()=>{
       if(!current())return;
-      previewReady=true;el('communityDialogMessage').textContent='Review the artwork, then recommend it.';
+      previewReady=true;previewFeedback('Review the artwork, then recommend it.');
       updateRecommendationButtons();
     };
     const failed=()=>{
-      if(!current())return;
+      // Removal itself must disable confirmation; a connected-card check would
+      // discard the shared loader's final unavailable-card callback.
+      if(version!==previewVersion || !dialog.open || reviewedValue!==el('communityLink').value.trim())return;
       previewReady=false;updateRecommendationButtons();
-      el('communityDialogMessage').textContent='The preview could not load. Load the artwork again to retry.';
+      previewFeedback('The preview could not load. Select Load artwork to retry.');
     };
     image.addEventListener('load',async()=>{
       try {await image.decode();} catch (_) {return;}
@@ -406,7 +425,7 @@ export function mountCommunity() {
     });
     image.addEventListener('error',failed);
     card.addEventListener('loadeddata',event=>{if(event.target.videoWidth)ready();},true);
-    card.onUnavailableCardRemoved=()=>{previewReady=false;updateRecommendationButtons();};
+    card.onUnavailableCardRemoved=failed;
     card.querySelector('.image-button').setAttribute('aria-label','Open artwork on Civitai');
     card.querySelector('.more-menu').hidden=true;
     card.querySelector('.image-overlay').hidden=true;
@@ -420,21 +439,22 @@ export function mountCommunity() {
       if(!current())return;
       metadataKnown=true;applyMetadata(metadata);
     };
-    host.append(card);card.scrollIntoView({block:'nearest'});
+    host.append(card);
     card.prepareArtwork().catch(failed);
     window.DiscoveryGallery.enrichCards([artist],[card]).then(()=>{
       if(current() && !metadataKnown)follow.textContent='Follow status unavailable';
     });
   }
   async function loadRecommendationPreview() {
-    if(busy || checkingRecommendation || !authorized || !submissions)return;
+    if(busy || checkingRecommendation || verifyingRecommendation || !authorized || !submissions)return;
     const value=el('communityLink').value.trim();
     if(!value){el('communityLink').reportValidity();return;}
+    if(!previewable(value)){previewFeedback('Enter a public Civitai artwork URL or numeric image ID.');return;}
     clearRecommendationPreview();
     const version=previewVersion, draft=draftVersion;
     const controller=new AbortController();previewRequest=controller;
     verifyingRecommendation=true;updateRecommendationButtons();
-    el('communityDialogMessage').textContent='Loading artwork…';
+    previewFeedback('Loading artwork preview\u2026',true);
     try {
       const result=await api('/api/community/verify',{method:'POST',body:JSON.stringify({artwork:value}),signal:controller.signal});
       if(version!==previewVersion || draft!==draftVersion || !dialog.open || controller.signal.aborted)return;
@@ -444,14 +464,15 @@ export function mountCommunity() {
       renderRecommendationPreview(art,version);
     } catch(error) {
       if(version!==previewVersion || draft!==draftVersion || controller.signal.aborted)return;
-      el('communityDialogMessage').textContent=error.message;
+      previewFeedback(error.message);
     } finally {
       if(version===previewVersion){verifyingRecommendation=false;previewRequest=null;updateRecommendationButtons();}
     }
   }
   el('communityLink').addEventListener('input',()=>{
     clearRecommendationPreview();updateRecommendationButtons();
-    el('communityDialogMessage').textContent=checkingRecommendation ? 'Checking Community access…' : '';
+    if(checkingRecommendation)previewFeedback('Checking Community access\u2026',true);
+    else queueRecommendationPreview();
   });
   el('communityForm').onsubmit=event=>{event.preventDefault();loadRecommendationPreview();};
   el('communitySubmit').onclick = async () => {

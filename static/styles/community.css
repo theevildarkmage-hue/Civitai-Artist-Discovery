@@ -47,6 +47,25 @@
   .community-updates { grid-row:3; }
 }
 
-.recommendation-preview { margin:16px auto; width:min(100%, 360px); }
+.recommendation-preview { margin:0; width:100%; }
 .recommendation-preview .image-stage { height:auto; min-height:0; aspect-ratio:3/4; }
 .recommendation-preview .image-overlay, .recommendation-preview .more-menu { display:none; }
+
+/* Compact review: persistent feedback at left, controls and confirmation at right. */
+.community-recommend-dialog { max-width:820px; }
+.recommendation-layout { display:grid; grid-template-columns:minmax(0,240px) minmax(0,1fr); grid-template-areas:"preview fields" "preview actions"; gap:16px 24px; align-items:start; }
+.recommendation-preview-panel { grid-area:preview; min-width:0; }
+.recommendation-fields { grid-area:fields; min-width:0; }
+.recommendation-layout > .loading-actions { grid-area:actions; margin:0; }
+.recommendation-preview-placeholder { aspect-ratio:3/4; border:1px solid var(--line); border-radius:12px; background:var(--surface-raised, #282b31); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:20px; box-sizing:border-box; color:var(--muted); text-align:center; }
+.recommendation-preview-placeholder[hidden], #communityPreviewSpinner[hidden] { display:none; }
+.recommendation-preview-placeholder p { margin:0; }
+.recommendation-preview .creator-footer { font-size:.75rem; }
+@media (max-width:620px) {
+  .recommendation-layout { grid-template-columns:minmax(0,1fr); grid-template-areas:"fields" "preview" "actions"; }
+  .recommendation-preview-panel { width:min(100%,220px); justify-self:center; }
+  .community-recommend-dialog { padding:18px; }
+  .recommendation-preview-placeholder { aspect-ratio:auto; min-height:88px; padding:14px; }
+}
+
+.community-preview-note { color:var(--muted); font-size:.85rem; margin:10px 0; }

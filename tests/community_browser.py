@@ -98,7 +98,7 @@ def run(mode):
                 assert page.locator('#communityLink').input_value()=='1001'
                 page.locator('#communityCancel').click()
                 for value,expected in [('1099',"can't recommend your own"),('999999','Artwork unavailable'),
-                                       ('https://evil.test/images/1001','Artwork unavailable')]:
+                                       ('https://evil.test/images/1001','Enter a public Civitai artwork URL')]:
                     preview(value);page.locator('#communityDialogMessage').filter(has_text=expected).wait_for()
                     assert page.locator('#communityLink').input_value()==value
                     assert request('/api/community/status')['quota']['used']==1
