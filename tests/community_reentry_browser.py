@@ -48,7 +48,7 @@ try:
    page.route('**/recommend-preview.mp4',lambda route:route.fulfill(content_type='video/mp4',body=(ROOT/'tests/fixtures/recovery.mp4').read_bytes()))
    page.route('**/api/creator-metadata?*',lambda route:reply(route,{'creators':{'previewartist':{'userId':55,'following':True,'followers':20}}}))
    page.route('**/api/community/verify',lambda route:reply(route,{'artwork':{
-    'id':1002,'username':'PreviewArtist','profileUrl':'https://civitai.red/user/PreviewArtist',
+    'id':1002,'creatorId':55,'username':'PreviewArtist','profileUrl':'https://civitai.red/user/PreviewArtist','tagState':{'known':True,'tags':[]},
     'type':'video' if width==1440 else 'image','videoUrl':base+'/recommend-preview.mp4','browsingLevel':1,'baseModel':'SDXL','url':base+'/recommend-preview.svg',
     'thumbnailUrl':base+'/recommend-preview.svg'}}))
    page.locator('#communityLoad').click()
