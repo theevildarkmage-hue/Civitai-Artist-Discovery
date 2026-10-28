@@ -24,7 +24,9 @@ carousel rather than in a separate tab.
   `type: "image"`. Civitai rejects `"video"`. Hidden-tag filtering therefore covers
   videos with no changes.
 - **Card artwork.** A video card shows a still frame and autoplays, muted, once at least
-  half of it has been on screen for 300 ms. Scrolling it away, navigating the carousel, or
+  half of the artwork has been on screen for 300 ms. Reactions, footer text and
+  Community recommendation credit do not count, nor does artwork behind sticky
+  navigation. Scrolling below that threshold, navigating the carousel, or
   removing the card stops playback and aborts the download. The ▶/❚❚ button pauses a card
   until it leaves the screen. Cards also pause while the details dialog is open, while the
   tab is hidden, and when the user prefers reduced motion (▶ still plays on request).
@@ -106,7 +108,8 @@ failed candidates are skipped for five minutes and a candidate times out after
 15 seconds. Candidate callbacks belong to one artwork selection, so an obsolete
 load or error cannot repaint the next item. Details can reuse a successful poster.
 
-Playback retains half-visible/300 ms muted card autoplay, reduced-motion behavior,
+Playback requires half the artwork to be visible for 300 ms, with muted card autoplay,
+reduced-motion behavior,
 native detail controls, and focused-card keyboard controls. Loading or buffering
 feedback appears after two seconds without playback advancement. Fifteen seconds
 without useful progress triggers bounded recovery. Useful progress includes time
