@@ -141,6 +141,36 @@ class CommunityTests(unittest.TestCase):
             art=self.verifier.artworks[1001+([1,2,4,8,16].index(level))]
             self.assertTrue(ContentProfile(levels=frozenset((level,))).allows(art))
 
+    def test_large_implicit_exclusions_reuse_index(self):
+        class CountedPairs(frozenset):
+            visits = 0
+
+            def __iter__(self):
+                for pair in super().__iter__():
+                    self.visits += 1
+                    yield pair
+
+        pairs = CountedPairs((image, 11) for image in range(1, 8001))
+        profile = ContentProfile(tag_ids=frozenset((11,)), implicit_images=pairs)
+        expected = set(range(1, 8001))
+        self.assertEqual(expected, profile.excluded_image_ids())
+        for image in expected:
+            self.assertEqual(['hiddenTag'], profile.image_exclusions(image))
+        # Bound work, not wall-clock time: bulk and individual reads share one index.
+        self.assertEqual(8000, pairs.visits)
+        self.assertEqual(set(), replace(profile, apply_tag_filters=False).excluded_image_ids())
+
+    def test_index_preserves_overlapping_sources_and_rating_ceiling(self):
+        profile = ContentProfile(images=frozenset((1001,)), tag_ids=frozenset((11,)),
+            implicit_images=frozenset(((1001, 11), (1001, 99), (1002, 99), (1003, 12))),
+            rating_tags=frozenset(((99, 4),)))
+        self.assertEqual(['hiddenArtwork', 'hiddenTag', 'ratingRestriction'],
+                         profile.image_exclusions(1001))
+        self.assertEqual({1001, 1002}, profile.excluded_image_ids())
+        paused = replace(profile, apply_tag_filters=False, apply_image_filters=False)
+        self.assertEqual({1001, 1002}, paused.excluded_image_ids())
+        self.assertEqual(set(), replace(paused, levels=frozenset((1, 4))).excluded_image_ids())
+
     def test_upstream_compact_implicit_and_bidirectional_blocks(self):
         hidden={'__v':2,'hiddenUsers':[], 'hiddenTags':[{'id':11,'name':'landscape','hidden':True}], 'hiddenImages':[],
                 'hiddenImagesImplicit':[{'id':1001,'tagId':11,'hidden':True}],
