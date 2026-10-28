@@ -1,5 +1,14 @@
 # Civitai Artist Discovery
 
+## Windows beta 3.0.0-beta.12
+
+Beta.12 adds recommendation previews before confirmation, restores Community
+avatars and follow state, adds optional sound in video details, centers card-menu
+icons, and allows viewing-rating changes during background capture. It also fixes
+post-submit feed timing and thumbnail tag-cache handoffs. See the
+[release notes](docs/3.0-beta-release-notes.md). Community remains invitation-only;
+stable 2.2.1 uses its separate update channel. PR #12's filter switches are excluded.
+
 Current follow-up decisions: [Beta 11 audit and decision tracker](docs/3.0-audit-tracker.md#october-27-2026-decision-record).
 The October 27 record separates conditional recovery maintenance from accepted
 cache behavior, monitored lookup costs and intentionally retained renewal. It does
@@ -13,8 +22,8 @@ General support and non-sensitive maintenance remain in GitHub Issues.
 
 Discovery 3.0 Beta automatically records your verified Civitai account ID, public
 username, first-seen and last-seen timestamps, app version, and platform in its
-private Supabase registry after server-side identity verification. The next security
-candidate uses a signed Civitai identity proof and a Discovery-only session; user
+private Supabase registry after server-side identity verification. Authentication
+uses a signed Civitai identity proof and a Discovery-only session; user
 Civitai API access and refresh tokens remain local. This supports
 beta usage and compatibility monitoring. Activity updates occur at most once every
 12 hours. The registry stores no OAuth tokens or browsing history, is not publicly
