@@ -125,7 +125,8 @@ def community_content_profile(token):
         return ContentProfile(levels=frozenset(settings['browsingLevels']),
             apply_tag_filters=settings['applyTagFilters'],
             apply_account_filters=settings['applyAccountFilters'],
-            apply_image_filters=settings['applyImageFilters'],
+            # Only legacy mirrors have unknown image sources to preserve.
+            apply_image_filters=settings['applyImageFilters'] if raw or not imported else True,
             implicit_images=rules.implicit_images, rating_tags=rules.rating_tags,
             creators=frozenset(r[0] for r in db.execute('select creator_id from hidden_creators')),
             usernames=frozenset(r[0] for r in db.execute('select username_key from hidden_creators where username_key is not null')),
@@ -1468,6 +1469,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/timemachine":
             try:
+                hidden_creators, hidden_images = hidden_preferences()
+                settings = SETTINGS.load()
                 # Decorated by the same function the daily gallery uses, so a Time
                 # Machine card carries the follow state, avatar, follower counts and
                 # reaction history a gallery card does.
@@ -1475,7 +1478,9 @@ class Handler(BaseHTTPRequestHandler):
                 profiles, follows = creator_profiles(), signals["followed"]
                 self.json_response({
                     "cards": attach_preview_tags([decorate_history_artist(card, profiles, follows, signals)
-                              for card in TIME_MACHINE.cards()]),
+                              for card in TIME_MACHINE.cards(
+                                  apply_tag_filters=settings['applyTagFilters'],
+                                  hidden_creators=hidden_creators, hidden_images=hidden_images)]),
                     "status": TIME_MACHINE.status()})
             except Exception as error: self.internal_error("Time machine", error)
             return
@@ -1488,11 +1493,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/timemachine/creator":
             try:
                 after = query.get("after", [None])[0]
+                hidden_creators, hidden_images = hidden_preferences()
+                settings = SETTINGS.load()
                 history = TIME_MACHINE.creator_history(
                     query.get("username", [""])[0],
                     after=int(after) if after not in (None, "") else None,
                     limit=int(query.get("limit", ["40"])[0]),
-                    refill=query.get("savedOnly", [""])[0] != "1")
+                    refill=query.get("savedOnly", [""])[0] != "1",
+                    apply_tag_filters=settings['applyTagFilters'],
+                    hidden_creators=hidden_creators, hidden_images=hidden_images)
                 signals = gallery_signals()
                 profiles, follows = creator_profiles(), signals["followed"]
                 # Each image rides in a one-image card entry so the gallery's own

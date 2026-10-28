@@ -1882,6 +1882,10 @@ async function pollDiscovery() {
 let dailyControlsStale = false;
 window.addEventListener('community-controls-changed', () => {
   if (dayBuilt && currentView !== 'gallery') { dailyControlsStale = true; clearGallery(); }
+  if (currentView === 'timemachine') {
+    const refresh = tmCreator ? openTimeMachineCreator(tmCreator) : refreshTimeMachine();
+    refresh.catch(error => toast(error.message));
+  }
 });
 window.addEventListener('shared-artist-hidden', () => {
   if (!dayBuilt) return;

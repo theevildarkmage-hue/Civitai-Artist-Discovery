@@ -11,7 +11,7 @@ and **Exclude hidden artworks**.
 All three switches are on by default, including when upgrading an existing settings file.
 Their values persist in `settings.json` as `applyTagFilters`, `applyAccountFilters`, and
 `applyImageFilters`.
-Turning a switch off pauses that category locally in Daily and Community galleries;
+Turning a switch off pauses that category locally in Daily, Community, and Time Machine views;
 turning it back on uses the same imported rules. Reset filters turns all three back on.
 These switches never edit Civitai preferences or erase imported rules or archives.
 
@@ -28,10 +28,11 @@ separately: personal-tag votes follow the tag switch; rating-tag votes are exclu
 when their rating exceeds the selected browsing ceiling. Moderated tags carrying
 `nsfwLevel` are not imported as personal hidden tags.
 
-Older imports merged direct and implicit hides. The next read refreshes preferences from
-Civitai once, preserving source information in the existing `sync_state` table. This is a
-read-only upstream request; it never edits reports or account preferences. A connection
-to Civitai is required to recover that previously discarded information.
+Older imports merged direct and implicit hides. Reads continue using the cached mirror
+while one background request recovers source information into the existing `sync_state`
+table. If Civitai is unavailable, a later read can retry after five minutes. Until recovery
+succeeds, image hides whose source is unknown remain excluded even when the artwork
+switch is off. This read-only request never edits reports or account preferences.
 
 When tag filtering is off, preview-time tag verification is skipped. Details may still
 show imported hidden-tag annotations, but those annotations do not remove the image.
@@ -134,9 +135,8 @@ re-reads them mid-session. Import **replaces** the stored copy rather than mergi
 unhiding something on Civitai propagates here; a merge would silently make hiding
 permanent.
 
-Failure to import never blocks sign-in or the gallery: the filter is a refinement, not the
-point of connecting. If the mirror cannot be read, the gallery renders unfiltered rather
-than erroring.
+Failure to refresh an existing import keeps the cached controls in use. Legacy source
+recovery does not block gallery reads or issue another request for every read.
 
 ## Storage
 
@@ -156,3 +156,9 @@ visible image, carousel filtering, the count agreeing with what is shown, and th
 states in the image dialog. `tests/hidden_tags_before_preview.py` verifies that hidden-tag
 artwork never receives a preview URL, checks batched tag lookup, and confirms that a late
 detail result removes only the affected image without reloading the feed.
+
+`tests/content_control_recovery.py` checks legacy offline reads, concurrent readers,
+bounded retries, preserved mirrors, and successful source recovery. The Content Controls
+HTTP suite also checks all three switches against Time Machine cards and creator history
+without changing saved positions. `tests/community_backend.py` checks exclusion sources
+and bounds pair scans for an 8,000-image input rather than relying on a timing threshold.

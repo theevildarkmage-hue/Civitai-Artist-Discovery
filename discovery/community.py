@@ -9,6 +9,7 @@ from collections import OrderedDict, defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import cached_property
 import json
 import os
 from pathlib import Path
@@ -133,17 +134,29 @@ class ContentProfile:
     implicit_images: frozenset[tuple[int, int]] = frozenset()
     rating_tags: frozenset[tuple[int, int]] = frozenset()
 
+    @cached_property
+    def _image_votes(self):
+        votes = defaultdict(set)
+        for image, tag in self.implicit_images:
+            votes[image].add(tag)
+        return votes
+
+    @cached_property
+    def _restricted_rating_tags(self):
+        ceiling = max(self.levels, default=0)
+        return frozenset(tag for tag, level in self.rating_tags if level > ceiling)
+
     def image_exclusions(self, image):
         reasons = []
         if self.apply_image_filters and image in self.images: reasons.append('hiddenArtwork')
-        votes = {tag for image_id, tag in self.implicit_images if image_id == image}
+        votes = self._image_votes.get(image, set())
         if self.apply_tag_filters and votes & self.tag_ids: reasons.append('hiddenTag')
-        if any(tag in votes and level > max(self.levels, default=0) for tag, level in self.rating_tags):
+        if votes & self._restricted_rating_tags:
             reasons.append('ratingRestriction')
         return reasons
 
     def excluded_image_ids(self):
-        candidates = self.images | frozenset(image for image, _ in self.implicit_images)
+        candidates = self.images | self._image_votes.keys()
         return {image for image in candidates if self.image_exclusions(image)}
 
     def allows(self, art):
