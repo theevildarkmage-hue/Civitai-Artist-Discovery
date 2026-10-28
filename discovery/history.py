@@ -682,8 +682,8 @@ class HistoryArchive:
         selected = browsing_levels(levels)
         rating = rating_for_levels(selected)
         with self.lock:
-            if any(job.get("state") == "loading" for job in self.jobs.values()):
-                raise ValueError("Stop the current history build before changing content ratings")
+            # Collectors use the coverage persisted for their block at start, not
+            # these viewing preferences. Background capture must not lock filters.
             self.content_rating = rating
             self.visible_levels = selected
 
