@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
 import random
 import sqlite3
@@ -754,6 +755,9 @@ class TasteStore:
     def ensure_hidden_preferences_current(self):
         # Legacy reads keep their mirror while one background request recovers source
         # information. Offline browsing must neither wait for Civitai nor retry per read.
+        if (os.environ.get('CAD_COMMUNITY_MODE') == 'fixture'
+                or os.environ.get('CAD_COMMUNITY_TESTING') == '1'):
+            return
         with self.lock:
             with self.connect() as db:
                 refresh = self._state(db, 'hidden_imported_at') and not self._state(db, 'hidden_image_preferences')

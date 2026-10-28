@@ -166,10 +166,28 @@ class CommunityTests(unittest.TestCase):
             rating_tags=frozenset(((99, 4),)))
         self.assertEqual(['hiddenArtwork', 'hiddenTag', 'ratingRestriction'],
                          profile.image_exclusions(1001))
-        self.assertEqual({1001, 1002}, profile.excluded_image_ids())
+        self.assertEqual({1001, 1002, 1003}, profile.excluded_image_ids())
         paused = replace(profile, apply_tag_filters=False, apply_image_filters=False)
-        self.assertEqual({1001, 1002}, paused.excluded_image_ids())
-        self.assertEqual(set(), replace(paused, levels=frozenset((1, 4))).excluded_image_ids())
+        self.assertEqual({1001, 1002, 1003}, paused.excluded_image_ids())
+        self.assertEqual({1003}, replace(paused, levels=frozenset((1, 4))).excluded_image_ids())
+
+    def test_unclassified_implicit_hides_cannot_be_relaxed_by_switches(self):
+        hidden = {'hiddenUsers': [], 'blockedUsers': [], 'blockedByUsers': [],
+            'hiddenTags': [{'id': 11, 'name': 'topic'}, {'id': 99, 'name': 'rating', 'nsfwLevel': 4},
+                           {'id': 12, 'name': 'unhidden-topic', 'hidden': False}],
+            'hiddenImages': [1000, {'id': 1009, 'tagId': 999}, {'id': 1012, 'tagId': 0}],
+            'hiddenImagesImplicit': [1001, {'id': 1002}, {'id': 1003, 'tagId': None},
+                {'id': 1004, 'tagId': 999}, {'id': 1005, 'tagId': 11}, {'id': 1006, 'tagId': 99},
+                {'id': 1007, 'tagId': 11, 'hidden': False}, {'id': 1008, 'tagId': 12},
+                {'id': 1010, 'hidden': False}, {'id': 1011, 'tagId': False}]}
+        profile = content_profile(hidden, (1, 2))
+        unknown = {1001, 1002, 1003, 1004, 1009, 1011, 1012}
+        self.assertEqual(unknown | {1000, 1005, 1006}, profile.excluded_image_ids())
+        paused = replace(profile, apply_tag_filters=False, apply_image_filters=False,
+                         levels=frozenset((1, 2, 4, 8, 16)))
+        self.assertEqual(unknown, paused.excluded_image_ids())
+        for image in unknown:
+            self.assertEqual(['incompleteMetadata'], paused.image_exclusions(image))
 
     def test_upstream_compact_implicit_and_bidirectional_blocks(self):
         hidden={'__v':2,'hiddenUsers':[], 'hiddenTags':[{'id':11,'name':'landscape','hidden':True}], 'hiddenImages':[],

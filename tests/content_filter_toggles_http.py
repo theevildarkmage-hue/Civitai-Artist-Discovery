@@ -40,6 +40,12 @@ try:
     h.endpoint.request('/api/settings', {'browsingLevels': [1, 2, 4, 8, 16],
                                          'applyTagFilters': True, 'applyAccountFilters': True, 'applyImageFilters': True})
     assert images() == set()
+    # Unknown implicit sources stay excluded even with every local switch paused.
+    h.control('hidden', member=1, controls={**controls, 'hiddenImagesImplicit': [1002,
+        {'id': 1007, 'tagId': 999}, {'id': 1012, 'tagId': 12}]})
+    h.endpoint.request('/api/settings', {'applyTagFilters': False, 'applyAccountFilters': False,
+                                       'applyImageFilters': False})
+    assert images() == {1012}
     assert len(h.snapshot()['recommendations']) == 3
     print('PASS: independent Community tag/account switches, direct hides and ratings preserved, ledger unchanged; synthetic transport only')
 finally:
