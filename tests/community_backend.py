@@ -203,7 +203,7 @@ class RealVerificationTests(unittest.TestCase):
         art=self.verifier.artwork(123)
         self.assertEqual('video',art.media_type)
         value=art.browser()
-        self.assertIn('/anim=false,width=768/',value['thumbnailUrl'])
+        self.assertIn('/anim=false,transcode=true,width=768/',value['thumbnailUrl'])
         self.assertIn('/transcode=true,width=450,optimized=true/',value['videoUrl'])
         self.assertIn('/transcode=true,width=768,optimized=true/',value['detailVideoUrl'])
         for field,value in (('availability','Unsearchable'),('ingestion','Pending'),('nsfwLevel',1),('type','image')):

@@ -79,12 +79,14 @@ Neither was caused by videos; both were made easy to hit by the extra requests a
 |---|---|
 | `original=true` | The original file, e.g. 30 MB |
 | `width=768` | Still an MP4, 8.5 MB. An `<img>` cannot show it, so videos need their own URLs |
-| `anim=false,width=N` | JPEG still of about 0.2 MB at any width (used for card and details stills) |
+| `anim=false,transcode=true,width=N` | Static image for cards and details; returned frame size is CDN-dependent |
 | `transcode=true,width=450,optimized=true` | About 3 MB MP4 (card playback) |
 | `transcode=true,width=768,optimized=true` | About 8 MB MP4 (details playback) |
 
-Some videos ignore still transforms and redirect to the original file. Failed
-posters now fall through to a stable "Video preview unavailable" placeholder. They
+Some videos redirect `anim=false,width=N` to the original MP4. Generated stills
+must also request `transcode=true`; this produces an image response for those sources.
+Without it, an image element fails even though the video itself is available.
+Other CDN failures can still occur. Failed posters fall through to a stable "Video preview unavailable" placeholder. They
 never create a video element or fetch a first frame as a fallback. Eligible autoplay
 and explicit Play still use the existing playback transforms.
 
