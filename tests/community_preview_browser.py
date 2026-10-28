@@ -30,7 +30,18 @@ try:
     try:reply(route,client.request('gallery',{}))
     except CommunityError as error:reply(route,error.response(),error.status)
    page.route('**/api/community/gallery*',gallery)
-   page.route('**/api/history/images',lambda r:reply(r,{'images':[artwork(i) for i in r.request.post_data_json['imageIds']],'counts':{'contentControls':0,'unavailable':0}}))
+   shared_checks=set()
+   def shared_tags(route):
+    ids=route.request.post_data_json['imageIds'];shared_checks.update(ids)
+    reply(route,{'images':{str(i):{'known':True,'tags':[]} for i in ids}})
+   page.route('**/api/history/tags',shared_tags)
+   page.route('**/api/history/images',lambda r:reply(r,{'images':[{**{k:v for k,v in artwork(i).items() if k!='tagState'},'url':f'{base}/shared-thumbnail.svg?id={i}','thumbnailUrl':f'{base}/shared-thumbnail.svg?id={i}'} for i in r.request.post_data_json['imageIds']],'counts':{'contentControls':0,'unavailable':0}}))
+   def shared_thumbnail(route):
+    from urllib.parse import urlsplit,parse_qs
+    image=int(parse_qs(urlsplit(route.request.url).query)['id'][0])
+    if image not in shared_checks:reply(route,{'code':'CONTENT_FILTERED'},403)
+    else:route.fulfill(content_type='image/svg+xml',body=svg)
+   page.route('**/shared-thumbnail.svg?*',shared_thumbnail)
    page.route('**/api/creator-metadata?*',lambda r:reply(r,{'creators':{'previewartist':{'userId':55,'following':False,'followers':12}}}))
    def verify(route):
     value=route.request.post_data_json['artwork'];calls.append(value);held.append(route)
@@ -107,6 +118,8 @@ try:
    page.locator('#communityGrid .community-card[data-id="3105"]').wait_for()
    assert page.locator('#communityGrid .community-credit').inner_text().startswith('Recommended by Synthetic')
    assert 'temporarily unavailable' not in page.locator('#communityMessage').inner_text()
+   page.wait_for_function('()=>document.querySelector(\'#communityGrid [data-id="3105"] .image-button img\')?.naturalWidth>0',timeout=5000)
+   assert 3105 in shared_checks,'Preview must not replace the gallery server tag check'
    assert not errors,errors
    results.append({'width':width,'automaticDebounce':True,'loadingAndMediaGating':True,'editedURLAndLateResultSafe':True,'invalidURLNoRequest':True,'closeCancelsScheduledWork':True,'retryPassed':True,'explicitConfirmationWrites':1,'writesAreMocked':True,'layoutPassed':True})
    page.close()

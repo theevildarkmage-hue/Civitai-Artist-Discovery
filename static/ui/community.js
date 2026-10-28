@@ -432,6 +432,15 @@ export function mountCommunity() {
       representative:art,imageCount:1};
     const card=window.DiscoveryGallery.createCard(artist,{
       images:[art],date:'',segment:'all',models:'',
+      // The preview API verified these tags, but did not populate the shared
+      // Gallery server cache. Keep its decision scoped to this preview so the
+      // post-submit gallery still performs its normal server-backed tag check.
+      imageTagState:new Map(),
+      checkImageTags:async imageId=>{
+        if(String(imageId)!==String(art.id) || !art.tagState?.known)
+          throw new Error('Image tags could not be checked. Please retry.');
+        return art.tagState;
+      },
       cardImageObserver:{observe(){},unobserve(){}},seenObserver:{observe(){},unobserve(){}},
       loadMore:async()=>{},canWrite:()=>false,
       // The review is read-only; inspect the public artwork in its own tab.
