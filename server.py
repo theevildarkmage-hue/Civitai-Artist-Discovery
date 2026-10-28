@@ -128,6 +128,7 @@ def community_content_profile(token):
             # Only legacy mirrors have unknown image sources to preserve.
             apply_image_filters=settings['applyImageFilters'] if raw or not imported else True,
             implicit_images=rules.implicit_images, rating_tags=rules.rating_tags,
+            unknown_images=rules.unknown_images, known_tag_ids=rules.known_tag_ids,
             creators=frozenset(r[0] for r in db.execute('select creator_id from hidden_creators')),
             usernames=frozenset(r[0] for r in db.execute('select username_key from hidden_creators where username_key is not null')),
             images=frozenset(r[0] for r in db.execute('select image_id from hidden_images')),

@@ -28,11 +28,18 @@ separately: personal-tag votes follow the tag switch; rating-tag votes are exclu
 when their rating exceeds the selected browsing ceiling. Moderated tags carrying
 `nsfwLevel` are not imported as personal hidden tags.
 
+Implicit image hides with a missing or invalid `tagId`, or a tag absent from the imported
+tag metadata, stay excluded as incomplete metadata. Local switches cannot relax these
+unclassified hides. A later complete import can resolve their source. Explicitly inactive
+hide records are ignored; a known tag marked unhidden is not treated as an unknown source.
+
 Older imports merged direct and implicit hides. Reads continue using the cached mirror
 while one background request recovers source information into the existing `sync_state`
 table. If Civitai is unavailable, a later read can retry after five minutes. Until recovery
 succeeds, image hides whose source is unknown remain excluded even when the artwork
 switch is off. This read-only request never edits reports or account preferences.
+Fixture mode and isolated test mode never start this automatic recovery, including reads
+through Daily and Time Machine routes.
 
 When tag filtering is off, preview-time tag verification is skipped. Details may still
 show imported hidden-tag annotations, but those annotations do not remove the image.

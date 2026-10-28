@@ -2,6 +2,7 @@
 import test_safety
 
 from concurrent.futures import ThreadPoolExecutor
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -106,6 +107,45 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual({101, 102}, self.store.hidden_image_ids())
             with self.store.connect() as db:
                 self.assertIsNone(self.store._state(db, 'hidden_image_preferences'))
+
+    def test_fixture_and_test_reads_never_schedule_upstream_recovery(self):
+        import server
+        settings = AppSettings(Path(self.temporary.name) / 'settings.json')
+        with patch.object(server, 'TASTE', self.store), patch.object(server, 'SETTINGS', settings), \
+                patch('discovery.taste.SocialClient.query') as query:
+            for mode, testing in [('fixture', ''), ('', '1'), ('fixture', '1')]:
+                with self.subTest(mode=mode, testing=testing), patch.dict(os.environ, {
+                        'CAD_COMMUNITY_MODE': mode, 'CAD_COMMUNITY_TESTING': testing}):
+                    self.store.ensure_hidden_preferences_current()
+                    self.assertEqual({101, 102}, self.store.hidden_image_ids())
+                    self.assertEqual(2, self.store.hidden_summary()['images'])
+                    self.assertEqual({101, 102}, server.hidden_preferences()[1])
+                    if mode == 'fixture' and testing == '1':
+                        self.assertEqual({101, 102}, server.community_content_profile(None).excluded_image_ids())
+                    self.assertIsNone(self.store._hidden_preferences_thread)
+                    self.assertEqual(0, self.store._hidden_preferences_retry_at)
+            query.assert_not_called()
+
+    def test_imported_unknown_sources_survive_reload_and_shared_profile(self):
+        import server
+        settings = AppSettings(Path(self.temporary.name) / 'settings.json')
+        settings.update(apply_tag_filters_value=False, apply_image_filters_value=False,
+                        browsing_levels_value=[1, 2, 4, 8, 16])
+        controls = {'hiddenUsers': [], 'blockedUsers': [], 'blockedByUsers': [],
+                    'hiddenTags': [{'id': 11, 'name': 'topic'}], 'hiddenImages': [101],
+                    'hiddenImagesImplicit': [102, {'id': 103}, {'id': 104, 'tagId': 999},
+                                             {'id': 105, 'tagId': 11}]}
+        with patch('discovery.taste.auth_status', return_value={'id': 7}), \
+                patch('discovery.taste.SocialClient.query', return_value=controls) as query:
+            self.store.import_hidden_preferences()
+            reloaded = TasteStore(Path(self.temporary.name))
+            expected = {102, 103, 104}
+            self.assertEqual(expected, reloaded.hidden_image_ids(include_tags=False, include_images=False,
+                                                                 levels=(1, 2, 4, 8, 16)))
+            with patch.object(server, 'TASTE', reloaded), patch.object(server, 'SETTINGS', settings):
+                self.assertEqual(expected, server.community_content_profile(None).excluded_image_ids())
+                self.assertEqual(expected, server.hidden_preferences()[1])
+            query.assert_called_once()
 
 
 if __name__ == '__main__':
