@@ -203,15 +203,41 @@ try:
         source = page.locator("#caSource").text_content()
         assert source.startswith('<p><strong>&lt;b&gt;Our&lt;/b&gt; <a href="https://civitai.red/collections/17980935">picks &amp; &lt;i&gt;jams&lt;/i&gt;</a> 30!</strong></p>'), source
         assert page.locator("#caPreview b, #caPreview i").count() == 0
+        # The same goes for the lines: only the placeholders become markup.
+        page.locator("#caLines").fill('<em id="injected">Literal</em> {items} & more')
+        assert page.locator("#caPreview em, #injected").count() == 0
+        assert '<br>' not in page.locator("#caSource").text_content().split('</p><p>')[-1]
+        assert page.locator("#caSource").text_content().endswith(
+            '<p>&lt;em id=&quot;injected&quot;&gt;Literal&lt;/em&gt; <strong>30</strong> &amp; more</p>'), page.locator("#caSource").text_content()
+        # While another collection loads, the editor is locked so nothing is saved under it.
+        locked = page.evaluate("""() => {
+            const select = document.getElementById('caCollection');
+            select.value = '%d';
+            select.dispatchEvent(new Event('change'));
+            return ['caTitle', 'caLines', 'caHeading', 'caCopyRich'].every(id => document.getElementById(id).disabled);
+        }""" % FOLLOWED)
+        assert locked, "the snippet editor stayed editable during a collection change"
 
         # A followed collection without a follower count says so in the snippet.
-        page.locator("#caCollection").select_option(str(FOLLOWED))
         page.wait_for_function("() => document.querySelectorAll('#caStats .ca-stat').length && document.getElementById('caOpen').textContent.includes('Museum')")
         assert page.locator("#caOwner").text_content() == "By Curator"
         assert texts(page, "#caStats .ca-stat strong")[2] == "—"
         assert page.locator("#caFollowersNote").is_visible()
         assert "<strong>?</strong> followers" in page.locator("#caSource").text_content()
         assert page.locator("#caTitle").input_value() == "The [Museum collection]"
+
+        assert not page.locator("#caTitle").is_disabled()
+        # Music Focus's edits were not saved under Museum.
+        assert "injected" not in page.evaluate("() => JSON.stringify(JSON.parse(localStorage.getItem('civitaiCollectalyticsSnippet'))['%d'] || {})" % FOLLOWED)
+
+        # Filters changed while the tab is hidden: the report is reread on return.
+        before = len(requests["collection"])
+        page.locator("#tabGallery").click()
+        page.evaluate("() => window.dispatchEvent(new Event('community-controls-changed'))")
+        assert len(requests["collection"]) == before, "a hidden tab must not read"
+        page.locator("#tabCollectalytics").click()
+        page.wait_for_function("count => document.querySelectorAll('#caBody:not(.hidden)').length", arg=1)
+        assert len(requests["collection"]) == before + 1, requests["collection"]
 
         # A reload restores the tab, the collection and the edited snippet.
         page.locator("#caCollection").select_option(str(FOCUS))

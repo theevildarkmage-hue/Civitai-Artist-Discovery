@@ -68,13 +68,13 @@ class FakeClient:
         raise AssertionError(procedure)
 
 
-signed_in = {"value": False}
+signed_in = {"value": False, "id": 7}
 
 
 def auth_status():
     if not signed_in["value"]:
         raise RuntimeError("Civitai is not connected")
-    return {"connected": True, "id": 7, "username": "Owner"}
+    return {"connected": True, "id": signed_in["id"], "username": "Owner"}
 
 
 # -- pure helpers -----------------------------------------------------------------------
@@ -113,7 +113,9 @@ FakeClient.pages = {
     ],
     # A cursor that repeats ends the read.
     FOLLOWED: [{"collectionItems": [image_row(7, 15, "Delta", 1)], "nextCursor": "0"}],
-    PRIVATE: [{"collectionItems": [], "nextCursor": "1"}],
+    # Civitai can drop every item on a page the viewer may not see and still go on.
+    PRIVATE: [{"collectionItems": [], "nextCursor": "1"},
+              {"collectionItems": [image_row(8, 16, "Epsilon", 3)], "nextCursor": None}],
 }
 
 httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -187,7 +189,7 @@ with patch.object(server, "COLLECTALYTICS", stats), \
         FakeClient.calls = []
         assert call(f"/api/collectalytics/collection?id={OWNED}")[1]["items"] == report["items"]
         assert FakeClient.calls == [], FakeClient.calls
-        assert stats.reports[OWNED][1]["items"][1]["thumbUrl"], "the cached copy keeps every still"
+        assert stats.reports[(7, OWNED)][1]["items"][1]["thumbUrl"], "the cached copy keeps every still"
         status, again = call(f"/api/collectalytics/collection?id={OWNED}&refresh=1")
         assert status == 200 and sum(name == "collection.getAllCollectionItems"
                                      for name, _ in FakeClient.calls) == 3, FakeClient.calls
@@ -198,9 +200,26 @@ with patch.object(server, "COLLECTALYTICS", stats), \
         assert followed["followers"] == 7 and followed["collection"]["ownerName"] == "Curator", followed
 
         # A private collection: details fail and no follower count is reported, yet the
-        # items still read; an empty page ends the read even with a cursor.
+        # items still read, past an empty page that still has a cursor.
         status, private = call(f"/api/collectalytics/collection?id={PRIVATE}")
-        assert status == 200 and private["items"] == [] and private["followers"] is None, private
+        assert status == 200 and private["followers"] is None, private
+        assert [item["itemId"] for item in private["items"]] == [8] and private["pages"] == 2, private
+
+        # Another account never gets the first account's copy.
+        signed_in["id"] = 8
+        FakeClient.calls = []
+        status, other = call(f"/api/collectalytics/collection?id={OWNED}")
+        assert status == 200 and any(name == "collection.getAllCollectionItems"
+                                     for name, _ in FakeClient.calls), FakeClient.calls
+        assert other["collection"]["owned"], other  # the fake says isOwner for everyone
+        signed_in["id"] = 7
+
+        # A read that spans a change of account is refused and not kept.
+        accounts = iter([7, 9])
+        with patch.object(server, "connected_user_id", lambda: next(accounts)):
+            status, answer = call(f"/api/collectalytics/collection?id={FOLLOWED}&refresh=1")
+        assert status == 409 and "account changed" in answer["error"], answer
+        assert (7, FOLLOWED) not in stats.reports, stats.reports.keys()
 
         # The read cap reports truncation instead of paging forever.
         with patch.object(collectalytics, "MAX_ITEM_PAGES", 2):
