@@ -26,7 +26,8 @@ def image_row(item_id, creator_id, name, minute, kind="video", level=1, key=None
             "createdAt": f"2026-10-2{minute // 60}T12:{minute % 60:02d}:00.000Z",
             "data": {"id": item_id, "type": kind, "name": f"{name}.mp4", "nsfwLevel": level,
                      "url": key or f"key-{item_id}", "createdAt": "2026-10-01T00:00:00.000Z",
-                     "user": {"id": creator_id, "username": name}}}
+                     "user": {"id": creator_id, "username": name},
+                     "metadata": {"duration": 61.5} if kind == "video" else {}}}
 
 
 class FakeClient:
@@ -88,8 +89,15 @@ assert entry["url"] == "https://civitai.red/images/1", entry
 assert entry["thumbUrl"].endswith("/key-1/anim=false,transcode=true,optimized=true,width=320/key-1.jpeg"), entry
 assert entry["addedAt"] == "2026-10-20T12:05:00.000Z" and entry["mediaType"] == "video", entry
 assert entry["profileUrl"] == "https://civitai.red/user/Alpha", entry
+assert entry["duration"] == 61.5, entry
 still = item_entry(image_row(2, 11, "Alpha", 5, kind="image"))
 assert "/width=320/" in still["thumbUrl"] and "transcode" not in still["thumbUrl"], still
+# Only videos have a length; a missing, zero, absurd or non-numeric one is unknown.
+assert still["duration"] is None, still
+for metadata in ({}, {"duration": 0}, {"duration": "x"}, {"duration": 90000}, None):
+    row = image_row(4, 11, "Alpha", 5)
+    row["data"]["metadata"] = metadata
+    assert item_entry(row)["duration"] is None, metadata
 # A full URL instead of a CDN key gives no still rather than a broken one.
 assert item_entry(image_row(3, 11, "Alpha", 5, key="https://elsewhere/x.jpeg"))["thumbUrl"] is None
 model = item_entry({"id": 1, "type": "model", "createdAt": None,

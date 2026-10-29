@@ -36,6 +36,8 @@ def item(index, creator, hours_ago, hidden=False):
             "createdAt": None, "creatorId": 100 + creator, "creator": f"Composer{creator}",
             "profileUrl": f"https://civitai.red/user/Composer{creator}", "name": f"track{index}.mp4",
             "nsfwLevel": 1, "url": f"https://civitai.red/images/{item_id}",
+            # Two videos have no length on Civitai; the rest run 61.5 seconds.
+            "duration": None if index in (3, 4) else 61.5,
             "thumbUrl": None if hidden else f"https://image.civitai.com/ca/{item_id}.jpeg",
             **({"thumbHidden": True} if hidden else {})}
 
@@ -128,7 +130,12 @@ try:
         labels = texts(page, "#caStats .ca-stat span")
         assert tiles[:3] == ["30", str(CREATORS), "30"], tiles
         assert labels[:3] == ["videos collected", "unique creators", "followers"], labels
-        assert labels[4].startswith("last added"), labels
+        # 28 timed videos of 61.5s: 28m 42s, with the two untimed ones named.
+        assert tiles[3] == "28m 42s", tiles
+        assert labels[3] == "of video content · 2 videos have no length on Civitai", labels
+        assert labels[5].startswith("last added"), labels
+        # The intro sits on one line on a wide screen.
+        assert page.evaluate("() => { const note = document.querySelector('.ca-head .discovery-note'); return note.getClientRects().length && note.getBoundingClientRect().height < 24; }")
         assert page.locator("#caOpen").get_attribute("href") == COLLECTIONS[0]["url"]
         # The creator check opens on whoever was added last.
         assert page.locator("#caCreator").input_value() == ITEMS[0]["creator"]
@@ -235,6 +242,9 @@ try:
         source = page.locator("#caSource").text_content()
         assert source.startswith('<p><strong>&lt;b&gt;Our&lt;/b&gt; <a href="https://civitai.red/collections/17980935">picks &amp; &lt;i&gt;jams&lt;/i&gt;</a> 30!</strong></p>'), source
         assert page.locator("#caPreview b, #caPreview i").count() == 0
+        # {duration} becomes the summed video length, bold.
+        page.locator("#caLines").fill("{duration} of video content")
+        assert page.locator("#caSource").text_content().endswith("<p><strong>28m 42s</strong> of video content</p>"), page.locator("#caSource").text_content()
         # The same goes for the lines: only the placeholders become markup.
         page.locator("#caLines").fill('<em id="injected">Literal</em> {items} & more')
         assert page.locator("#caPreview em, #injected").count() == 0

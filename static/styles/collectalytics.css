@@ -1,5 +1,7 @@
 /* Collectalytics: statistics for one collection, a creator check and a snippet maker. */
 .ca-head { width: 100%; max-width: 1880px; margin: 0 auto 12px; gap: 10px; }
+/* The intro is one sentence pair; the shared 62ch cap broke it mid-line on wide screens. */
+.ca-head .discovery-note { max-width: none; }
 .ca-picker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ca-picker select { min-height: 36px; max-width: min(420px, 70vw); padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); color: var(--text); font: inherit; }
 .ca-picker span { color: var(--muted); font-size: 13px; }

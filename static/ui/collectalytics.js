@@ -84,6 +84,22 @@ export function collectionTitle(name) {
   return /\bcollection\b/i.test(clean) ? `The [${clean}]` : `The [${clean}] collection`;
 }
 
+// "2h 48m 20s": every unit from the largest one present down to seconds.
+export function formatDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600), minutes = Math.floor(total % 3600 / 60), rest = total % 60;
+  if (hours) return `${hours}h ${minutes}m ${rest}s`;
+  return minutes ? `${minutes}m ${rest}s` : `${rest}s`;
+}
+
+// The summed length of the videos, and how many have no length on Civitai.
+export function videoLength(items) {
+  const videos = items.filter(item => item.mediaType === 'video');
+  const timed = videos.filter(item => Number(item.duration) > 0);
+  return { videos: videos.length, missing: videos.length - timed.length,
+    seconds: timed.reduce((sum, item) => sum + Number(item.duration), 0) };
+}
+
 // What a collection is "of", for "177 videos collected".
 export function itemNoun(items) {
   const kinds = new Set(items.map(item => item.kind === 'image' ? item.mediaType : item.kind));
@@ -291,6 +307,12 @@ export function mountCollectalytics() {
       [number(analysis.creators.size), 'unique creators'],
       [report.followers == null ? '—' : number(report.followers), report.followers == null ? 'followers (not reported for private collections)' : 'followers'],
     ];
+    const length = videoLength(report.items);
+    if (length.videos && length.missing < length.videos) {
+      tiles.push([formatDuration(length.seconds), length.missing
+        ? `of video content · ${number(length.missing)} video${length.missing === 1 ? ' has' : 's have'} no length on Civitai`
+        : 'of video content']);
+    }
     if (analysis.first && analysis.last) {
       const days = Math.max(1, Math.round((startOfDay(analysis.last) - startOfDay(analysis.first)) / DAY_MS) + 1);
       tiles.push([(analysis.dated.length / days).toFixed(1), `per day over ${number(days)} day${days === 1 ? '' : 's'}`]);
@@ -615,7 +637,8 @@ export function mountCollectalytics() {
   function currentSnippet() {
     const { report, analysis } = state;
     const values = { creators: number(analysis.creators.size), items: number(report.items.length),
-      followers: report.followers == null ? '?' : number(report.followers), noun: itemNoun(report.items) };
+      followers: report.followers == null ? '?' : number(report.followers), noun: itemNoun(report.items),
+      duration: formatDuration(videoLength(report.items).seconds) };
     return snippet({ title: $('caTitle').value, lines: $('caLines').value, heading: $('caHeading').value }, values, report.collection.url);
   }
 
