@@ -146,12 +146,14 @@ export function buckets(dated, unit) {
 // article editor, model descriptions and post descriptions are produced: a heading
 // (or a bold line), one paragraph with line breaks, <strong> and a plain link.
 export function snippet({ title, lines, heading }, values, url) {
-  const fill = (text, html) => text.replace(/\{(\w+)\}/g, (match, name) => {
-    if (!(name in values)) return html ? escapeHTML(match) : match;
-    const value = values[name];
-    if (!html) return String(value);
+  // Typed text is escaped piece by piece; only the placeholders gain markup.
+  const fill = (text, html) => text.split(/(\{\w+\})/).map(part => {
+    const name = part.match(/^\{(\w+)\}$/)?.[1];
+    if (!name || !(name in values)) return html ? escapeHTML(part) : part;
+    const value = String(values[name]);
+    if (!html) return value;
     return name === 'noun' ? escapeHTML(value) : `<strong>${escapeHTML(value)}</strong>`;
-  });
+  }).join('');
   const titleHTML = (() => {
     const match = title.match(/^(.*?)\[(.+?)\](.*)$/s);
     if (!match) return escapeHTML(fill(title, false));
@@ -172,6 +174,8 @@ export function mountCollectalytics() {
     collections: null, selected: saved.collectionId ?? null, report: null, analysis: null,
     bucket: saved.bucket === 'week' ? 'week' : 'day', allCreators: false, creatorKey: null,
     day: null, loading: 0, listing: null, active: false, account: undefined,
+    // Bumped when the account changes, so answers for the previous one are dropped.
+    epoch: 0, stale: false,
   };
   const section = $('collectalytics');
   if (!section) return { setActive() {} };
@@ -186,20 +190,27 @@ export function mountCollectalytics() {
   }
 
   function loadCollections(refresh = false) {
-    state.listing ??= readCollections(refresh).finally(() => { state.listing = null; });
-    return state.listing;
+    if (state.listing?.epoch === state.epoch) return state.listing.promise;
+    const listing = { epoch: state.epoch };
+    listing.promise = readCollections(refresh, listing.epoch).finally(() => {
+      if (state.listing === listing) state.listing = null;
+    });
+    state.listing = listing;
+    return listing.promise;
   }
 
-  async function readCollections(refresh) {
+  async function readCollections(refresh, epoch) {
     message('Reading your collections from Civitai…');
     try {
       const { collections } = await api(`/api/collectalytics/collections${refresh ? '?refresh=1' : ''}`);
+      if (epoch !== state.epoch) return;
       state.collections = collections;
       renderPicker();
       if (!collections.length) { message('No collections found that you own or follow.'); return; }
       const keep = collections.find(item => item.id === state.selected);
       await open(keep ? keep.id : collections[0].id, false);
     } catch (error) {
+      if (epoch !== state.epoch) return;
       state.collections = null;
       message(error.message, true);
       $('caBody').classList.add('hidden');
@@ -234,6 +245,8 @@ export function mountCollectalytics() {
     save();
     $('caCollection').value = String(id);
     $('caRefresh').disabled = true;
+    // The editor belongs to the report on screen; it waits until the new one arrives.
+    setSnippetEnabled(false);
     const name = state.collections?.find(item => item.id === id)?.name || 'the collection';
     message(`Reading ${name} from Civitai… a large collection takes a few seconds.`);
     try {
@@ -254,8 +267,13 @@ export function mountCollectalytics() {
     }
   }
 
+  function setSnippetEnabled(enabled) {
+    for (const id of ['caTitle', 'caLines', 'caHeading', 'caSnippetReset', 'caCopyRich', 'caCopySource']) $(id).disabled = !enabled;
+  }
+
   function render() {
     $('caBody').classList.remove('hidden');
+    setSnippetEnabled(true);
     renderStats();
     renderDays();
     renderRecent();
@@ -553,12 +571,12 @@ export function mountCollectalytics() {
 
   function snippetSettings() {
     const all = readJSON(localStorage, SNIPPET_KEY);
-    return all[state.selected] || null;
+    return all[state.report.collection.id] || null;
   }
 
   function storeSnippet() {
     const all = readJSON(localStorage, SNIPPET_KEY);
-    all[state.selected] = { title: $('caTitle').value, lines: $('caLines').value, heading: $('caHeading').value };
+    all[state.report.collection.id] = { title: $('caTitle').value, lines: $('caLines').value, heading: $('caHeading').value };
     localStorage.setItem(SNIPPET_KEY, JSON.stringify(all));
   }
 
@@ -660,11 +678,12 @@ export function mountCollectalytics() {
     renderCreators();
   });
   for (const id of ['caTitle', 'caLines', 'caHeading']) {
-    $(id).addEventListener('input', () => { storeSnippet(); updatePreview(); });
+    $(id).addEventListener('input', () => { if (!state.report) return; storeSnippet(); updatePreview(); });
   }
   $('caSnippetReset').addEventListener('click', () => {
+    if (!state.report) return;
     const all = readJSON(localStorage, SNIPPET_KEY);
-    delete all[state.selected];
+    delete all[state.report.collection.id];
     localStorage.setItem(SNIPPET_KEY, JSON.stringify(all));
     renderSnippet();
   });
@@ -676,8 +695,11 @@ export function mountCollectalytics() {
     if (state.account === undefined) { state.account = account; return; }
     if (account === state.account) return;
     state.account = account;
+    state.epoch++;
     state.collections = null;
     state.report = null;
+    state.analysis = null;
+    state.stale = false;
     state.loading++;
     $('caBody').classList.add('hidden');
     if (state.active) loadCollections();
@@ -691,14 +713,20 @@ export function mountCollectalytics() {
     if (state.analysis) renderDays();
   }).observe($('caDays').parentElement);
   // Content levels and hidden lists decide which stills may show.
+  // While the tab is hidden the report is only marked, and reread on return.
   window.addEventListener('community-controls-changed', () => {
-    if (state.active && state.report) open(state.selected, false);
+    if (!state.report) return;
+    if (state.active) { open(state.selected, false); return; }
+    state.stale = true;
+    $('caBody').classList.add('hidden');
   });
 
   return {
     setActive(active) {
       state.active = active;
-      if (active && !state.collections) loadCollections();
+      if (!active) return;
+      if (!state.collections) { loadCollections(); return; }
+      if (state.stale) { state.stale = false; open(state.selected, false); }
     },
   };
 }

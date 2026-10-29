@@ -1520,8 +1520,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"error": "Choose a collection by its ID"}, 400)
                 return
             try:
-                report = COLLECTALYTICS.report(connected_user_id(), collection_id,
+                user_id = connected_user_id()
+                report = COLLECTALYTICS.report(user_id, collection_id,
                                                refresh=query.get("refresh", ["0"])[0] == "1")
+                # Each page fetches the token afresh, so a read spanning a change of
+                # account may mix two accounts' views. Neither keeps it.
+                if connected_user_id() != user_id:
+                    COLLECTALYTICS.forget(user_id, collection_id)
+                    self.json_response({"error": "The signed-in account changed. Open the collection again."}, 409)
+                    return
                 hidden_creators, hidden_images = hidden_preferences()
                 self.json_response(with_visible_thumbs(report, HISTORY.visible_levels,
                                                        hidden_creators, hidden_images))

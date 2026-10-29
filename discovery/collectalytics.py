@@ -12,7 +12,8 @@ From Civitai's source (Oct 2026):
   for someone else's collection, ``ownerUsername``.
 - ``collection.getAllCollectionItems`` pages accepted items newest added first. Each row
   is ``{id, type, createdAt, data}``, where ``createdAt`` is when the item was added and
-  ``data`` is the image, post, model or article with its ``user``.
+  ``data`` is the image, post, model or article with its ``user``. Items the viewer may
+  not see are dropped after the cursor is set, so a page can be empty mid-collection.
 - No call returns a follower count as such. ``collection.getInfinite`` reports
   ``_count.contributors``, every CollectionContributor row: the owner's own row, written
   when the collection is created, each follower, and each collaborator. ``getById``
@@ -146,9 +147,10 @@ class Collectalytics:
         self.lock = threading.Lock()
         # By account: when the list was read and the collections in it.
         self.choices: dict[int | None, tuple[float, list[dict]]] = {}
-        # By collection id: when it was read and the answer served for it.
-        self.reports: dict[int, tuple[float, dict]] = {}
-        self.report_locks: dict[int, threading.Lock] = {}
+        # By account and collection id: when it was read and the answer served for it.
+        # Per account, because Civitai filters items by viewer and ``owned`` is theirs.
+        self.reports: dict[tuple[int | None, int], tuple[float, dict]] = {}
+        self.report_locks: dict[tuple[int | None, int], threading.Lock] = {}
 
     def collections(self, user_id: int | None, refresh: bool = False) -> list[dict]:
         with self.lock:
@@ -174,9 +176,9 @@ class Collectalytics:
             # Only what the account owns or follows; anything else is not this tab's to read.
             raise NotListed("That collection is not one you own or follow")
         with self.lock:
-            lock = self.report_locks.setdefault(collection_id, threading.Lock())
+            lock = self.report_locks.setdefault((user_id, collection_id), threading.Lock())
         with lock:
-            cached = self.reports.get(collection_id)
+            cached = self.reports.get((user_id, collection_id))
             if cached and not refresh and time.monotonic() - cached[0] < CACHE_SECONDS:
                 return cached[1]
             client = self.social()
@@ -185,8 +187,12 @@ class Collectalytics:
             report = {"collection": {**choice, **detail.pop("collection")}, **detail,
                       "items": items, "pages": pages, "truncated": truncated,
                       "fetchedAt": datetime.now(timezone.utc).isoformat()}
-            self.reports[collection_id] = (time.monotonic(), report)
+            self.reports[(user_id, collection_id)] = (time.monotonic(), report)
             return report
+
+    def forget(self, user_id: int | None, collection_id: int) -> None:
+        with self.lock:
+            self.reports.pop((user_id, int(collection_id)), None)
 
     @staticmethod
     def _items(client, collection_id: int) -> tuple[list[dict], int, bool]:
@@ -205,9 +211,10 @@ class Collectalytics:
                 if entry:
                     items.setdefault(entry["collectionItemId"], entry)
             cursor = value.get("nextCursor")
-            # A page with no rows, or a cursor seen before, ends the read even if more is
-            # promised, so a misbehaving cursor cannot spin.
-            if cursor is None or not rows or str(cursor) in seen:
+            # Civitai sets the cursor before dropping items the viewer may not see, so an
+            # empty page can still have more behind it. Only a missing or repeated cursor
+            # ends the read; the page cap bounds the rest.
+            if cursor is None or str(cursor) in seen:
                 return list(items.values()), page, False
             seen.add(str(cursor))
         return list(items.values()), MAX_ITEM_PAGES, True
