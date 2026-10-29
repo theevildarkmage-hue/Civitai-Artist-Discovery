@@ -23,10 +23,10 @@ try:
    assert page.locator('h1').inner_text()=='Civitai Discovery 3.0 Beta'
    assert page.locator('#appVersion').inner_text().startswith('v3.')
    assert page.locator('.app-logo').get_attribute('alt')==''
-   for tab in ('tabCommunity','tabGallery','tabTimeMachine','tabDiscovery'):
+   for tab in ('tabCommunity','tabGallery','tabTimeMachine','tabCollectalytics','tabDiscovery'):
     assert page.locator('#'+tab+' svg.ui-icon[aria-hidden="true"]').count()==1
    sizes=page.locator('.view-tabs > button > svg').evaluate_all('(xs)=>xs.map(x=>[getComputedStyle(x).width,getComputedStyle(x).height])')
-   assert len(sizes)==4 and len({tuple(x) for x in sizes})==1,sizes
+   assert len(sizes)==5 and len({tuple(x) for x in sizes})==1,sizes
    page.locator('#tabGallery').click()
    assert page.locator('#tabGallery').get_attribute('aria-pressed')=='true'
    page.locator('#tabCommunity').click()
