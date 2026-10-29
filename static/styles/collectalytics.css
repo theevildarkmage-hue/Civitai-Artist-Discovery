@@ -15,8 +15,23 @@
 .ca-stat strong { font-size: 28px; line-height: 1.15; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .ca-stat span { color: var(--muted); font-size: 12px; }
 
-.ca-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; align-items: start; }
-.ca-grid .panel.wide { grid-column: 1 / -1; }
+/* One column on phones; two from 760px. From 1200px the recent list runs down the left
+   third while the creator check and the creator bars stack in the other two thirds. */
+.ca-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (min-width: 760px) {
+  .ca-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ca-days-panel, .ca-bars-panel, .ca-snippet-panel { grid-column: 1 / -1; }
+}
+/* The creator check and bars are one column only on wide windows. */
+.ca-side { display: contents; }
+@media (min-width: 1200px) {
+  .ca-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .ca-days-panel { grid-column: 1 / -1; }
+  .ca-recent-panel { grid-column: span 2; }
+  .ca-side { grid-column: span 4; display: grid; gap: 16px; align-content: start; min-width: 0; }
+  .ca-snippet-panel { grid-column: 1 / -1; }
+  .ca-bars { max-height: 560px; }
+}
 .ca-panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .ca-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
 .ca-toggle button { padding: 6px 12px; border: 0; border-radius: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
@@ -92,7 +107,7 @@ textarea.ca-input { resize: vertical; line-height: 1.5; }
 .ca-field > span { font-size: 13px; font-weight: 700; }
 .ca-field small { color: var(--muted); font-size: 12px; }
 .ca-field select { justify-self: start; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font: inherit; }
-#caSnippetReset { justify-self: start; }
+#caSnippetReset { justify-self: start; margin: 0; padding-left: 0; }
 .ca-warning { margin: 0; color: #f5c86a; font-size: 12px; }
 .ca-snippet-output { display: grid; gap: 10px; min-width: 0; }
 /* Roughly how Civitai's article body shows it: its dark surface and type sizes. */

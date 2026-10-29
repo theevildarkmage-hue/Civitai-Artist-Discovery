@@ -185,6 +185,32 @@ with patch.object(server, "COLLECTALYTICS", stats), \
         assert shown == {1: (True, False), 2: (False, True), 3: (False, True), 4: (True, False),
                          5: (False, True), 6: (False, True)}, shown
 
+        # -- the detail dialog's reader ------------------------------------------------
+        public = []
+
+        def public_listing(params, **options):
+            public.append((params, options))
+            return {"items": [{"id": params["imageId"], "url": "https://image.civitai.com/x/original=true/a.mp4",
+                               "type": "video", "username": "Alpha", "width": 720, "height": 1280,
+                               "nsfwLevel": 1, "meta": {"prompt": "a riff"}, "stats": {"heartCount": 2}}]}, 10
+
+        with patch.object(server.HISTORY, "_request", public_listing), \
+                patch.object(server.TASTE, "image_tags", lambda image_id: {"known": True, "tags": []}):
+            status, detail = call("/api/collectalytics/image?id=1")
+            assert status == 200 and detail["prompt"] == "a riff" and detail["type"] == "video", detail
+            assert "transcode=true,width=768" in detail["detailVideoUrl"], detail
+            assert detail["stats"]["reactionCount"] == 2 and detail["known"] is True, detail
+            assert public[0][0] == {"imageId": 1, "withMeta": "true", "browsingLevel": 1}, public
+            # Cached: a second open asks nothing.
+            assert call("/api/collectalytics/image?id=1")[0] == 200 and len(public) == 1
+            # Not listed by this tab, or filtered out for the reader: refused, nothing asked.
+            assert call("/api/collectalytics/image?id=999")[0] == 404
+            assert call("/api/collectalytics/image?id=2")[0] == 403   # R, above PG-13
+            assert call("/api/collectalytics/image?id=3")[0] == 403   # hidden creator
+            assert call("/api/collectalytics/image?id=6")[0] == 403   # hidden image
+            assert call("/api/collectalytics/image?id=x")[0] == 400
+            assert len(public) == 1, public
+
         # Served from memory until refreshed, and the filtering never touches the cache.
         FakeClient.calls = []
         assert call(f"/api/collectalytics/collection?id={OWNED}")[1]["items"] == report["items"]
