@@ -12,7 +12,8 @@ From Civitai's source (Oct 2026):
   for someone else's collection, ``ownerUsername``.
 - ``collection.getAllCollectionItems`` pages accepted items newest added first. Each row
   is ``{id, type, createdAt, data}``, where ``createdAt`` is when the item was added and
-  ``data`` is the image, post, model or article with its ``user``. Items the viewer may
+  ``data`` is the image, post, model or article with its ``user``; a video's length is
+  ``data.metadata.duration`` in seconds, when Civitai measured it. Items the viewer may
   not see are dropped after the cursor is set, so a page can be empty mid-collection.
 - No call returns a follower count as such. ``collection.getInfinite`` reports
   ``_count.contributors``, every CollectionContributor row: the owner's own row, written
@@ -91,6 +92,16 @@ def thumb_url(key: str, media_type: str) -> str | None:
     return f"{CDN_ROOT}/{quoted}/width={THUMB_WIDTH}/{quoted}.jpeg"
 
 
+def video_duration(data: dict) -> float | None:
+    """Seconds, from the video's ``metadata.duration``; None when Civitai has none."""
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    try:
+        seconds = float(metadata.get("duration"))
+    except (TypeError, ValueError):
+        return None
+    return seconds if 0 < seconds < 86400 else None
+
+
 def item_entry(row: object) -> dict | None:
     """One collection item, reduced to what the statistics and the lookup show."""
     if not isinstance(row, dict) or _int(row.get("id")) is None:
@@ -112,6 +123,7 @@ def item_entry(row: object) -> dict | None:
         "url": f"{SITE_ORIGIN}/{ITEM_PATHS[kind]}/{item_id}" if kind in ITEM_PATHS and item_id
         else None,
         "thumbUrl": thumb_url(_text(data.get("url")), media) if kind == "image" else None,
+        "duration": video_duration(data) if media == "video" else None,
     }
     if kind == "image" and item_id:
         entry["url"] = image_url(item_id)
