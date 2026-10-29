@@ -4,6 +4,7 @@ import { api } from './api.js';
 // check for "what have I added from them lately", and a Civitai-ready stats snippet.
 // The server hands over every accepted item; the counting is done here so days follow
 // the reader's own time zone.
+// The last opened collection and the day/week choice, kept across restarts.
 const STATE_KEY = 'civitaiCollectalytics';
 const SNIPPET_KEY = 'civitaiCollectalyticsSnippet';
 const TOP_CREATORS = 20;
@@ -183,7 +184,7 @@ export function snippet({ title, lines, heading }, values, url) {
 }
 
 export function mountCollectalytics() {
-  const saved = readJSON(sessionStorage, STATE_KEY);
+  const saved = readJSON(localStorage, STATE_KEY);
   const state = {
     collections: null, selected: saved.collectionId ?? null, report: null, analysis: null,
     bucket: saved.bucket === 'week' ? 'week' : 'day', allCreators: false, creatorKey: null,
@@ -195,7 +196,7 @@ export function mountCollectalytics() {
   if (!section) return { setActive() {} };
 
   function save() {
-    sessionStorage.setItem(STATE_KEY, JSON.stringify({ collectionId: state.selected, bucket: state.bucket }));
+    localStorage.setItem(STATE_KEY, JSON.stringify({ collectionId: state.selected, bucket: state.bucket }));
   }
 
   function message(text, error = false) {

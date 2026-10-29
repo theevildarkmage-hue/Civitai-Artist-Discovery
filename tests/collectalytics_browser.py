@@ -312,6 +312,21 @@ try:
         page.wait_for_function("() => { const svg = document.getElementById('caDays'); return Number(svg.getAttribute('width')) <= svg.parentElement.clientWidth + 1 || document.querySelectorAll('#caDays .ca-hit').length > 12; }")
         page.screenshot(path=str(test_safety.REPORTS / "collectalytics-mobile.png"), full_page=True)
 
+        # The last opened collection is remembered in a new window, not just this one.
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.locator("#caCollection").select_option(str(FOLLOWED))
+        page.wait_for_function("() => document.getElementById('caOpen').textContent.includes('Museum')")
+        second = context.new_page()
+        install_fixture(second, base_url)
+        second.route("**/*", routes)
+        before = len(requests["collection"])
+        second.goto(base_url, wait_until="networkidle")
+        second.locator("#tabCollectalytics").click()
+        second.wait_for_function("() => document.getElementById('caOpen').textContent.includes('Museum')")
+        assert requests["collection"][before]["id"] == [str(FOLLOWED)], requests["collection"][before:]
+        assert second.locator("#caCollection").input_value() == str(FOLLOWED)
+        second.close()
+
         # Signing out leaves no collection data on screen.
         page.set_viewport_size({"width": 1440, "height": 900})
         page.locator("#disconnect").click()
