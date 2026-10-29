@@ -56,7 +56,7 @@ REPORTS = {
 server = ThreadingHTTPServer(("127.0.0.1", 0), partial(StaticHandler, directory=str(ROOT / "static")))
 threading.Thread(target=server.serve_forever, daemon=True).start()
 base_url = f"http://127.0.0.1:{server.server_port}"
-requests = {"collections": [], "collection": []}
+requests = {"collections": [], "collection": [], "image": []}
 
 
 def routes(route):
@@ -74,6 +74,13 @@ def routes(route):
     elif parsed.path == "/api/collectalytics/collection":
         requests["collection"].append(query)
         data = REPORTS[int(query["id"][0])]
+    elif parsed.path == "/api/collectalytics/image":
+        requests["image"].append(query)
+        image_id = int(query["id"][0])
+        data = {"id": image_id, "type": "video", "username": "Composer0", "url": f"https://image.civitai.com/ca/{image_id}.jpeg",
+                "thumbnailUrl": f"https://image.civitai.com/ca/{image_id}.jpeg", "detailImageUrl": f"https://image.civitai.com/ca/{image_id}.jpeg",
+                "civitaiUrl": f"https://civitai.red/images/{image_id}", "width": 720, "height": 1280, "baseModel": "Wan",
+                "createdAt": NOW.isoformat(), "stats": {"reactionCount": 4}, "prompt": "a guitar solo", "known": True, "tags": []}
     elif parsed.path == "/api/oauth/disconnect":
         data = {"disconnected": True}
     else:
@@ -123,6 +130,9 @@ try:
         assert labels[:3] == ["videos collected", "unique creators", "followers"], labels
         assert labels[4].startswith("last added"), labels
         assert page.locator("#caOpen").get_attribute("href") == COLLECTIONS[0]["url"]
+        # The creator check opens on whoever was added last.
+        assert page.locator("#caCreator").input_value() == ITEMS[0]["creator"]
+        assert page.locator("#caCreatorReport .ca-dot").count() >= 1
 
         # One bar per day with additions; empty days are kept as gaps, not dropped.
         days = page.evaluate("() => document.querySelectorAll('#caDays .ca-hit').length")
@@ -171,6 +181,27 @@ try:
         page.locator("#caCreator").fill("Nobody here")
         assert "Nothing from" in page.locator("#caCreatorReport").text_content()
 
+        # A still opens in the app's own detail dialog, read through this tab's route.
+        page.locator("#caCreator").fill("Composer0")
+        page.locator("#caCreatorReport .ca-thumb").first.click()
+        page.wait_for_function("() => document.getElementById('details').open && document.getElementById('detailPrompt').textContent === 'a guitar solo'")
+        assert requests["image"][-1]["id"] == [str(mine[0]["itemId"])], requests["image"]
+        assert page.locator("#detailCreator").text_content() == "@Composer0"
+        assert len(context.pages) == 1, "the click must not open Civitai"
+        page.locator("#close").click()
+        page.wait_for_function("() => !document.getElementById('details').open")
+
+        # Wide windows: the recent list down the left third; the creator check and the
+        # creator bars stacked in the other two thirds; the snippet across the bottom.
+        boxes = page.evaluate("""() => Object.fromEntries(['.ca-recent-panel', '.ca-creator-panel', '.ca-bars-panel', '.ca-snippet-panel', '.ca-days-panel']
+            .map(selector => { const box = document.querySelector(selector).getBoundingClientRect(); return [selector, [Math.round(box.top), Math.round(box.left), Math.round(box.width)]]; }))""")
+        recent, creator, bars, snippet, days = (boxes[key] for key in ('.ca-recent-panel', '.ca-creator-panel', '.ca-bars-panel', '.ca-snippet-panel', '.ca-days-panel'))
+        assert recent[0] == creator[0] and creator[2] > 1.8 * recent[2], boxes
+        assert bars[1] == creator[1] and bars[0] > creator[0], boxes
+        gap = page.evaluate("() => document.querySelector('.ca-bars-panel').getBoundingClientRect().top - document.querySelector('.ca-creator-panel').getBoundingClientRect().bottom")
+        assert 0 < gap <= 20, f"the creator bars should follow the creator check directly, not {gap}px below"
+        assert snippet[2] == days[2], boxes
+
         # Bars, most collected first; choosing one opens it in the creator check.
         names = texts(page, "#caCreatorBars .ca-bar-name")
         assert names[0] == "Composer0" and len(names) == CREATORS, names
@@ -178,7 +209,8 @@ try:
         assert page.locator("#caCreator").input_value() == names[1]
 
         # The snippet: the user's own example, rendered and as markup.
-        expected = (f'<h2>The <a href="https://civitai.red/collections/{FOCUS}">Music Focus collection 🎸</a></h2>'
+        # The name is the brand: linked exactly as written, with "collection" after it.
+        expected = (f'<h2>The <a href="https://civitai.red/collections/{FOCUS}">Music Focus 🎸</a> collection</h2>'
                     f'<p><strong>{CREATORS}</strong> unique creators 🎶<br><strong>30</strong> videos collected<br>'
                     '<strong>30</strong> followers</p>')
         assert page.locator("#caSource").text_content() == expected, page.locator("#caSource").text_content()
@@ -192,7 +224,7 @@ try:
                      text: await (await entry.getType('text/plain')).text() };
         }""")
         assert expected in clipboard["html"], clipboard
-        assert clipboard["text"] == f"The Music Focus collection 🎸\n{CREATORS} unique creators 🎶\n30 videos collected\n30 followers", clipboard
+        assert clipboard["text"] == f"The Music Focus 🎸 collection\n{CREATORS} unique creators 🎶\n30 videos collected\n30 followers", clipboard
         page.locator("#caCopySource").click()
         page.wait_for_function("() => document.getElementById('caCopyStatus').textContent === 'HTML copied.'")
         assert page.evaluate("() => navigator.clipboard.readText()") == expected
@@ -224,7 +256,7 @@ try:
         assert texts(page, "#caStats .ca-stat strong")[2] == "—"
         assert page.locator("#caFollowersNote").is_visible()
         assert "<strong>?</strong> followers" in page.locator("#caSource").text_content()
-        assert page.locator("#caTitle").input_value() == "The [Museum collection]"
+        assert page.locator("#caTitle").input_value() == "The [Museum] collection"
 
         assert not page.locator("#caTitle").is_disabled()
         # Music Focus's edits were not saved under Museum.
@@ -248,6 +280,11 @@ try:
         page.wait_for_function("() => document.getElementById('tabCollectalytics').getAttribute('aria-pressed') === 'true'")
         page.wait_for_function("() => document.getElementById('caOpen').textContent.includes('Music Focus')")
         assert page.locator("#caHeading").input_value() == "p"
+        # Only edited fields are kept, so the default title still follows the name.
+        page.locator("#caSnippetReset").click()
+        page.locator("#caHeading").select_option("h3")
+        kept = page.evaluate("() => JSON.parse(localStorage.getItem('civitaiCollectalyticsSnippet'))['%d']" % FOCUS)
+        assert kept == {"heading": "h3"}, kept
         page.locator("#caSnippetReset").click()
         assert page.locator("#caSource").text_content() == expected
 

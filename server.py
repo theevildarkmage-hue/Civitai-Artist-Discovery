@@ -32,7 +32,8 @@ from discovery.capture import AutoCapture
 from discovery.archive_calendar import build_request as archive_build_request
 from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
-from discovery.collectalytics import Collectalytics, NotListed, with_visible_thumbs
+from discovery.collectalytics import (Collectalytics, NotListed, Unavailable, thumb_allowed,
+                                      with_visible_thumbs)
 from discovery.history import HistoryArchive, RetryBudgetExhausted, parse_day, previous_local_day
 from discovery.selection import GallerySelection, media_type
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
@@ -1535,6 +1536,33 @@ class Handler(BaseHTTPRequestHandler):
             except PermissionError as error: self.json_response({"error": str(error)}, 401)
             except NotListed as error: self.json_response({"error": str(error)}, 404)
             except Exception as error: self.internal_error("Collectalytics collection", error)
+            return
+        if parsed.path == "/api/collectalytics/image":
+            try: image_id = int(query.get("id", [""])[0])
+            except ValueError:
+                self.json_response({"error": "Choose an image by its ID"}, 400)
+                return
+            try:
+                user_id = connected_user_id()
+                item = COLLECTALYTICS.listed_image(user_id, image_id)
+                hidden_creators, hidden_images = hidden_preferences()
+                # The same rule as the stills: what the reader filters out stays closed.
+                if not thumb_allowed(item, HISTORY.visible_levels, hidden_creators, hidden_images):
+                    self.json_response({"error": "This item is hidden by your content filters."}, 403)
+                    return
+                detail = HISTORY.decorate_video_thumbnail(
+                    COLLECTALYTICS.detail(user_id, image_id, HISTORY._request))
+                try:
+                    tags = TASTE.image_tags(image_id)
+                    if not tags["known"] and connected_or_false():
+                        tags = TASTE.ensure_image_tags(SocialClient(), image_id)
+                    detail = {**detail, **tags}
+                except Exception:
+                    detail = {**detail, "known": False, "tags": []}
+                self.json_response(detail)
+            except NotListed as error: self.json_response({"error": str(error)}, 404)
+            except Unavailable as error: self.json_response({"error": str(error)}, 404)
+            except Exception as error: self.internal_error("Collectalytics image", error)
             return
         if parsed.path == "/api/timemachine/status":
             try:

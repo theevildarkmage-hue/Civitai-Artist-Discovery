@@ -28,6 +28,8 @@ import threading
 import time
 import urllib.parse
 
+from .civitai import normalize
+from .history import preview_url, video_playback_url, video_still_url
 from .site import SITE_ORIGIN, image_url, profile_url
 
 
@@ -44,7 +46,11 @@ ITEM_PATHS = {"image": "images", "post": "posts", "model": "models", "article": 
 
 
 class NotListed(Exception):
-    """The collection is not one the account owns or follows."""
+    """The collection or image is not one this tab has listed for the account."""
+
+
+class Unavailable(Exception):
+    """Civitai no longer serves the image."""
 
 
 def collection_url(collection_id: int) -> str:
@@ -118,19 +124,35 @@ def with_visible_thumbs(report: dict, levels, hidden_creators: set, hidden_image
     Counting covers every item either way: leaving one out would misstate the collection.
     An unrated item has level 0 and shows no still.
     """
-    mask = sum(int(level) for level in levels)
-
-    def shown(item: dict) -> bool:
-        return bool(item["nsfwLevel"] & mask) and not item["nsfwLevel"] & ~mask and \
-            (item["creator"] or "").casefold() not in hidden_creators and \
-            item["itemId"] not in hidden_images
-
     items = []
     for item in report["items"]:
-        if item["thumbUrl"] and not shown(item):
+        if item["thumbUrl"] and not thumb_allowed(item, levels, hidden_creators, hidden_images):
             item = {**item, "thumbUrl": None, "thumbHidden": True}
         items.append(item)
     return {**report, "items": items}
+
+
+def thumb_allowed(item: dict, levels, hidden_creators: set, hidden_images: set) -> bool:
+    mask = sum(int(level) for level in levels)
+    return bool(item["nsfwLevel"] & mask) and not item["nsfwLevel"] & ~mask and \
+        (item["creator"] or "").casefold() not in hidden_creators and \
+        item["itemId"] not in hidden_images
+
+
+def image_detail(raw: dict) -> dict:
+    """The detail dialog's shape, as the daily archive gives it, from a public listing row."""
+    item = normalize(raw)
+    video = item["type"] == "video"
+    url = item["url"]
+    item.update({
+        "thumbnailUrl": video_still_url(url) if video else preview_url(url),
+        "detailImageUrl": video_still_url(url, 1280) if video else preview_url(url, 1280),
+        "detailsLoaded": True,
+    })
+    if video:
+        item["videoUrl"] = video_playback_url(url)
+        item["detailVideoUrl"] = video_playback_url(url, 768)
+    return item
 
 
 def followers_from(contributors: int | None, collaborators: int) -> int | None:
@@ -151,6 +173,11 @@ class Collectalytics:
         # Per account, because Civitai filters items by viewer and ``owned`` is theirs.
         self.reports: dict[tuple[int | None, int], tuple[float, dict]] = {}
         self.report_locks: dict[tuple[int | None, int], threading.Lock] = {}
+        # Images in any report served to an account, by account and image id. Only these
+        # open in the detail dialog, so the route is not a general Civitai lookup.
+        self.listed: dict[tuple[int | None, int], dict] = {}
+        # Details by image id; they are public and the same for every account.
+        self.details: dict[int, tuple[float, dict]] = {}
 
     def collections(self, user_id: int | None, refresh: bool = False) -> list[dict]:
         with self.lock:
@@ -188,7 +215,42 @@ class Collectalytics:
                       "items": items, "pages": pages, "truncated": truncated,
                       "fetchedAt": datetime.now(timezone.utc).isoformat()}
             self.reports[(user_id, collection_id)] = (time.monotonic(), report)
+            with self.lock:
+                for item in items:
+                    if item["kind"] == "image" and item["itemId"]:
+                        self.listed[(user_id, item["itemId"])] = item
             return report
+
+    def listed_image(self, user_id: int | None, image_id: int) -> dict:
+        with self.lock:
+            item = self.listed.get((user_id, int(image_id)))
+        if item is None:
+            raise NotListed("Only images from a collection opened here can be shown")
+        return item
+
+    def detail(self, user_id: int | None, image_id: int, request) -> dict:
+        """One listed image with its generation details, read from the public API.
+
+        ``request`` is the daily archive's paced reader. The image's own level is asked
+        for, since an anonymous read otherwise answers at the public level only.
+        """
+        item = self.listed_image(user_id, image_id)
+        with self.lock:
+            cached = self.details.get(int(image_id))
+        if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
+            return cached[1]
+        payload, _ = request({"imageId": int(image_id), "withMeta": "true",
+                              "browsingLevel": item["nsfwLevel"] or ALL_LEVELS},
+                             minimum_interval=1.5, request_attempts=3, request_timeout=20)
+        rows = payload.get("items") if isinstance(payload, dict) else None
+        raw = next((row for row in rows or [] if isinstance(row, dict)
+                    and _int(row.get("id")) == int(image_id)), None)
+        if raw is None:
+            raise Unavailable("Civitai no longer lists this image")
+        detail = image_detail(raw)
+        with self.lock:
+            self.details[int(image_id)] = (time.monotonic(), detail)
+        return detail
 
     def forget(self, user_id: int | None, collection_id: int) -> None:
         with self.lock:

@@ -8,7 +8,7 @@ const STATE_KEY = 'civitaiCollectalytics';
 const SNIPPET_KEY = 'civitaiCollectalyticsSnippet';
 const TOP_CREATORS = 20;
 const RECENT = 15;
-const CREATOR_THUMBS = 24;
+const CREATOR_THUMBS = 36;
 const DAY_MS = 86400000;
 const SVG = 'http://www.w3.org/2000/svg';
 const DEFAULT_LINES = '{creators} unique creators 🎶\n{items} {noun} collected\n{followers} followers';
@@ -77,13 +77,11 @@ function escapeHTML(value) {
   return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 }
 
-// "Music Focus 🎸" becomes "Music Focus collection 🎸": the word goes before any
-// trailing emoji, and is not added twice.
+// The collection's name is its brand, so it is linked exactly as written:
+// "Music Focus 🎸" becomes "The [Music Focus 🎸] collection".
 export function collectionTitle(name) {
   const clean = String(name || '').trim() || 'Untitled';
-  if (/\bcollection\b/i.test(clean)) return `The [${clean}]`;
-  const match = clean.match(/^(.*?)((?:\s*(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|️|‍))+)$/u);
-  return match && match[1].trim() ? `The [${match[1].trim()} collection${match[2]}]` : `The [${clean} collection]`;
+  return /\bcollection\b/i.test(clean) ? `The [${clean}]` : `The [${clean}] collection`;
 }
 
 // What a collection is "of", for "177 videos collected".
@@ -279,7 +277,10 @@ export function mountCollectalytics() {
     renderRecent();
     renderCreators();
     renderCreatorOptions();
-    renderCreator();
+    // Opens on whoever was added last: the question is usually about the newest pick.
+    const newest = state.analysis.dated[0];
+    if (newest) selectCreator(newest.creatorKey, false);
+    else renderCreator();
     renderSnippet();
   }
 
@@ -562,6 +563,18 @@ export function mountCollectalytics() {
       link.classList.add('missing');
       link.append(element('span', 'ca-thumb-note', item.thumbHidden ? 'Hidden by your filters' : item.kind));
     }
+    // Images open in the app's own detail dialog; Civitai stays a middle-click away.
+    if (item.kind === 'image' && item.thumbUrl && item.itemId) {
+      link.addEventListener('click', event => {
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || !window.CivitaiShowDetails) return;
+        event.preventDefault();
+        const creator = state.analysis?.creators.get(item.creatorKey);
+        window.CivitaiShowDetails(
+          { id: item.itemId, type: item.mediaType === 'video' ? 'video' : 'image', thumbnailUrl: item.thumbUrl, url: item.thumbUrl,
+            detailPath: `/api/collectalytics/image?id=${encodeURIComponent(item.itemId)}` },
+          { username: item.creator || 'Unknown', imageCount: creator?.items.length ?? 1 });
+      });
+    }
     if (item.mediaType === 'video') link.append(element('span', 'ca-thumb-badge', '▶'));
     if (captioned && item.added) link.append(element('span', 'ca-thumb-caption', formatDay(item.added, item.added.getFullYear() !== new Date().getFullYear())));
     return link;
@@ -576,15 +589,26 @@ export function mountCollectalytics() {
 
   function storeSnippet() {
     const all = readJSON(localStorage, SNIPPET_KEY);
-    all[state.report.collection.id] = { title: $('caTitle').value, lines: $('caLines').value, heading: $('caHeading').value };
+    // Only what differs from the defaults is kept, so a better default still reaches
+    // a collection whose other fields were edited.
+    const defaults = snippetDefaults();
+    const changed = Object.fromEntries(Object.entries({ title: $('caTitle').value, lines: $('caLines').value, heading: $('caHeading').value })
+      .filter(([name, value]) => value !== defaults[name]));
+    if (Object.keys(changed).length) all[state.report.collection.id] = changed;
+    else delete all[state.report.collection.id];
     localStorage.setItem(SNIPPET_KEY, JSON.stringify(all));
+  }
+
+  function snippetDefaults() {
+    return { title: collectionTitle(state.report.collection.name), lines: DEFAULT_LINES, heading: 'h2' };
   }
 
   function renderSnippet() {
     const stored = snippetSettings();
-    $('caTitle').value = stored?.title ?? collectionTitle(state.report.collection.name);
-    $('caLines').value = stored?.lines ?? DEFAULT_LINES;
-    $('caHeading').value = stored?.heading ?? 'h2';
+    const defaults = snippetDefaults();
+    $('caTitle').value = stored?.title ?? defaults.title;
+    $('caLines').value = stored?.lines ?? defaults.lines;
+    $('caHeading').value = stored?.heading ?? defaults.heading;
     updatePreview();
   }
 
