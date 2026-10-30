@@ -26,7 +26,9 @@ carousel rather than in a separate tab.
 - **Card artwork.** A video card shows a still frame and autoplays, muted, once at least
   half of the artwork has been on screen for 300 ms. Reactions, footer text and
   Community recommendation credit do not count, nor does artwork behind sticky
-  navigation. Scrolling below that threshold, navigating the carousel, or
+  navigation. Resize measurements run on the next animation frame so the shell's
+  measured header offset is applied before rebuilding the visibility observer.
+  Scrolling below that threshold, navigating the carousel, or
   removing the card stops playback and aborts the download. The ▶/❚❚ button pauses a card
   until it leaves the screen. Cards also pause while the details dialog is open, while the
   tab is hidden, and when the user prefers reduced motion (▶ still plays on request).

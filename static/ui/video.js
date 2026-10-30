@@ -246,9 +246,19 @@ function observeArtwork() {
     el.setVideoVisible(artworkVisibleShare(stage) >= VIDEO_POLICY.visibleShare);
   }
 }
-window.addEventListener('resize', observeArtwork);
+let artworkObservationFrame = 0;
+function scheduleArtworkObservation() {
+  if (artworkObservationFrame) return;
+  // The shell measures the masthead in its own resize callback. Read the final
+  // sticky offset next frame, after every observer has updated layout variables.
+  artworkObservationFrame = requestAnimationFrame(() => {
+    artworkObservationFrame = 0;
+    observeArtwork();
+  });
+}
+window.addEventListener('resize', scheduleArtworkObservation);
 if (typeof ResizeObserver !== 'undefined') {
-  const chromeResize = new ResizeObserver(observeArtwork);
+  const chromeResize = new ResizeObserver(scheduleArtworkObservation);
   for (const el of document.querySelectorAll('.view-tabs, body > header')) chromeResize.observe(el);
 }
 export function refreshVideoEligibility() {
