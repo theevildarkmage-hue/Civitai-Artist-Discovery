@@ -21,6 +21,7 @@ PORT = 8883
 with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanup_errors=True) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     from discovery.history import HistoryArchive
+    from discovery.taste import TasteStore
 
     history = HistoryArchive(Path(temporary) / "history")
     value = (datetime.now() - timedelta(days=1)).date().isoformat()
@@ -38,6 +39,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
     with history.connect() as db:
         db.execute("INSERT INTO days(day,complete,updated_at) VALUES(?,1,?)", (value, datetime.now().isoformat()))
     history.build_artist_index(value)
+    # Navigation checks cached tag metadata before admitting another image. This
+    # synthetic fixture has known empty tags; no live Civitai login is available.
+    taste = TasteStore(Path(temporary) / 'discovery')
+    with taste.connect() as db:
+        db.executemany('INSERT INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)',
+                       [(item['id'], datetime.now().isoformat()) for item in items])
 
     env = {**os.environ, "CIVITAI_HISTORY_DATA_DIR": temporary}
     process = subprocess.Popen([sys.executable, str(ROOT / "server.py"), "--port", str(PORT), "--no-browser"], cwd=ROOT, env=env)
