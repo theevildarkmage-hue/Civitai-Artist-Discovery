@@ -65,9 +65,9 @@ with tempfile.TemporaryDirectory(prefix="video-covers-") as temporary:
     with archive.connect() as db:
         video = archive._row_item(db.execute("SELECT * FROM images WHERE id=12").fetchone(), details=True)
         still = archive._row_item(db.execute("SELECT * FROM images WHERE id=10").fetchone())
-    assert video["thumbnailUrl"] == f"{CDN}/anim=false,width=768/12.mp4", video
+    assert video["thumbnailUrl"] == f"{CDN}/anim=false,transcode=true,width=768/12.mp4", video
     assert video["videoUrl"] == f"{CDN}/transcode=true,width=450,optimized=true/12.mp4", video
-    assert video["detailImageUrl"] == f"{CDN}/anim=false,width=1280/12.mp4", video
+    assert video["detailImageUrl"] == f"{CDN}/anim=false,transcode=true,width=1280/12.mp4", video
     assert video["detailVideoUrl"] == f"{CDN}/transcode=true,width=768,optimized=true/12.mp4", video
     assert still["thumbnailUrl"] == f"{CDN}/width=768/10.jpeg" and "videoUrl" not in still, still
 

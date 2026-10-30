@@ -254,12 +254,10 @@ def preview_url(url: str, width: int = 768) -> str:
     return _cdn_transform(url, f"width={width}")
 
 
-# Measured against image.civitai.com in Sep 2026. A plain ``width=`` transform on a video
-# returns another MP4 (8.5 MB at 768px) that an <img> cannot show; ``anim=false`` returns
-# a ~0.2 MB JPEG still at any width. ``transcode…optimized`` is the playback file: ~3 MB
-# at 450px for a card, ~8 MB at 768px for the details view, against ~30 MB originals.
+# A video still needs both anim=false and transcode=true. Without transcoding,
+# some CDN sources redirect to the original MP4, which an <img> cannot decode.
 def video_still_url(url: str, width: int = 768) -> str:
-    return _cdn_transform(url, f"anim=false,width={width}")
+    return _cdn_transform(url, f"anim=false,transcode=true,width={width}")
 
 
 def video_playback_url(url: str, width: int = 450) -> str:

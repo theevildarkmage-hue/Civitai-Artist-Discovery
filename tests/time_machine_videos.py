@@ -53,7 +53,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-video-", ignore_cleanup_erro
     assert representative["id"] == 1, representative
     assert representative["type"] == "video", representative
     # A still for the card: anim=false, not a width= transform that returns another MP4.
-    assert "/anim=false,width=" in representative["thumbnailUrl"], representative
+    assert "/anim=false,transcode=true,width=" in representative["thumbnailUrl"], representative
     assert representative["videoUrl"] and "transcode=true" in representative["videoUrl"], representative
 
     # The image behind it is untouched by any of this.
@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-video-", ignore_cleanup_erro
     # The detail dialog needs the larger still and its own playback file.
     detail = machine.detail(1)
     assert detail["type"] == "video", detail
-    assert "/anim=false,width=1280/" in detail["detailImageUrl"], detail
+    assert "/anim=false,transcode=true,width=1280/" in detail["detailImageUrl"], detail
     assert "transcode=true,width=768" in detail["detailVideoUrl"], detail
     assert "detailVideoUrl" not in machine.detail(2), "an image needs no playback file"
 
@@ -106,7 +106,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-legacy-", ignore_cleanup_err
             stored[row["image_id"]] = row["type"]
     assert stored == {1: "video", 2: "image", 3: "video"}, stored
     assert machine.detail(1)["type"] == "video"
-    assert "/anim=false,width=" in machine.detail(1)["thumbnailUrl"]
+    assert "/anim=false,transcode=true,width=" in machine.detail(1)["thumbnailUrl"]
     assert machine.detail(2)["type"] == "image"
 
 print({"videoStillForCards": True, "playbackUrl": True, "imagesUnchanged": True,

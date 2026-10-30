@@ -201,7 +201,7 @@ def thumbnail_source(url,width=512,*,video=False):
     if (parsed.scheme!='https' or parsed.hostname!='image.civitai.com' or parsed.port
             or parsed.username or parsed.password):raise ValueError('Unapproved thumbnail source')
     resized=(video_still_url if video else preview_url)(url,width=width)
-    transform=f'anim=false,width={width}' if video else f'width={width}'
+    transform=f'anim=false,transcode=true,width={width}' if video else f'width={width}'
     if f'/{transform}/' not in resized:raise ValueError('Unsupported thumbnail transform')
     return resized
 

@@ -20,7 +20,7 @@ class VideoTests(unittest.TestCase):
         calls=[]
         cache=ThumbnailCache(self.root/'thumbs',fetch=lambda url:(calls.append(url) or b'synthetic-still','image/jpeg'))
         cache.get(art.preview,video=True);cache.get(art.preview,video=True)
-        self.assertEqual(['https://image.civitai.com/key/id/anim=false,width=512/clip.mp4'],calls)
+        self.assertEqual(['https://image.civitai.com/key/id/anim=false,transcode=true,width=512/clip.mp4'],calls)
         self.assertNotEqual(thumbnail_source(art.preview),thumbnail_source(art.preview,video=True))
         for url in ('http://image.civitai.com/key/width=640/a.mp4','https://evil.invalid/key/width=640/a.mp4','https://user@image.civitai.com/key/width=640/a.mp4','https://image.civitai.com:443/key/width=640/a.mp4'):
             with self.assertRaises(ValueError):thumbnail_source(url,video=True)
