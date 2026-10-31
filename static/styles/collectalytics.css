@@ -1,0 +1,129 @@
+/* Collectalytics: statistics for one collection, a creator check and a snippet maker. */
+.ca-head { width: 100%; max-width: 1880px; margin: 0 auto 12px; gap: 10px; }
+/* The intro is one sentence pair; the shared 62ch cap broke it mid-line on wide screens. */
+.ca-head .discovery-note { max-width: none; }
+.ca-picker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ca-picker select { min-height: 36px; max-width: min(420px, 70vw); padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); color: var(--text); font: inherit; }
+.ca-picker span { color: var(--muted); font-size: 13px; }
+#caMessage.error { color: var(--danger-text); }
+
+.ca-body { max-width: 1880px; margin: 0 auto; display: grid; gap: 16px; }
+.ca-title { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+.ca-title a { color: var(--accent); text-decoration: none; font-size: 15px; font-weight: 700; }
+.ca-title a:hover { text-decoration: underline; }
+
+.ca-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.ca-stat { display: grid; gap: 2px; padding: 14px 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); min-width: 0; }
+.ca-stat strong { font-size: 28px; line-height: 1.15; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ca-stat span { color: var(--muted); font-size: 12px; }
+
+/* One column on phones; two from 760px. From 1200px the recent list runs down the left
+   third while the creator check and the creator bars stack in the other two thirds. */
+.ca-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (min-width: 760px) {
+  .ca-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ca-days-panel, .ca-bars-panel, .ca-snippet-panel { grid-column: 1 / -1; }
+}
+/* The creator check and bars are one column only on wide windows. */
+.ca-side { display: contents; }
+@media (min-width: 1200px) {
+  .ca-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .ca-days-panel { grid-column: 1 / -1; }
+  .ca-recent-panel { grid-column: span 2; }
+  .ca-side { grid-column: span 4; display: grid; gap: 16px; align-content: start; min-width: 0; }
+  .ca-snippet-panel { grid-column: 1 / -1; }
+  .ca-bars { max-height: 560px; }
+}
+.ca-panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.ca-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.ca-toggle button { padding: 6px 12px; border: 0; border-radius: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+.ca-toggle button[aria-checked="true"] { background: var(--accent-surface); color: var(--text); }
+
+/* Charts: one series, so one hue; grid and axes stay recessive. */
+.ca-chart-frame { position: relative; }
+.ca-scroll { overflow-x: auto; overflow-y: hidden; }
+.ca-chart { display: block; }
+.ca-chart .ca-grid-line { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; }
+.ca-chart .ca-axis, .ca-timeline .ca-axis { stroke: var(--line); stroke-width: 1; }
+.ca-chart .ca-tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ca-chart .ca-bar { fill: var(--accent); }
+.ca-chart .ca-bar.selected { fill: #b5dbfb; }
+.ca-chart .ca-hit { fill: transparent; cursor: pointer; outline: none; }
+.ca-chart .ca-hit:hover, .ca-chart .ca-hit:focus-visible { fill: #ffffff0d; }
+.ca-tooltip { position: absolute; z-index: 2; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--surface-raised); box-shadow: var(--shadow-popover); color: var(--text); font-size: 12px; white-space: nowrap; pointer-events: none; }
+.ca-day-items { margin-top: 10px; display: grid; gap: 10px; }
+.ca-day-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+
+.ca-recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ca-recent-row { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 12px; align-items: center; }
+.ca-recent-row .ca-thumb { width: 56px; }
+.ca-recent-text { display: grid; gap: 2px; min-width: 0; }
+.ca-recent-name { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.ca-recent-name small { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.ca-recent-note { color: var(--muted); font-size: 12px; }
+.ca-recent-note.soon { color: #f5c86a; }
+.ca-recent-note.soon::before { content: "● "; }
+.ca-creator-link { padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-weight: 700; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; text-align: left; }
+.ca-creator-link:hover { color: var(--accent); }
+
+.ca-input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font: inherit; }
+textarea.ca-input { resize: vertical; line-height: 1.5; }
+.ca-creator-report { margin-top: 12px; display: grid; gap: 10px; }
+.ca-creator-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+.ca-creator-head a { color: var(--text); font-size: 17px; font-weight: 700; text-decoration: none; }
+.ca-creator-head a:hover { color: var(--accent); }
+.ca-verdict { margin: 0; line-height: 1.5; }
+.ca-empty { margin: 0; color: var(--muted); font-size: 13px; }
+.ca-timeline-wrap { display: grid; gap: 2px; }
+.ca-timeline { width: 100%; height: 56px; display: block; }
+.ca-timeline .ca-tick-mark { stroke: var(--muted); stroke-width: 1; opacity: .35; vector-effect: non-scaling-stroke; }
+.ca-timeline .ca-dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.ca-timeline-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+
+.ca-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; }
+.ca-thumb { position: relative; display: block; aspect-ratio: 1; border-radius: var(--radius-sm); overflow: hidden; background: var(--surface-raised); color: var(--muted); text-decoration: none; }
+.ca-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ca-thumb.missing { display: grid; place-items: center; }
+.ca-thumb-note { padding: 4px; font-size: 10px; text-align: center; line-height: 1.25; }
+.ca-thumb-badge { position: absolute; top: 4px; right: 4px; padding: 1px 5px; border-radius: 6px; background: #000a; color: #fff; font-size: 10px; }
+.ca-thumb-caption { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 6px 4px; background: linear-gradient(transparent, #000c); color: #fff; font-size: 11px; }
+.ca-thumb:hover { box-shadow: inset 0 0 0 2px var(--accent); }
+
+.ca-bars { display: grid; gap: 2px; max-height: 640px; overflow-y: auto; }
+.ca-bar-row { display: grid; grid-template-columns: minmax(90px, 220px) minmax(60px, 1fr) 48px 110px; align-items: center; gap: 10px; padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.ca-bar-row:hover, .ca-bar-row.selected { background: var(--surface-raised); }
+.ca-bar-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.ca-bar-track { height: 14px; }
+.ca-bar-fill { display: block; height: 100%; min-width: 2px; border-radius: 0 4px 4px 0; background: var(--accent); }
+.ca-bar-row.selected .ca-bar-fill { background: #b5dbfb; }
+.ca-bar-value { font-variant-numeric: tabular-nums; font-weight: 700; }
+.ca-bar-last { color: var(--muted); font-size: 12px; white-space: nowrap; }
+@media (max-width: 700px) {
+  .ca-bar-row { grid-template-columns: minmax(80px, 140px) minmax(40px, 1fr) 40px; }
+  .ca-bar-last { display: none; }
+}
+
+.ca-snippet { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 20px; align-items: start; }
+.ca-snippet-form { display: grid; gap: 12px; justify-items: start; }
+.ca-field { display: grid; gap: 4px; width: 100%; }
+.ca-field > span { font-size: 13px; font-weight: 700; }
+.ca-field small { color: var(--muted); font-size: 12px; }
+.ca-field select { justify-self: start; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font: inherit; }
+#caSnippetReset { justify-self: start; margin: 0; padding-left: 0; }
+.ca-warning { margin: 0; color: #f5c86a; font-size: 12px; }
+.ca-snippet-output { display: grid; gap: 10px; min-width: 0; }
+/* Roughly how Civitai's article body shows it: its dark surface and type sizes. */
+.ca-preview { padding: 16px 20px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #1a1b1e; color: #c1c2c5; font-size: 16px; line-height: 1.55; overflow-wrap: anywhere; }
+.ca-preview h2 { margin: 0 0 10px; color: #fff; font-size: 26px; line-height: 1.3; }
+.ca-preview h3 { margin: 0 0 8px; color: #fff; font-size: 20px; line-height: 1.3; }
+.ca-preview p { margin: 0 0 10px; }
+.ca-preview p:last-child { margin-bottom: 0; }
+.ca-preview strong { color: #fff; }
+.ca-preview a { color: #4dabf7; text-decoration: none; }
+.ca-preview a:hover { text-decoration: underline; }
+.ca-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ca-copy-status { color: var(--muted); font-size: 13px; }
+.ca-copy-status.error { color: var(--danger-text); }
+.ca-source summary { color: var(--muted); font-size: 13px; cursor: pointer; }
+.ca-source pre { margin: 6px 0 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg); color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ca-scratch { position: fixed; top: 0; left: -9999px; opacity: 0; }

@@ -27,6 +27,15 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
 .gallery-navigation #selectedDate { font-size: 14px; }
 .gallery-navigation #summary { margin-left: auto; font-size: 12px; }
 .command-bar .segment-toolbar { position: static; top: auto; flex: 1 1 auto; min-width: 0; padding: 0; justify-content: flex-end; flex-wrap: nowrap; background: transparent; border: 0; backdrop-filter: none; gap: 8px; }
+/* Narrow windows above the phone layout: tighter tabs keep all five on one row, and
+   below 900px the labels alone, since the icons no longer fit beside them. */
+@media (min-width: 701px) and (max-width: 1099px) {
+  .view-tabs > button { padding: 6px 8px; gap: 5px; font-size: 13px; }
+}
+@media (min-width: 701px) and (max-width: 899px) {
+  .view-tabs.command-bar { padding-inline: 12px; gap: 4px; }
+  .view-tabs > button > svg.ui-icon { display: none; }
+}
 .segment-toolbar label { margin-left: 0; }
 .ui-field { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .segment-toolbar select, .filter-button { min-height: 36px; border-radius: var(--radius-sm); }
