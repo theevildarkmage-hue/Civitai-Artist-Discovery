@@ -35,7 +35,7 @@ export async function api(url, options = {}) {
     if (!response.ok) throw Object.assign(new Error(body?.error || `The app returned HTTP ${response.status}. Try again shortly.`), {code:body?.code,status:response.status});
     if (body === null) throw new Error('The app returned an unreadable response. Please try again.');
     succeeded = true;
-    if (controlChange && url === '/api/settings') settings = {browsingLevels:body.browsingLevels,contentRating:body.contentRating};
+    if (controlChange && url === '/api/settings') settings = {browsingLevels:body.browsingLevels,contentRating:body.contentRating,applyTagFilters:body.applyTagFilters,applyAccountFilters:body.applyAccountFilters,applyImageFilters:body.applyImageFilters};
     return body;
   } catch (error) {
     if (timedOut) throw Object.assign(new Error('The request timed out. Your saved gallery is safe; please try again.'), {code:'UNAVAILABLE',status:503});

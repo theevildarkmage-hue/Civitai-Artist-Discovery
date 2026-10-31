@@ -1,6 +1,7 @@
 """Read-only development snapshots. No token payloads, refresh, sync or ledger writes."""
 from __future__ import annotations
 import json
+from dataclasses import replace
 import os
 from pathlib import Path
 import sqlite3
@@ -88,6 +89,9 @@ def snapshot(root,data,version,commit,*,auth_status,job,probe=False):
     try:settings=json.loads((data/'settings.json').read_text(encoding='utf-8'))
     except (OSError,ValueError):settings={}
     profile=ContentProfile(levels=frozenset(settings.get('browsingLevels',[1,2])),
+        apply_tag_filters=settings.get('applyTagFilters',True) is not False,
+        apply_account_filters=settings.get('applyAccountFilters',True) is not False,
+        apply_image_filters=settings.get('applyImageFilters',True) is not False,
         creators=frozenset(r['creator_id'] for r in hidden_creators),
         usernames=frozenset(r['username_key'] for r in hidden_creators if r['username_key']),
         images=frozenset(r['image_id'] for r in hidden_images),
@@ -96,7 +100,9 @@ def snapshot(root,data,version,commit,*,auth_status,job,probe=False):
         blocked_usernames=frozenset(r['username_key'] for r in hidden_creators if r['reason']=='blocked' and r['username_key']))
     for record in records:
         if record['key']==f"controls:{auth.get('id')}":
-            try:profile=content_profile(json.loads(record['value']),profile.levels)
+            try:profile=replace(content_profile(json.loads(record['value']),profile.levels),
+                apply_tag_filters=profile.apply_tag_filters, apply_account_filters=profile.apply_account_filters,
+                apply_image_filters=profile.apply_image_filters)
             except Exception:pass
     cached_art={}
     for record in records:

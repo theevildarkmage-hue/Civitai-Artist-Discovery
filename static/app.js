@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 let selectedModels = new Set();
 let contentRating = "Soft";
 let visibleBrowsingLevels = new Set([1, 2]);
+let applyTagFilters = true, applyAccountFilters = true, applyImageFilters = true, controlFiltersSaving = false;
 let dimSeenCards = true, detailVideoSound = true;
 let hideHighVolumeCreators = true, highVolumeThreshold = 50;
 let emergingReactionMode = "balanced", emergingReactionLimit = 0;
@@ -86,6 +87,13 @@ function showContentRating() {
     : "⚠ Mature content is enabled. Some images may be explicit.";
 }
 window.addEventListener('shared-settings-changed', async event => {
+  if (!controlFiltersSaving) {
+    applyTagFilters = event.detail.applyTagFilters !== false;
+    applyAccountFilters = event.detail.applyAccountFilters !== false;
+    applyImageFilters = event.detail.applyImageFilters !== false;
+  }
+  ++tagEpoch; imageTagState.clear();
+  window.updateGalleryFilters?.();
   if(contentSelection.pending)return;
   visibleBrowsingLevels = new Set(event.detail.browsingLevels);
   contentRating = event.detail.contentRating;
@@ -545,6 +553,7 @@ async function flushTagChecks() {
   if (pendingTagChecks.size) tagCheckTimer = setTimeout(flushTagChecks, 20);
 }
 function checkImageTags(imageId) {
+  if (!applyTagFilters) return Promise.resolve({known: true, tags: []});
   const id = String(imageId), cached = imageTagState.get(id);
   if (cached) return Promise.resolve(cached);
   return new Promise((resolve, reject) => {
@@ -554,7 +563,7 @@ function checkImageTags(imageId) {
     else if (!tagCheckTimer) tagCheckTimer = setTimeout(flushTagChecks, 20);
   });
 }
-function tagsHideImage(result) { return !!result?.tags?.some(tag => tag.hidden); }
+function tagsHideImage(result) { return applyTagFilters && !!result?.tags?.some(tag => tag.hidden); }
 // The server owns read retries. A later explicit retry starts a fresh budget.
 function prepareCardArtwork(element) {
   if (!element.prepareArtwork || element.tagCheckPending) return;
@@ -1180,10 +1189,10 @@ async function showDetails(image, artist, artistCard) { detailRequestAbort?.abor
     toast('Skipped unavailable artwork.');
   };
   showArtwork(artwork, image.thumbnailUrl, image.url, image);
-} $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(image.community ? `/api/community/detail?id=${image.id}` : `/api/history/image?id=${image.id}`, { signal: detailSignal }); if (token !== detailRequestToken || !dialog.open) return; if (detail.type === "video") { if (!detail.tags?.some(tag => tag.hidden)) { window.CivitaiUI.showVideoPoster(artwork, detail); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl, detail.id, { muted: !detailVideoSound }); } } else showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.url, detail); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
+} $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(image.community ? `/api/community/detail?id=${image.id}` : `/api/history/image?id=${image.id}`, { signal: detailSignal }); if (token !== detailRequestToken || !dialog.open) return; if (detail.type === "video") { if (!tagsHideImage(detail)) { window.CivitaiUI.showVideoPoster(artwork, detail); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl, detail.id, { muted: !detailVideoSound }); } } else showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.url, detail); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
     $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url;
     imageTagState.set(String(image.id), { known: detail.known, tags: detail.tags || [] });
-    if (detail.tags?.some(tag => tag.hidden)) {
+    if (tagsHideImage(detail)) {
       // Preserve the explanation in the open dialog, but remove only this image behind
       // it. Rebuilding the entire feed loses scroll position and every loaded page.
       toast("This image matches a tag you hide on Civitai. Removing it from the gallery…");
@@ -1554,7 +1563,7 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
 }
 async function startup() {
   const navigationAtStartup = navigationVersion;
-  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; detailVideoSound = settings.detailVideoSound !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 50; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
+  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; applyTagFilters = settings.applyTagFilters !== false; applyAccountFilters = settings.applyAccountFilters !== false; applyImageFilters = settings.applyImageFilters !== false; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; detailVideoSound = settings.detailVideoSound !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 50; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
   try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
   applyAuth(auth);
@@ -1663,9 +1672,48 @@ function modelQuery() {
   return window.CivitaiUI.modelParameters(galleryFilterState());
 }
 function galleryFilterState() {
-  return window.CivitaiUI.browsingState({ date: selectedDate, segment: selectedSegment,
-    view: selectedView, models: selectedModels, media: selectedMedia, levels: visibleBrowsingLevels });
+  return {...window.CivitaiUI.browsingState({ date: selectedDate, segment: selectedSegment,
+    view: selectedView, models: selectedModels, media: selectedMedia, levels: visibleBrowsingLevels }),
+    applyTagFilters, applyAccountFilters, applyImageFilters, controlFiltersSaving};
 }
+async function saveGalleryControl(key, value, reload = true) {
+  if (controlFiltersSaving) return;
+  const previous = {applyTagFilters, applyAccountFilters, applyImageFilters};
+  if (key === 'applyTagFilters') applyTagFilters = value;
+  if (key === 'applyAccountFilters') applyAccountFilters = value;
+  if (key === 'applyImageFilters') applyImageFilters = value;
+  controlFiltersSaving = true;
+  window.updateGalleryFilters?.();
+  ++activeLoadToken; ++tagEpoch; imageTagState.clear();
+  clearGallery();
+  let settings = null;
+  try {
+    settings = await api('/api/settings', {method: 'POST', controlBatch: true,
+      body: JSON.stringify({[key]: value})});
+  } catch (error) {
+    toast(error.message);
+    // A failed response may follow a successful save. Read back, never replay.
+    try { settings = await api('/api/settings'); } catch (_) {}
+  } finally {
+    if (settings) {
+      applyTagFilters = settings.applyTagFilters !== false;
+      applyAccountFilters = settings.applyAccountFilters !== false; applyImageFilters = settings.applyImageFilters !== false;
+    } else ({applyTagFilters, applyAccountFilters, applyImageFilters} = previous);
+    controlFiltersSaving = false;
+    window.updateGalleryFilters?.();
+    window.CivitaiUI.finishControlChange(settings);
+  }
+  loadHiddenPreferencesNote();
+  if (reload && selectedDate && currentView === 'gallery') {
+    try { await loadDay(selectedDate, false, true); } catch (error) { toast(error.message); }
+  }
+}
+const setGalleryTagFilters = (value, reload = true) => saveGalleryControl('applyTagFilters', value, reload);
+const setGalleryAccountFilters = (value, reload = true) => saveGalleryControl('applyAccountFilters', value, reload);
+window.setGalleryTagFilters = setGalleryTagFilters;
+window.setGalleryAccountFilters = setGalleryAccountFilters;
+const setGalleryImageFilters = (value, reload = true) => saveGalleryControl('applyImageFilters', value, reload);
+window.setGalleryImageFilters = setGalleryImageFilters;
 async function setGalleryMedia(value, reload = true) {
   try {
     const settings = await api('/api/settings', { method: 'POST', body: JSON.stringify({mediaType: value}) });
@@ -1685,6 +1733,9 @@ async function removeGalleryModel(model) {
   if (dayBuilt || currentView==='community') await reloadView();
 }
 async function resetGalleryFilters() {
+  if (!applyTagFilters) await setGalleryTagFilters(true, false);
+  if (!applyAccountFilters) await setGalleryAccountFilters(true, false);
+  if (!applyImageFilters) await setGalleryImageFilters(true, false);
   await setGalleryMedia("all", false);
   selectedModels.clear();
   $("modelFilter").textContent = modelButtonLabel();
@@ -1753,12 +1804,12 @@ function renderDiscovery(data) {
 // That filtering is otherwise invisible unless the user notices fewer creators than
 // expected, so this states it plainly and links straight to where it is managed.
 function renderHiddenPreferencesNote(data) {
-  window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:{hiddenCreators:safeCount(data.creators),hiddenTags:safeCount(data.tags),hiddenArtworks:safeCount(data.images)}}));
+  window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:{hiddenCreators:applyAccountFilters ? safeCount(data.creators) : 0,hiddenTags:applyTagFilters ? safeCount(data.tags) : 0,hiddenArtworks:applyImageFilters ? safeCount(data.images) : 0}}));
   const note = $("hiddenPreferencesNote"), total = safeCount(data.creators) + safeCount(data.tags) + safeCount(data.images);
   $("hiddenPreferencesText").textContent = !data.importedAt
     ? "Civitai Content Controls will be applied to the daily gallery once your account is read."
     : total
-      ? `Your Civitai Content Controls are applied to the daily gallery: ${displayCount(data.creators)} hidden creator${safeCount(data.creators) === 1 ? "" : "s"}, ${displayCount(data.tags)} hidden tag${safeCount(data.tags) === 1 ? "" : "s"}, ${displayCount(data.images)} hidden image${safeCount(data.images) === 1 ? "" : "s"}.`
+      ? `Your Civitai Content Controls are applied to the daily gallery: ${displayCount(data.creators)} hidden creator${safeCount(data.creators) === 1 ? "" : "s"}${applyAccountFilters ? "" : " (paused)"}, ${displayCount(data.tags)} hidden tag${safeCount(data.tags) === 1 ? "" : "s"}${applyTagFilters ? "" : " (paused)"}, ${displayCount(data.images)} hidden image${safeCount(data.images) === 1 ? "" : "s"}${applyImageFilters ? "" : " (paused)"}.`
       : "Your Civitai Content Controls are applied to the daily gallery. Nothing is hidden there yet.";
   note.classList.remove("hidden");
 }
@@ -1829,6 +1880,10 @@ async function pollDiscovery() {
 let dailyControlsStale = false;
 window.addEventListener('community-controls-changed', () => {
   if (dayBuilt && currentView !== 'gallery') { dailyControlsStale = true; clearGallery(); }
+  if (currentView === 'timemachine') {
+    const refresh = tmCreator ? openTimeMachineCreator(tmCreator) : refreshTimeMachine();
+    refresh.catch(error => toast(error.message));
+  }
 });
 window.addEventListener('shared-artist-hidden', () => {
   if (!dayBuilt) return;

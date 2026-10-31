@@ -9,6 +9,7 @@ from collections import OrderedDict, defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import cached_property
 import json
 import os
 from pathlib import Path
@@ -127,6 +128,44 @@ class ContentProfile:
     tag_ids: frozenset[int] = frozenset()
     blocked_creators: frozenset[int] = frozenset()
     blocked_usernames: frozenset[str] = frozenset()
+    apply_tag_filters: bool = True
+    apply_account_filters: bool = True
+    apply_image_filters: bool = True
+    implicit_images: frozenset[tuple[int, int]] = frozenset()
+    rating_tags: frozenset[tuple[int, int]] = frozenset()
+    unknown_images: frozenset[int] = frozenset()
+    known_tag_ids: frozenset[int] = frozenset()
+
+    @cached_property
+    def _image_votes(self):
+        votes = defaultdict(set)
+        for image, tag in self.implicit_images:
+            votes[image].add(tag)
+        return votes
+
+    @cached_property
+    def _restricted_rating_tags(self):
+        ceiling = max(self.levels, default=0)
+        return frozenset(tag for tag, level in self.rating_tags if level > ceiling)
+
+    @cached_property
+    def _known_vote_tags(self):
+        return self.known_tag_ids | self.tag_ids | frozenset(tag for tag, _ in self.rating_tags)
+
+    def image_exclusions(self, image):
+        reasons = []
+        if self.apply_image_filters and image in self.images: reasons.append('hiddenArtwork')
+        votes = self._image_votes.get(image, set())
+        if self.apply_tag_filters and votes & self.tag_ids: reasons.append('hiddenTag')
+        if votes & self._restricted_rating_tags:
+            reasons.append('ratingRestriction')
+        if image in self.unknown_images or not votes <= self._known_vote_tags:
+            reasons.append('incompleteMetadata')
+        return reasons
+
+    def excluded_image_ids(self):
+        candidates = self.images | self.unknown_images | self._image_votes.keys()
+        return {image for image in candidates if self.image_exclusions(image)}
 
     def allows(self, art):
         return not self.exclusions(art)
@@ -135,17 +174,17 @@ class ContentProfile:
         """All applicable reasons, deliberately overlapping; no artwork leaves this gate."""
         reasons = []
         if art.rating not in self.levels: reasons.append('ratingRestriction')
-        if art.creator_id in self.blocked_creators or art.username.casefold() in self.blocked_usernames:
+        if self.apply_account_filters and (art.creator_id in self.blocked_creators or art.username.casefold() in self.blocked_usernames):
             reasons.append('blockedUser')
-        if ((art.creator_id in self.creators and art.creator_id not in self.blocked_creators)
+        if self.apply_account_filters and ((art.creator_id in self.creators and art.creator_id not in self.blocked_creators)
                 or (art.username.casefold() in self.usernames and art.username.casefold() not in self.blocked_usernames)):
             reasons.append('hiddenCreator')
-        if art.id in self.images: reasons.append('hiddenArtwork')
-        if self.tags.intersection(art.tags) or self.tag_ids.intersection(art.tag_ids): reasons.append('hiddenTag')
-        if ((not art.tags_known and (self.tags or self.tag_ids)) or
-                (not art.owner_verified and self.creators and len(self.usernames-{''}) < len(self.creators))):
+        reasons.extend(self.image_exclusions(art.id))
+        if self.apply_tag_filters and (self.tags.intersection(art.tags) or self.tag_ids.intersection(art.tag_ids)): reasons.append('hiddenTag')
+        if ((self.apply_tag_filters and not art.tags_known and (self.tags or self.tag_ids)) or
+                (self.apply_account_filters and not art.owner_verified and self.creators and len(self.usernames-{''}) < len(self.creators))):
             reasons.append('incompleteMetadata')
-        return reasons
+        return list(dict.fromkeys(reasons))
 
 
 def content_profile(hidden, levels):
@@ -159,14 +198,32 @@ def content_profile(hidden, levels):
     if not isinstance(implicit, list) or hidden.get("__v") not in (None, 2):
         raise CommunityError("UNAVAILABLE", 503)
     try:
+        images, unknown_images, votes = set(), set(), set()
+        for is_implicit, rows in ((False, hidden['hiddenImages']), (True, implicit)):
+            for row in rows:
+                if isinstance(row, dict) and row.get('hidden') is False:
+                    continue
+                image = positive_id(row['id'] if isinstance(row, dict) else row)
+                tag = row.get('tagId') if isinstance(row, dict) else None
+                if tag is None:
+                    (unknown_images if is_implicit else images).add(image)
+                    continue
+                try:
+                    tag = positive_id(tag)
+                except CommunityError:
+                    unknown_images.add(image)
+                else:
+                    votes.add((image, tag))
         return ContentProfile(levels=frozenset(levels),
             creators=frozenset(positive_id(x["id"]) for x in users if x.get("hidden") is not False),
             usernames=frozenset(str(x.get("username", "")).casefold() for x in users if x.get("hidden") is not False),
-            images=frozenset(positive_id(x["id"] if isinstance(x, dict) else x)
-                             for x in hidden["hiddenImages"] + implicit
-                             if not isinstance(x, dict) or x.get("hidden") is not False),
-            tags=frozenset(x["name"].casefold() for x in tags if x.get("hidden") is not False),
-            tag_ids=frozenset(positive_id(x["id"]) for x in tags if x.get("hidden") is not False),
+            images=frozenset(images), unknown_images=frozenset(unknown_images),
+            implicit_images=frozenset(votes),
+            known_tag_ids=frozenset(positive_id(x['id']) for x in tags),
+            rating_tags=frozenset((positive_id(x["id"]),positive_id(x["nsfwLevel"]))
+                for x in tags if x.get("nsfwLevel")),
+            tags=frozenset(x["name"].casefold() for x in tags if x.get("hidden") is not False and not x.get("nsfwLevel")),
+            tag_ids=frozenset(positive_id(x["id"]) for x in tags if x.get("hidden") is not False and not x.get("nsfwLevel")),
             blocked_creators=frozenset(positive_id(x['id']) for x in hidden['blockedByUsers']+hidden['blockedUsers'] if x.get('hidden') is not False),
             blocked_usernames=frozenset(str(x.get('username','')).casefold() for x in hidden['blockedByUsers']+hidden['blockedUsers'] if x.get('hidden') is not False))
     except (KeyError, TypeError, AttributeError, CommunityError):
@@ -788,7 +845,8 @@ def build_community(data_root, profile_provider, token_provider):
             hidden = verifier.hidden.get(token)
             if hidden is None:return base
             extra=content_profile(hidden,base.levels)
-            return ContentProfile(**{name:getattr(base,name)|getattr(extra,name)
+            return ContentProfile(**{name:(getattr(base,name) if name in ('apply_tag_filters', 'apply_account_filters', 'apply_image_filters')
+                                         else getattr(base,name)|getattr(extra,name))
                 for name in ContentProfile.__dataclass_fields__})
     client = CommunityClient(backend, verifier, token_provider, profile_provider)
     client.mode = mode

@@ -2,7 +2,49 @@
 
 Added 2026-08-05. The app builds its gallery from Civitai's own artwork, so ignoring the
 account's Content Controls would put back precisely what the user asked Civitai not to
-show them. These are imported and enforced rather than treated as advisory.
+show them. These are imported and applied by default. The Filters menu has independent local
+viewing switches for **Apply my tag filters**, **Exclude hidden and blocked accounts**,
+and **Exclude hidden artworks**.
+
+## Local viewing switches
+
+All three switches are on by default, including when upgrading an existing settings file.
+Their values persist in `settings.json` as `applyTagFilters`, `applyAccountFilters`, and
+`applyImageFilters`.
+Turning a switch off pauses that category locally in Daily, Community, and Time Machine views;
+turning it back on uses the same imported rules. Reset filters turns all three back on.
+These switches never edit Civitai preferences or erase imported rules or archives.
+
+Tag filtering can be paused without disabling account exclusions, and account exclusions
+can be paused without disabling hidden tags. The account switch covers hidden creators,
+blocked users, and accounts that blocked the viewer. It only affects local filtering of
+accessible artwork: it cannot bypass Civitai's access restrictions. The artwork switch controls direct image-hide records. Civitai can create these from
+"Hide this image" or a Terms of Service report; its preferences response does not identify
+which action created a record. Selected browsing levels and hosted Community access
+policy still apply even when all three switches are off.
+
+Civitai also returns implicit image exclusions with a `tagId`. These are retained
+separately: personal-tag votes follow the tag switch; rating-tag votes are excluded only
+when their rating exceeds the selected browsing ceiling. Moderated tags carrying
+`nsfwLevel` are not imported as personal hidden tags.
+
+Implicit image hides with a missing or invalid `tagId`, or a tag absent from the imported
+tag metadata, stay excluded as incomplete metadata. Local switches cannot relax these
+unclassified hides. A later complete import can resolve their source. Explicitly inactive
+hide records are ignored; a known tag marked unhidden is not treated as an unknown source.
+
+Older imports merged direct and implicit hides. Reads continue using the cached mirror
+while one background request recovers source information into the existing `sync_state`
+table. If Civitai is unavailable, a later read can retry after five minutes. Until recovery
+succeeds, image hides whose source is unknown remain excluded even when the artwork
+switch is off. This read-only request never edits reports or account preferences.
+Fixture mode and isolated test mode never start this automatic recovery, including reads
+through Daily and Time Machine routes.
+
+When tag filtering is off, preview-time tag verification is skipped. Details may still
+show imported hidden-tag annotations, but those annotations do not remove the image.
+When on, unknown tags continue to block previews until verified. Filter changes invalidate
+the current gallery and notify other open tabs so they use the saved switches too.
 
 ## Where the data comes from
 
@@ -100,9 +142,8 @@ re-reads them mid-session. Import **replaces** the stored copy rather than mergi
 unhiding something on Civitai propagates here; a merge would silently make hiding
 permanent.
 
-Failure to import never blocks sign-in or the gallery: the filter is a refinement, not the
-point of connecting. If the mirror cannot be read, the gallery renders unfiltered rather
-than erroring.
+Failure to refresh an existing import keeps the cached controls in use. Legacy source
+recovery does not block gallery reads or issue another request for every read.
 
 ## Storage
 
@@ -122,3 +163,9 @@ visible image, carousel filtering, the count agreeing with what is shown, and th
 states in the image dialog. `tests/hidden_tags_before_preview.py` verifies that hidden-tag
 artwork never receives a preview URL, checks batched tag lookup, and confirms that a late
 detail result removes only the affected image without reloading the feed.
+
+`tests/content_control_recovery.py` checks legacy offline reads, concurrent readers,
+bounded retries, preserved mirrors, and successful source recovery. The Content Controls
+HTTP suite also checks all three switches against Time Machine cards and creator history
+without changing saved positions. `tests/community_backend.py` checks exclusion sources
+and bounds pair scans for an 8,000-image input rather than relying on a timing threshold.

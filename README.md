@@ -369,8 +369,11 @@ separate concepts; viewing filters never redownload an already-covered level.
 ## Content Controls
 
 Creator- and image-level exclusions are applied from the account data Civitai returns.
-Because the daily listing feed does not include tags, the app verifies tags in small
-batches as artwork approaches the screen and before assigning its preview URL. An image
+The Filters menu can independently pause personal tag filters, hidden and blocked
+account filters, or hidden artworks (including images hidden after reporting them).
+All three switches default to on. Rating-related exclusions follow browsing levels.
+Because the daily listing feed does not include tags, enabling tag filters verifies tags
+in small batches as artwork approaches the screen and before assigning its preview URL. An image
 matching a hidden Civitai tag is removed without being displayed; the same check is made
 before moving through a creator's carousel. Opening image details does not rebuild or
 reset the feed. See [docs/content-controls.md](docs/content-controls.md) for the detailed

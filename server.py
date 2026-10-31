@@ -113,8 +113,20 @@ def community_content_profile(token):
     if not isolated and not TASTE.ensure_current_account():raise CommunityError('AUTH_REQUIRED',401)
     with TASTE.connect() as db:imported=TASTE._state(db,'hidden_imported_at')
     if not imported and not isolated:TASTE.import_hidden_preferences()
+    if not isolated:TASTE.ensure_hidden_preferences_current()
     with TASTE.connect() as db:
-        return ContentProfile(levels=frozenset(SETTINGS.load()['browsingLevels']),
+        settings = SETTINGS.load()
+        raw = TASTE._state(db, 'hidden_image_preferences')
+        from discovery.community import content_profile
+        rules = content_profile({**json.loads(raw), 'hiddenUsers': [], 'blockedUsers': [],
+            'blockedByUsers': []}, settings['browsingLevels']) if raw else ContentProfile()
+        return ContentProfile(levels=frozenset(settings['browsingLevels']),
+            apply_tag_filters=settings['applyTagFilters'],
+            apply_account_filters=settings['applyAccountFilters'],
+            # Only legacy mirrors have unknown image sources to preserve.
+            apply_image_filters=settings['applyImageFilters'] if raw or not imported else True,
+            implicit_images=rules.implicit_images, rating_tags=rules.rating_tags,
+            unknown_images=rules.unknown_images, known_tag_ids=rules.known_tag_ids,
             creators=frozenset(r[0] for r in db.execute('select creator_id from hidden_creators')),
             usernames=frozenset(r[0] for r in db.execute('select username_key from hidden_creators where username_key is not null')),
             images=frozenset(r[0] for r in db.execute('select image_id from hidden_images')),
@@ -134,7 +146,7 @@ def shared_cached_artwork(image):
     hidden,images=hidden_preferences()
     creator=COMMUNITY.listed_creator(image) if COMMUNITY else None
     profile=community_content_profile(None)
-    if creator in profile.creators|profile.blocked_creators or value['username'].casefold() in hidden or image in images or (TASTE.hidden_tag_names() and (not tags['known'] or any(t['hidden'] for t in tags['tags']))):raise CommunityError('CONTENT_FILTERED',403)
+    if (profile.apply_account_filters and creator in profile.creators|profile.blocked_creators) or value['username'].casefold() in hidden or image in images or (profile.apply_tag_filters and TASTE.hidden_tag_names() and (not tags['known'] or any(t['hidden'] for t in tags['tags']))):raise CommunityError('CONTENT_FILTERED',403)
     return Artwork(image,creator or 0,value['username'],value['browsingLevel'],value['url'],tuple(t['name'] for t in tags['tags']),tags_known=tags['known'],base_model=value['baseModel'],media_type=value['type'])
 
 
@@ -387,8 +399,12 @@ def visible_creator_keys(key: str, hidden_images: set) -> set:
 
 
 def hidden_preferences() -> tuple[set, set]:
-    """(creator username keys, image ids) the account has chosen not to see."""
-    return TASTE.hidden_creator_keys(), TASTE.hidden_image_ids()
+    """Active local exclusions; imported rules remain stored when paused."""
+    TASTE.ensure_hidden_preferences_current()
+    settings = SETTINGS.load()
+    creators = TASTE.hidden_creator_keys() if settings["applyAccountFilters"] else set()
+    return creators, TASTE.hidden_image_ids(include_tags=settings["applyTagFilters"],
+        include_images=settings["applyImageFilters"], levels=settings["browsingLevels"])
 
 
 GALLERY_VIEWS = ("discovery", "followed", "new", "emerging", "foryou")
@@ -1254,7 +1270,7 @@ class Handler(BaseHTTPRequestHandler):
                 hidden_names,hidden_images=hidden_preferences()
                 tags=TASTE.image_tags_many([image_id])[image_id]
                 if (level not in SETTINGS.load()['browsingLevels'] or row['username_key'] in hidden_names or image_id in hidden_images
-                        or (TASTE.hidden_tag_names() and (not tags['known'] or any(tag['hidden'] for tag in tags['tags'])))):
+                        or (SETTINGS.load()['applyTagFilters'] and TASTE.hidden_tag_names() and (not tags['known'] or any(tag['hidden'] for tag in tags['tags'])))):
                     raise CommunityError('CONTENT_FILTERED',403)
                 body,kind=PERSONAL_THUMBNAILS.get(row['url'])
                 self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
@@ -1453,6 +1469,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/timemachine":
             try:
+                hidden_creators, hidden_images = hidden_preferences()
+                settings = SETTINGS.load()
                 # Decorated by the same function the daily gallery uses, so a Time
                 # Machine card carries the follow state, avatar, follower counts and
                 # reaction history a gallery card does.
@@ -1460,7 +1478,9 @@ class Handler(BaseHTTPRequestHandler):
                 profiles, follows = creator_profiles(), signals["followed"]
                 self.json_response({
                     "cards": attach_preview_tags([decorate_history_artist(card, profiles, follows, signals)
-                              for card in TIME_MACHINE.cards()]),
+                              for card in TIME_MACHINE.cards(
+                                  apply_tag_filters=settings['applyTagFilters'],
+                                  hidden_creators=hidden_creators, hidden_images=hidden_images)]),
                     "status": TIME_MACHINE.status()})
             except Exception as error: self.internal_error("Time machine", error)
             return
@@ -1473,11 +1493,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/timemachine/creator":
             try:
                 after = query.get("after", [None])[0]
+                hidden_creators, hidden_images = hidden_preferences()
+                settings = SETTINGS.load()
                 history = TIME_MACHINE.creator_history(
                     query.get("username", [""])[0],
                     after=int(after) if after not in (None, "") else None,
                     limit=int(query.get("limit", ["40"])[0]),
-                    refill=query.get("savedOnly", [""])[0] != "1")
+                    refill=query.get("savedOnly", [""])[0] != "1",
+                    apply_tag_filters=settings['applyTagFilters'],
+                    hidden_creators=hidden_creators, hidden_images=hidden_images)
                 signals = gallery_signals()
                 profiles, follows = creator_profiles(), signals["followed"]
                 # Each image rides in a one-image card entry so the gallery's own
@@ -1996,12 +2020,15 @@ class Handler(BaseHTTPRequestHandler):
                 with OAUTH_LOCK: OAUTH_JOB.update({"state": "idle", "error": None})
                 self.json_response({"connected": False}); return
             if parsed.path == "/api/settings":
-                content_change = ("browsingLevels" in body or "contentRating" in body)
+                content_change = ("browsingLevels" in body or "contentRating" in body or "applyTagFilters" in body or "applyAccountFilters" in body or "applyImageFilters" in body)
                 gallery_change = any(name in body for name in (
                     "hideHighVolumeCreators", "highVolumeThreshold",
                     "emergingReactionMode", "emergingReactionLimit", "mediaType"))
                 value = SETTINGS.transactional_update(
                                         effect=(lambda value: HISTORY.set_content_filter(value["browsingLevels"])) if content_change else None,
+                                        apply_tag_filters_value=body.get("applyTagFilters"),
+                                        apply_account_filters_value=body.get("applyAccountFilters"),
+                                        apply_image_filters_value=body.get("applyImageFilters"),
                                         media_type_value=body.get("mediaType"),
                                         browsing_levels_value=body.get("browsingLevels"),
                                         content_rating_value=body.get("contentRating"),
@@ -2202,7 +2229,7 @@ class Handler(BaseHTTPRequestHandler):
                 images=HISTORY.gallery_images(raw,SocialClient())
                 hidden,excluded=hidden_preferences()
                 allowed=[i for i in images if i['browsingLevel'] in profile.levels and i['username'].casefold() not in hidden and i['id'] not in excluded
-                    and (not COMMUNITY or COMMUNITY.listed_creator(i['id']) not in profile.creators|profile.blocked_creators)]
+                    and (not COMMUNITY or not profile.apply_account_filters or COMMUNITY.listed_creator(i['id']) not in profile.creators|profile.blocked_creators)]
                 if viewer!=connected_user_id():raise CommunityError('AUTH_EXPIRED',401)
                 if COMMUNITY:COMMUNITY.remember_presented([{'artwork':i} for i in allowed],self.community_viewer(None))
                 self.json_response({'images':[personal_preview(i) for i in allowed],

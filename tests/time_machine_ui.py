@@ -130,6 +130,16 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=
             order = page.locator(".tm-card .creator-identity strong").all_inner_texts()
             assert order == sorted(order, key=str.lower), order
 
+            # Shared controls also invalidate an already-open Time Machine view.
+            cy = cards.pop()
+            with page.expect_response('**/api/timemachine'):
+                page.evaluate("() => window.dispatchEvent(new Event('community-controls-changed'))")
+            page.locator('.tm-card', has_text='Cy').wait_for(state='detached')
+            cards.append(cy)
+            with page.expect_response('**/api/timemachine'):
+                page.evaluate("() => window.dispatchEvent(new Event('community-controls-changed'))")
+            page.locator('.tm-card', has_text='Cy').wait_for()
+
             # Progress must persist without needing a tab switch or a reload. It used to
             # be flushed only when the tab was reopened, so refreshing the page discarded
             # every card scrolled past and the same images came back.
