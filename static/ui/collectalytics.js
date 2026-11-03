@@ -1,12 +1,17 @@
 import { api } from './api.js';
+import { bindDialog } from './dialog.js';
 
 // Collectalytics: statistics for one collection the account owns or follows, a creator
-// check for "what have I added from them lately", and a Civitai-ready stats snippet.
+// check for "what have I added from them lately", a Civitai-ready stats snippet, and the
+// review queue of a collection the account owns, where an item can be accepted with a
+// thanks comment.
 // The server hands over every accepted item; the counting is done here so days follow
 // the reader's own time zone.
 // The last opened collection and the day/week choice, kept across restarts.
 const STATE_KEY = 'civitaiCollectalytics';
 const SNIPPET_KEY = 'civitaiCollectalyticsSnippet';
+// The thanks comment, by collection id, kept only where it differs from the default.
+const COMMENT_KEY = 'civitaiCollectalyticsComment';
 const TOP_CREATORS = 20;
 const RECENT = 15;
 const CREATOR_THUMBS = 36;
@@ -188,7 +193,7 @@ export function mountCollectalytics() {
   const state = {
     collections: null, selected: saved.collectionId ?? null, report: null, analysis: null,
     bucket: saved.bucket === 'week' ? 'week' : 'day', allCreators: false, creatorKey: null,
-    day: null, loading: 0, listing: null, active: false, account: undefined,
+    day: null, loading: 0, listing: null, active: false, account: undefined, review: null,
     // Bumped when the account changes, so answers for the previous one are dropped.
     epoch: 0, stale: false,
   };
@@ -273,6 +278,7 @@ export function mountCollectalytics() {
       message(`${number(report.items.length)} accepted items read ${Number.isNaN(fetched.getTime()) ? '' : `at ${fetched.toLocaleTimeString(undefined, { timeStyle: 'short' })}`}.` +
         (report.truncated ? ' This collection is larger than the app reads at once, so only the most recently added items are counted.' : ''));
       render();
+      loadReview(token, report.collection, refresh);
     } catch (error) {
       if (token !== state.loading) return;
       message(error.message, true);
@@ -280,6 +286,247 @@ export function mountCollectalytics() {
     } finally {
       if (token === state.loading) $('caRefresh').disabled = false;
     }
+  }
+
+  // -- review queue ----------------------------------------------------------------
+
+  // Only an owned collection has a queue to show. It is read after the statistics, so a
+  // slow queue never holds them up, and dropped if another collection was opened since.
+  async function loadReview(token, collection, refresh) {
+    state.review = null;
+    const panel = $('caReviewPanel');
+    panel.classList.toggle('hidden', !collection.owned);
+    $('caReview').replaceChildren();
+    $('caReviewWrite').classList.add('hidden');
+    if (!collection.owned) return;
+    $('caReviewOpen').href = `${collection.url}/review`;
+    reviewNote('Reading the review queue from Civitai…');
+    try {
+      const queue = await api(`/api/collectalytics/review?id=${collection.id}${refresh ? '&refresh=1' : ''}`, { timeoutMs: 120000 });
+      if (token !== state.loading) return;
+      state.review = { ...queue, token, items: queue.items.map(item => {
+        const added = item.addedAt ? new Date(item.addedAt) : null;
+        return { ...item, added: added && !Number.isNaN(added.getTime()) ? added : null };
+      }).sort((a, b) => (a.added?.getTime() ?? Infinity) - (b.added?.getTime() ?? Infinity) || a.collectionItemId - b.collectionItemId) };
+      renderReview();
+    } catch (error) {
+      if (token !== state.loading) return;
+      reviewNote(error.message, true);
+    }
+  }
+
+  function reviewNote(text, error = false) {
+    $('caReviewNote').textContent = text;
+    $('caReviewNote').classList.toggle('error', error);
+  }
+
+  function noteCount() {
+    const { review } = state;
+    const waiting = review.items.filter(item => !item.done).length;
+    reviewNote(waiting
+      ? `${number(waiting)} item${waiting === 1 ? '' : 's'} waiting, oldest first.${review.truncated ? ' Only the first 1,000 are listed.' : ''}`
+      : review.acceptsSubmissions ? 'Nothing is waiting for review.'
+        : 'Nothing is waiting for review. This collection does not take submissions for review.');
+  }
+
+  function renderReview() {
+    const { review } = state;
+    noteCount();
+    $('caReviewWrite').classList.toggle('hidden', review.canAccept || !review.items.length);
+    $('caReview').replaceChildren(...review.items.map(reviewRow));
+  }
+
+  function profileLink(name, url, className = '') {
+    const node = element(url ? 'a' : 'span', className, name);
+    if (url) { node.href = url; node.target = '_blank'; node.rel = 'noopener'; }
+    return node;
+  }
+
+  function reviewRow(item) {
+    const now = Date.now();
+    const row = element('li', 'ca-review-row');
+    row.dataset.collectionItemId = String(item.collectionItemId);
+    const text = element('div', 'ca-review-text');
+    text.append(profileLink(item.creator || 'Unknown creator', item.profileUrl, 'ca-creator-link'));
+    const submitter = element('small', 'ca-review-submitter');
+    if (!item.submitter) submitter.textContent = 'Submitter not reported by Civitai';
+    else if (item.submitterId != null && item.submitterId === item.creatorId) submitter.textContent = 'Submitted by the creator';
+    else submitter.append('Submitted by ', profileLink(item.submitter, item.submitterProfileUrl));
+    text.append(submitter);
+    text.append(element('small', '', item.added ? `Added ${ago(item.added, now)} · ${formatStamp(item.added)}` : 'No added date'));
+    const created = item.createdAt ? new Date(item.createdAt) : null;
+    if (created && !Number.isNaN(created.getTime())) text.append(element('small', '', `Created ${formatDay(created, true)}`));
+    if (Number(item.duration) > 0) text.append(element('small', '', `Length ${formatDuration(item.duration)}`));
+    // Whether the creator is new to the collection is the usual first question.
+    const key = item.creatorId != null ? `id:${item.creatorId}` : `name:${(item.creator || '').toLowerCase()}`;
+    const known = state.analysis?.creators.get(key);
+    text.append(element('small', known ? '' : 'ca-recent-note soon', known
+      ? `${number(known.items.length)} already in the collection · newest added ${known.last ? ago(known.last, now) : 'on an unknown date'}`
+      : 'New to this collection'));
+    if (item.url) {
+      const link = element('a', 'ca-review-item', 'Open on Civitai ↗');
+      link.href = item.url; link.target = '_blank'; link.rel = 'noopener';
+      text.append(link);
+    }
+    const actions = element('div', 'ca-review-actions');
+    if (state.review.canAccept) {
+      const accept = element('button', 'primary-button ca-accept', 'Review item');
+      accept.type = 'button';
+      accept.addEventListener('click', () => openAccept(item, row));
+      actions.append(accept);
+    }
+    text.append(actions);
+    row.append(thumb(item), text);
+    return row;
+  }
+
+  // -- the accept dialog --------------------------------------------------------------
+
+  // The exact comment for the item is shown before anything is posted, as Music Scout
+  // does before adding to Music Focus. Editing it here changes this collection's comment.
+  const acceptDialog = $('caAcceptDialog');
+  bindDialog(acceptDialog, { labelledBy: 'caAcceptTitle', closeButtons: [$('caAcceptClose'), $('caAcceptCancel')] });
+  let acceptTarget = null, previewToken = 0, previewTimer = 0;
+
+  function openAccept(item, row) {
+    acceptTarget = { item, row, review: state.review, posted: false };
+    const { review } = state;
+    $('caAcceptEyebrow').textContent = `REVIEW QUEUE · ${review.collection.name.toUpperCase()}`;
+    $('caComment').value = commentTemplate();
+    $('caAcceptEditor').classList.add('hidden');
+    $('caAcceptEdit').textContent = 'Edit';
+    $('caAcceptCopy').textContent = 'Copy comment';
+    $('caAcceptError').classList.add('hidden');
+    refreshAccept();
+    acceptDialog.showModal();
+    $('caAcceptConfirm').focus();
+  }
+
+  // The summary, the buttons and the preview follow the comment as typed.
+  function refreshAccept() {
+    const target = acceptTarget;
+    if (!target) return;
+    const { item } = target;
+    const template = $('caComment').value;
+    const commenting = !!template.trim();
+    const what = item.mediaType === 'video' ? 'video' : item.kind === 'image' ? 'image' : item.kind;
+    const thanked = /\{submitter\}/.test(template);
+    $('caAcceptTitle').textContent = commenting ? 'Accept with thanks?' : 'Accept without a comment?';
+    $('caAcceptSummary').textContent = commenting
+      ? `Posts this comment on ${item.creator || 'the creator'}’s ${what}${thanked && item.submitter ? `, mentioning ${item.submitter} so Civitai notifies them` : ''}, then accepts it into ${state.review.collection.name}.`
+      : `Accepts ${item.creator || 'the creator'}’s ${what} into ${state.review.collection.name}. Civitai tells the submitter.`;
+    $('caAcceptConfirm').textContent = commenting ? 'Accept and comment' : 'Accept';
+    $('caAcceptCopy').disabled = !commenting;
+    const blocked = commenting && thanked && !item.submitter;
+    if (blocked) acceptError('Civitai did not say who submitted this item, so the comment cannot mention them. Edit the comment or review it on Civitai.');
+    else if (!target.posted) $('caAcceptError').classList.add('hidden');
+    $('caAcceptConfirm').disabled = true;
+    clearTimeout(previewTimer);
+    const token = ++previewToken;
+    previewTimer = setTimeout(async () => {
+      try {
+        const markup = commenting ? await commentPreview(template, item.collectionItemId) : '';
+        if (token !== previewToken || acceptTarget !== target) return;
+        showHTML($('caAcceptPreview'), markup || '<p class="ca-empty-comment">No comment is posted.</p>');
+        $('caAcceptConfirm').disabled = blocked || target.posted;
+      } catch (error) {
+        if (token === previewToken) acceptError(error.message);
+      }
+    }, 150);
+  }
+
+  function acceptError(text) {
+    $('caAcceptError').textContent = text;
+    $('caAcceptError').classList.remove('hidden');
+  }
+
+  $('caAcceptEdit').addEventListener('click', () => {
+    const editor = $('caAcceptEditor');
+    editor.classList.toggle('hidden');
+    $('caAcceptEdit').textContent = editor.classList.contains('hidden') ? 'Edit' : 'Done';
+    if (!editor.classList.contains('hidden')) $('caComment').focus();
+  });
+
+  // Copies the comment formatted as well as plain, for doing it by hand on Civitai.
+  $('caAcceptCopy').addEventListener('click', async () => {
+    const preview = $('caAcceptPreview');
+    let copied = false;
+    try {
+      if (!window.ClipboardItem || !navigator.clipboard?.write) throw new Error('unavailable');
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([preview.innerHTML], { type: 'text/html' }),
+        'text/plain': new Blob([preview.innerText], { type: 'text/plain' }),
+      })]);
+      copied = true;
+    } catch (_) {
+      const selection = getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(preview);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      copied = document.execCommand('copy');
+      selection.removeAllRanges();
+    }
+    $('caAcceptCopy').textContent = copied ? 'Copied ✓' : 'Copy failed';
+    setTimeout(() => { $('caAcceptCopy').textContent = 'Copy comment'; }, 2000);
+  });
+
+  $('caAcceptConfirm').addEventListener('click', async () => {
+    const target = acceptTarget;
+    if (!target || target.review !== state.review) return;
+    const { item, row } = target;
+    const template = $('caComment').value;
+    $('caAcceptConfirm').disabled = true;
+    $('caAcceptError').classList.add('hidden');
+    try {
+      const result = await api('/api/collectalytics/accept', { method: 'POST', timeoutMs: 120000,
+        body: JSON.stringify({ collectionId: target.review.collection.id, collectionItemId: item.collectionItemId, template }) });
+      if (state.review !== target.review) return;
+      item.done = true;
+      row.querySelector('.ca-review-actions').replaceChildren(element('strong', 'ca-review-done',
+        result.commented ? 'Accepted · comment posted' : 'Accepted'));
+      row.classList.add('done');
+      noteCount();
+      acceptDialog.close();
+    } catch (error) {
+      acceptError(error.message);
+      // Once the comment is out, a second try would post it again.
+      if (/comment was posted/i.test(error.message)) {
+        target.posted = true;
+        row.querySelector('.ca-accept')?.remove();
+        row.querySelector('.ca-review-actions').append(element('small', 'ca-review-error', 'Comment posted; accept it on Civitai.'));
+        return;
+      }
+      $('caAcceptConfirm').disabled = false;
+    }
+  });
+  acceptDialog.addEventListener('close', () => { acceptTarget = null; clearTimeout(previewTimer); });
+
+  function commentTemplate() {
+    const stored = readJSON(localStorage, COMMENT_KEY)[state.review.collection.id];
+    return typeof stored === 'string' ? stored : state.review.defaultComment;
+  }
+
+  function storeComment() {
+    const all = readJSON(localStorage, COMMENT_KEY);
+    const value = $('caComment').value;
+    if (value === state.review.defaultComment) delete all[state.review.collection.id];
+    else all[state.review.collection.id] = value;
+    localStorage.setItem(COMMENT_KEY, JSON.stringify(all));
+  }
+
+  // The server renders the comment, so the preview is exactly what would be posted.
+  function commentPreview(template, collectionItemId) {
+    return api('/api/collectalytics/comment-preview', { method: 'POST', body: JSON.stringify({
+      collectionId: state.review.collection.id, collectionItemId, template }) }).then(answer => answer.html);
+  }
+
+  // Markup from the app's own renderers, where everything typed is escaped.
+  function showHTML(node, markup) {
+    const template = document.createElement('template');
+    template.innerHTML = markup;
+    for (const link of template.content.querySelectorAll('a')) { link.target = '_blank'; link.rel = 'noopener'; }
+    node.replaceChildren(template.content);
   }
 
   function setSnippetEnabled(enabled) {
@@ -584,7 +831,8 @@ export function mountCollectalytics() {
       link.append(image);
     } else {
       link.classList.add('missing');
-      link.append(element('span', 'ca-thumb-note', item.thumbHidden ? 'Hidden by your filters' : item.kind));
+      // An item still waiting for review may not be rated yet, and an unrated item shows no still.
+      link.append(element('span', 'ca-thumb-note', item.thumbHidden ? (item.nsfwLevel ? 'Hidden by your filters' : 'Not rated yet') : item.kind));
     }
     // Images open in the app's own detail dialog; Civitai stays a middle-click away.
     if (item.kind === 'image' && item.thumbUrl && item.itemId) {
@@ -735,6 +983,18 @@ export function mountCollectalytics() {
     localStorage.setItem(SNIPPET_KEY, JSON.stringify(all));
     renderSnippet();
   });
+  // An edit is the collection's comment from then on.
+  function commentEdited() {
+    if (!state.review) return;
+    storeComment();
+    refreshAccept();
+  }
+  $('caComment').addEventListener('input', commentEdited);
+  $('caCommentReset').addEventListener('click', () => {
+    if (!state.review) return;
+    $('caComment').value = state.review.defaultComment;
+    commentEdited();
+  });
   $('caCopyRich').addEventListener('click', () => copy(true));
   $('caCopySource').addEventListener('click', () => copy(false));
   // Signing in, out or as someone else changes which collections there are.
@@ -747,6 +1007,7 @@ export function mountCollectalytics() {
     state.collections = null;
     state.report = null;
     state.analysis = null;
+    state.review = null;
     state.stale = false;
     state.loading++;
     $('caBody').classList.add('hidden');

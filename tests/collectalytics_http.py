@@ -4,19 +4,25 @@ Covers the owned-or-followed collection list, paging every accepted item with a 
 that misbehaves, the read cap, item and thumbnail shapes, followers worked out from the
 contributor count, stills held back by content levels and hidden creators while counts
 stay whole, the cache and its refresh, refusing collections outside the list, and the
-signed-out answers. No request leaves the test.
+signed-out answers. The review queue: read only for owned collections, as Civitai's own
+review page asks for it, paged, cached briefly, with each submitter, and Civitai's refusal
+passed on plainly. Accepting with thanks: the comment's markup, its preview, the write
+grant, comment before accept, no second comment after a failed accept, and refusing items
+that are gone. No request leaves the test.
 """
 import test_safety  # Fail closed before any test network request.
 
 from http.server import ThreadingHTTPServer
 import http.client
 import json
+import re
 import threading
 from unittest.mock import patch
 
 import server
 from discovery import collectalytics
-from discovery.collectalytics import Collectalytics, collection_url, followers_from, item_entry
+from discovery.collectalytics import (DEFAULT_COMMENT, Collectalytics, collection_url,
+                                      comment_html, default_comment, followers_from, item_entry)
 
 OWNED, FOLLOWED, PRIVATE, STRANGER = 101, 202, 303, 404
 
@@ -33,7 +39,37 @@ def image_row(item_id, creator_id, name, minute, kind="video", level=1, key=None
 class FakeClient:
     calls = []
     pages = {}
+    review = {}
     contributors = {OWNED: 31, FOLLOWED: 8}
+    # Image id -> the collection rows Civitai reports for it; user id -> username.
+    adders = {}
+    users = {}
+    batches = []
+    writes = []
+    fail = set()
+
+    def batch_query_optional(self, procedure, payloads):
+        FakeClient.batches.append((procedure, payloads))
+        if procedure == "collection.getUserCollectionItemsByItem":
+            return [FakeClient.adders.get(payload["imageId"]) for payload in payloads]
+        if procedure == "user.getCreator":
+            return [{"id": payload["id"], "username": FakeClient.users[payload["id"]]}
+                    if payload["id"] in FakeClient.users else None for payload in payloads]
+        raise AssertionError(procedure)
+
+    def comment_on_image(self, image_id, content):
+        if "comment" in FakeClient.fail:
+            raise RuntimeError("Civitai mutation failed")
+        FakeClient.writes.append(("comment", image_id, content))
+
+    def set_collection_items_status(self, collection_id, collection_item_ids, status):
+        if "status" in FakeClient.fail:
+            raise RuntimeError("Some of the items selected have not been given a NSFW rating.")
+        FakeClient.writes.append(("status", collection_id, collection_item_ids, status))
+        # Civitai drops it from the queue.
+        for page in FakeClient.review[collection_id]:
+            page["collectionItems"] = [row for row in page["collectionItems"]
+                                       if row["id"] not in collection_item_ids]
 
     def query(self, procedure, payload):
         FakeClient.calls.append((procedure, payload))
@@ -42,10 +78,18 @@ class FakeClient:
             return [{"id": FOLLOWED, "name": "Zebra picks", "userId": 55, "isOwner": False,
                      "ownerUsername": "Curator", "type": "Image", "read": "Public"},
                     {"id": OWNED, "name": "Music Focus 🎸", "userId": 7, "isOwner": True,
-                     "ownerUsername": None, "type": "Image", "read": "Public"},
+                     "ownerUsername": None, "type": "Image", "read": "Public",
+                     "write": "Review"},
                     {"id": PRIVATE, "name": "Drafts", "userId": 7, "type": "Image",
                      "read": "Private"},
                     {"name": "No id"}]
+        if procedure == "collection.getAllCollectionItems" and payload["statuses"] == ["REVIEW"]:
+            assert payload["forReview"] is True and payload["reviewSort"] == "Oldest", payload
+            assert payload["browsingLevel"] == 31 and payload["limit"] == 100, payload
+            pages = FakeClient.review[payload["collectionId"]]
+            if isinstance(pages, Exception):
+                raise pages
+            return pages[int(payload.get("cursor") or 0)]
         if procedure == "collection.getAllCollectionItems":
             assert payload["statuses"] == ["ACCEPTED"] and payload["browsingLevel"] == 31, payload
             assert payload["limit"] == 100, payload
@@ -69,13 +113,14 @@ class FakeClient:
         raise AssertionError(procedure)
 
 
-signed_in = {"value": False, "id": 7}
+signed_in = {"value": False, "id": 7, "write": False}
 
 
 def auth_status():
     if not signed_in["value"]:
         raise RuntimeError("Civitai is not connected")
-    return {"connected": True, "id": signed_in["id"], "username": "Owner"}
+    return {"connected": True, "id": signed_in["id"], "username": "Owner",
+            "collectionsWrite": signed_in["write"], "socialWrite": signed_in["write"]}
 
 
 # -- pure helpers -----------------------------------------------------------------------
@@ -108,6 +153,37 @@ assert item_entry({"type": "image"}) is None and item_entry("junk") is None
 # A creator-less row still counts as an item.
 assert item_entry({"id": 5, "type": "image", "data": {"id": 6}})["creator"] is None
 
+# -- the thanks comment ------------------------------------------------------------------
+
+# Music Focus starts from the comment Music Scout posts, word for word, then the thanks.
+focus = {"id": 17980935, "name": "Music Focus 🎸"}
+MUSIC_FOCUS_COMMENT = ('<p>Your track has <a target="_blank" '
+                       'href="https://civitai.red/collections/17980935?sort=Recently+Added"><strong>Music '
+                       'Focus</strong> 🎸</a> and is added to the collection! 🎧 Give it '
+                       'a listen and share more jams if you like.</p>')
+rendered = comment_html(default_comment(focus["id"]), focus,
+                        {"submitterId": 77, "submitter": "Friend", "creatorId": 11, "creator": "Alpha"})
+assert rendered == (MUSIC_FOCUS_COMMENT[:-len("</p>")] + ' Thanks <span data-type="mention" '
+                    'data-id="mention:77" data-label="Friend">@Friend</span> for the recommendation.</p>'), rendered
+# The mention survives Civitai's comment sanitizer and is what its notification job reads:
+# a span keeps only data-type, data-id and data-label, and "mention:ID" names the recipient.
+mention = re.search(r"<span([^>]*)>@Friend</span>", rendered).group(1)
+assert re.findall(r'([\w-]+)="', mention) == ["data-type", "data-id", "data-label"], mention
+assert re.findall(r'"mention:(\d+)"', rendered) == ["77"], rendered
+generic = comment_html(DEFAULT_COMMENT, {"id": OWNED, "name": "Picks"}, {"submitterId": 5, "submitter": "Sam"})
+assert generic.startswith('<p>It is added to <a ') and generic.endswith('@Sam</span> for the recommendation.</p>'), generic
+assert default_comment(OWNED) == DEFAULT_COMMENT
+# Typed markup is escaped; only the template's own syntax becomes markup.
+rendered = comment_html('<b>Hi</b> {creator} [**{collection}** & co] {unknown}\n\n  second  ',
+                        {"id": 5, "name": "A<B"}, {"creatorId": 3, "creator": 'x"y'})
+assert rendered == ('<p>&lt;b&gt;Hi&lt;/b&gt; <span data-type="mention" data-id="mention:3" '
+                    'data-label="x&quot;y">@x&quot;y</span> <a target="_blank" '
+                    'href="https://civitai.red/collections/5?sort=Recently+Added"><strong>A&lt;B</strong> '
+                    '&amp; co</a> {unknown}</p><p>second</p>'), rendered
+# No one to mention: a name without an id is plain text, and no name is nothing.
+assert comment_html("{submitter}|{creator}", {"id": 5, "name": "C"},
+                    {"creator": "Plain"}) == "<p>|@Plain</p>"
+
 # -- paging -----------------------------------------------------------------------------
 
 FakeClient.pages = {
@@ -130,10 +206,12 @@ httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
 
-def call(path, headers=None):
+def call(path, headers=None, body=None):
     connection = http.client.HTTPConnection("127.0.0.1", httpd.server_port, timeout=10)
     try:
-        connection.request("GET", path, None, {"Content-Type": "application/json", **(headers or {})})
+        data = json.dumps(body).encode() if body is not None else None
+        connection.request("GET" if body is None else "POST", path, data,
+                           {"Content-Type": "application/json", **(headers or {})})
         response = connection.getresponse()
         raw = response.read()
         is_json = response.getheader("Content-Type", "").startswith("application/json")
@@ -261,6 +339,133 @@ with patch.object(server, "COLLECTALYTICS", stats), \
             status, capped = call(f"/api/collectalytics/collection?id={OWNED}")
             assert status == 200 and capped["truncated"] and capped["pages"] == 2, capped
             assert len(capped["items"]) == 5, capped
+
+        # -- the review queue --------------------------------------------------------------
+        FakeClient.review = {
+            OWNED: [{"collectionItems": [image_row(21, 31, "Newcomer", 1, level=0),
+                                         image_row(22, 11, "Alpha", 2)], "nextCursor": "1"},
+                    {"collectionItems": [image_row(23, 13, "Hidden", 3)], "nextCursor": None}],
+            # Civitai's FORBIDDEN, as it answers anyone but the owner and managers.
+            PRIVATE: server.CivitaiHTTPError(403, "You do not have permission to view review items"),
+        }
+        # 21 was submitted by someone else, 22 by its creator; Civitai has no row for 23.
+        FakeClient.adders = {21: [{"collectionId": FOLLOWED, "addedById": 5},
+                                  {"collectionId": OWNED, "addedById": 77}],
+                             22: [{"collectionId": OWNED, "addedById": 11}]}
+        FakeClient.users = {77: "Friend", 11: "Alpha"}
+        FakeClient.calls = []
+        status, queue = call(f"/api/collectalytics/review?id={OWNED}")
+        assert status == 200, queue
+        assert [item["itemId"] for item in queue["items"]] == [21, 22, 23], queue
+        assert queue["pages"] == 2 and not queue["truncated"] and queue["acceptsSubmissions"], queue
+        assert queue["collection"]["write"] == "Review", queue
+        assert queue["defaultComment"] == DEFAULT_COMMENT and queue["canAccept"] is False, queue
+        submitters = {item["itemId"]: (item["submitterId"], item["submitter"]) for item in queue["items"]}
+        assert submitters == {21: (77, "Friend"), 22: (11, "Alpha"), 23: (None, None)}, submitters
+        assert queue["items"][0]["submitterProfileUrl"] == "https://civitai.red/user/Friend", queue
+        # Review stills are the larger ones.
+        assert ",width=450/" in queue["items"][1]["thumbUrl"], queue["items"][1]
+        cursors = [payload.get("cursor") for name, payload in FakeClient.calls
+                   if name == "collection.getAllCollectionItems"]
+        assert cursors == [None, "1"], FakeClient.calls
+        # The same still rules: an unrated item and a hidden creator show none.
+        shown = {item["itemId"]: bool(item["thumbUrl"]) for item in queue["items"]}
+        assert shown == {21: False, 22: True, 23: False}, shown
+        # A queued image opens in the detail dialog like an accepted one.
+        assert stats.listed_image(7, 22)["creator"] == "Alpha"
+        # Read only: nothing but queries was sent.
+        assert all(name.split(".")[1].startswith("get") for name, _ in FakeClient.calls), FakeClient.calls
+        assert {name for name, _ in FakeClient.batches} == {
+            "collection.getUserCollectionItemsByItem", "user.getCreator"}, FakeClient.batches
+        assert FakeClient.writes == []
+        # Cached briefly; refresh reads again.
+        FakeClient.calls = []
+        assert call(f"/api/collectalytics/review?id={OWNED}")[0] == 200 and FakeClient.calls == []
+        assert call(f"/api/collectalytics/review?id={OWNED}&refresh=1")[0] == 200
+        assert len(FakeClient.calls) == 2, FakeClient.calls
+        # Only owned collections have a queue here; nothing is asked for the others.
+        FakeClient.calls = []
+        for other in (FOLLOWED, STRANGER):
+            status, answer = call(f"/api/collectalytics/review?id={other}")
+            assert status == 404 and "you own" in answer["error"], answer
+        assert FakeClient.calls == [], FakeClient.calls
+        status, answer = call(f"/api/collectalytics/review?id={PRIVATE}")
+        assert status == 403 and "owner and managers" in answer["error"], answer
+        assert call("/api/collectalytics/review?id=x")[0] == 400
+        # -- accepting with thanks ---------------------------------------------------------
+        template = "Thanks {submitter}!\nIn [**{collection}**]."
+        status, preview = call("/api/collectalytics/comment-preview",
+                               body={"collectionId": OWNED, "collectionItemId": 9021, "template": template})
+        assert status == 200 and 'data-id="mention:77"' in preview["html"], preview
+        assert "<strong>Music Focus 🎸</strong>" in preview["html"], preview
+        assert FakeClient.writes == []
+        # Without the write grant nothing is attempted.
+        status, answer = call("/api/collectalytics/accept",
+                              body={"collectionId": OWNED, "collectionItemId": 9021, "template": template})
+        assert status == 403 and "Sign out and back in" in answer["error"], answer
+        assert FakeClient.writes == []
+        signed_in["write"] = True
+        assert call(f"/api/collectalytics/review?id={OWNED}")[1]["canAccept"] is True
+        # Someone else's collection, an item no longer waiting, and too long a comment.
+        assert call("/api/collectalytics/accept", body={"collectionId": FOLLOWED, "collectionItemId": 1,
+                                                        "template": ""})[0] == 404
+        status, answer = call("/api/collectalytics/accept", body={"collectionId": OWNED,
+                                                                  "collectionItemId": 9999, "template": ""})
+        assert status == 409 and "no longer waiting" in answer["error"], answer
+        assert call("/api/collectalytics/accept", body={"collectionId": OWNED, "collectionItemId": 9021,
+                                                        "template": "x" * 2001})[0] == 400
+        assert FakeClient.writes == []
+        # The comment first, then the accept.
+        status, answer = call("/api/collectalytics/accept",
+                              body={"collectionId": OWNED, "collectionItemId": 9021, "template": template})
+        assert status == 200 and answer == {"collectionItemId": 9021, "accepted": True, "commented": True}, answer
+        assert [write[0] for write in FakeClient.writes] == ["comment", "status"], FakeClient.writes
+        assert FakeClient.writes[0][:2] == ("comment", 21) and 'mention:77' in FakeClient.writes[0][2]
+        assert FakeClient.writes[1] == ("status", OWNED, [9021], "ACCEPTED"), FakeClient.writes
+        # Gone from the queue served next, and the accepted count is reread.
+        assert [item["itemId"] for item in call(f"/api/collectalytics/review?id={OWNED}")[1]["items"]] == [22, 23]
+        assert (7, OWNED) not in stats.reports
+        # Accepting it again is refused: the queue is reread first.
+        FakeClient.writes = []
+        status, answer = call("/api/collectalytics/accept",
+                              body={"collectionId": OWNED, "collectionItemId": 9021, "template": template})
+        assert status == 409 and FakeClient.writes == [], answer
+        # Nobody to thank: refused before anything is posted. Without a comment it is accepted.
+        status, answer = call("/api/collectalytics/accept",
+                              body={"collectionId": OWNED, "collectionItemId": 9023, "template": template})
+        assert status == 409 and "who submitted" in answer["error"] and FakeClient.writes == [], answer
+        status, answer = call("/api/collectalytics/accept",
+                              body={"collectionId": OWNED, "collectionItemId": 9023, "template": "  "})
+        assert status == 200 and answer["commented"] is False, answer
+        assert FakeClient.writes == [("status", OWNED, [9023], "ACCEPTED")], FakeClient.writes
+        # A failed comment accepts nothing; a failed accept after the comment says so once.
+        FakeClient.writes, FakeClient.fail = [], {"comment"}
+        status, answer = call("/api/collectalytics/accept",
+                              body={"collectionId": OWNED, "collectionItemId": 9022, "template": template})
+        assert status == 502 and FakeClient.writes == [] and not answer.get("commented"), answer
+        FakeClient.fail = {"status"}
+        status, answer = call("/api/collectalytics/accept",
+                              body={"collectionId": OWNED, "collectionItemId": 9022, "template": template})
+        assert status == 502 and answer["commented"] is True and "Accept it on Civitai" in answer["error"], answer
+        assert [write[0] for write in FakeClient.writes] == ["comment"], FakeClient.writes
+        FakeClient.fail = set()
+        # Civitai's own refusal without a comment is passed on.
+        FakeClient.writes, FakeClient.fail = [], {"status"}
+        status, answer = call("/api/collectalytics/accept",
+                              body={"collectionId": OWNED, "collectionItemId": 9022, "template": ""})
+        assert status == 502 and "NSFW rating" in answer["error"], answer
+        FakeClient.fail = set()
+        signed_in["write"] = False
+
+        # The review read is capped like the item read.
+        FakeClient.review[OWNED] = [{"collectionItems": [image_row(30 + n, 11, "Alpha", n)],
+                                     "nextCursor": str(n + 1)} for n in range(3)]
+        with patch.object(collectalytics, "MAX_REVIEW_PAGES", 2):
+            status, capped = call(f"/api/collectalytics/review?id={OWNED}&refresh=1")
+            assert status == 200 and capped["truncated"] and len(capped["items"]) == 2, capped
+        signed_in["value"] = False
+        assert call(f"/api/collectalytics/review?id={OWNED}")[0] == 401
+        signed_in["value"] = True
 
         # Civitai refusing access is the usual renew-your-connection answer.
         def refused(self, procedure, payload):

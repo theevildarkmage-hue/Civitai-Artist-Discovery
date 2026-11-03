@@ -4,8 +4,11 @@ Only static assets are served; every API answer and still is a fixture, so no ap
 server, account or external connection is involved. Covers the tab's place and icon,
 the owned/followed picker, the stat tiles, the per-day and per-week chart and its
 selection, the recent additions with each creator's previous addition, the creator
-check and its timeline, the creator bars, and the snippet: its rendered preview, the
-HTML put on the clipboard, edits kept per collection, and signing out.
+check and its timeline, the creator bars, the snippet: its rendered preview, the
+HTML put on the clipboard, edits kept per collection, and signing out. The review queue
+of an owned collection: 3:4 stills, oldest first, who submitted each item, whether each
+creator is new to the collection, an unrated still, accepting in a dialog that shows the
+exact comment first, editing that comment there, and no queue read for a followed collection.
 """
 import test_safety  # Fail closed before any test network request.
 
@@ -23,7 +26,7 @@ NOW = datetime.now(timezone.utc).replace(microsecond=0)
 FOCUS, FOLLOWED = 17980935, 555
 COLLECTIONS = [
     {"id": FOCUS, "name": "Music Focus 🎸", "owned": True, "ownerId": 7, "ownerName": None,
-     "type": "Image", "read": "Public", "mode": None, "url": f"https://civitai.red/collections/{FOCUS}"},
+     "type": "Image", "read": "Public", "write": "Review", "mode": None, "url": f"https://civitai.red/collections/{FOCUS}"},
     {"id": FOLLOWED, "name": "Museum", "owned": False, "ownerId": 9, "ownerName": "Curator",
      "type": "Image", "read": "Public", "mode": None, "url": f"https://civitai.red/collections/{FOLLOWED}"},
 ]
@@ -55,10 +58,21 @@ REPORTS = {
                "truncated": False, "fetchedAt": NOW.isoformat()},
 }
 
+# Waiting for review: someone already collected, a newcomer, and one not rated yet.
+DEFAULT_COMMENT = "Your track has [**Music Focus** 🎸]. Thanks {submitter} for the recommendation."
+REVIEW = {"collection": COLLECTIONS[0], "pages": 1, "truncated": False, "acceptsSubmissions": True,
+          "fetchedAt": NOW.isoformat(), "canAccept": True, "defaultComment": DEFAULT_COMMENT,
+          "items": [{**item(40, 0, 1), "collectionItemId": 9940, "submitterId": 100,
+                     "submitter": "Composer0", "submitterProfileUrl": "https://civitai.red/user/Composer0"},
+                    {**item(41, 50, 30), "collectionItemId": 9941, "submitterId": 77,
+                     "submitter": "Friend", "submitterProfileUrl": "https://civitai.red/user/Friend"},
+                    {**item(42, 51, 5, hidden=True), "collectionItemId": 9942, "nsfwLevel": 0,
+                     "submitterId": None, "submitter": None, "submitterProfileUrl": None}]}
+
 server = ThreadingHTTPServer(("127.0.0.1", 0), partial(StaticHandler, directory=str(ROOT / "static")))
 threading.Thread(target=server.serve_forever, daemon=True).start()
 base_url = f"http://127.0.0.1:{server.server_port}"
-requests = {"collections": [], "collection": [], "image": []}
+requests = {"collections": [], "collection": [], "image": [], "review": [], "preview": [], "accept": []}
 
 
 def routes(route):
@@ -76,6 +90,20 @@ def routes(route):
     elif parsed.path == "/api/collectalytics/collection":
         requests["collection"].append(query)
         data = REPORTS[int(query["id"][0])]
+    elif parsed.path == "/api/collectalytics/review":
+        requests["review"].append(query)
+        data = REVIEW
+    elif parsed.path == "/api/collectalytics/comment-preview":
+        body = request.post_data_json
+        requests["preview"].append(body)
+        # Stands in for the server's renderer: the template, marked with the item.
+        escaped = body["template"].replace("&", "&amp;").replace("<", "&lt;")
+        data = {"html": f'<p data-item="{body["collectionItemId"]}">{escaped}</p>'}
+    elif parsed.path == "/api/collectalytics/accept":
+        body = request.post_data_json
+        requests["accept"].append(body)
+        data = {"collectionItemId": body["collectionItemId"], "accepted": True,
+                "commented": bool(body["template"].strip())}
     elif parsed.path == "/api/collectalytics/image":
         requests["image"].append(query)
         image_id = int(query["id"][0])
@@ -137,6 +165,86 @@ try:
         # The intro sits on one line on a wide screen.
         assert page.evaluate("() => { const note = document.querySelector('.ca-head .discovery-note'); return note.getClientRects().length && note.getBoundingClientRect().height < 24; }")
         assert page.locator("#caOpen").get_attribute("href") == COLLECTIONS[0]["url"]
+        # The review queue of an owned collection: oldest first, links to Civitai's review.
+        page.locator("#caReview .ca-review-row").first.wait_for()
+        assert [query["id"] for query in requests["review"]] == [[str(FOCUS)]], requests["review"]
+        assert page.locator("#caReviewOpen").get_attribute("href") == f"{COLLECTIONS[0]['url']}/review"
+        assert texts(page, "#caReview .ca-creator-link") == ["Composer50", "Composer51", "Composer0"]
+        assert page.locator("#caReviewNote").text_content().startswith("3 items waiting, oldest first."), page.locator("#caReviewNote").text_content()
+        review_notes = texts(page, "#caReview .ca-review-text small")
+        assert sum(note == "New to this collection" for note in review_notes) == 2, review_notes
+        assert any(note.startswith(f"{len([row for row in ITEMS if row['creator'] == 'Composer0'])} already in the collection") for note in review_notes), review_notes
+        assert page.locator("#caReview .ca-thumb-note", has_text="Not rated yet").count() == 1
+        assert page.locator("#caReview a.ca-review-item").first.get_attribute("href") == f"https://civitai.red/images/{5041}"
+        # Each item opens for review; its button stays inside its row at any width.
+        assert texts(page, "#caReview .ca-accept") == ["Review item"] * 3
+        for width in (1440, 1100, 820, 600, 420):
+            page.set_viewport_size({"width": width, "height": 900})
+            page.wait_for_timeout(50)
+            assert page.evaluate("""() => [...document.querySelectorAll('#caReview .ca-review-row')].every(row => {
+                const box = row.getBoundingClientRect(), button = row.querySelector('.ca-accept').getBoundingClientRect();
+                return button.right <= box.right && button.left >= box.left; })"""), width
+        page.set_viewport_size({"width": 1440, "height": 900})
+        # Large 3:4 stills with the details beside them.
+        size = page.locator("#caReview .ca-thumb").first.bounding_box()
+        assert size["width"] >= 160 and abs(size["height"] / size["width"] - 4 / 3) < 0.02, size
+        assert page.evaluate("() => { const row = document.querySelector('#caReview .ca-review-row'); return row.querySelector('.ca-review-text').getBoundingClientRect().left > row.querySelector('.ca-thumb').getBoundingClientRect().right; }")
+        assert page.evaluate("() => new Set([...document.querySelectorAll('#caReview .ca-review-row')].map(row => Math.round(row.getBoundingClientRect().top))).size") == 1
+        submitted = texts(page, "#caReview .ca-review-submitter")
+        assert submitted == ["Submitted by Friend", "Submitter not reported by Civitai", "Submitted by the creator"], submitted
+        assert "Length 1m 2s" in review_notes, review_notes
+
+        # Accepting opens a dialog with the exact comment for that item, rendered by the server;
+        # nothing goes out until it is confirmed.
+        first = page.locator("#caReview .ca-review-row").first
+        first.locator(".ca-accept").click()
+        dialog = page.locator("#caAcceptDialog")
+        dialog.locator("#caAcceptPreview p[data-item='9941']").wait_for()
+        assert page.evaluate("() => document.getElementById('caAcceptDialog').matches(':modal')")
+        assert dialog.locator("#caAcceptTitle").text_content() == "Accept with thanks?"
+        assert "mentioning Friend so Civitai notifies them" in dialog.locator("#caAcceptSummary").text_content()
+        assert dialog.locator("#caAcceptPreview").text_content() == DEFAULT_COMMENT
+        assert texts(page, "#caAcceptDialog .update-actions button") == ["Accept and comment", "Cancel"]
+        assert dialog.locator("#caAcceptOpen").count() == 0
+        assert dialog.locator("#caAcceptEditor").is_hidden() and requests["accept"] == []
+        dialog.locator("#caAcceptCancel").click()
+        assert dialog.is_hidden() and requests["accept"] == []
+        # Editing in the dialog changes the collection's comment and its preview.
+        first.locator(".ca-accept").click()
+        dialog.locator("#caAcceptEdit").click()
+        dialog.locator("#caComment").fill("Cheers {submitter}")
+        page.wait_for_function("() => document.getElementById('caAcceptPreview').textContent === 'Cheers {submitter}'")
+        assert json.loads(page.evaluate("() => localStorage.getItem('civitaiCollectalyticsComment')")) == {str(FOCUS): "Cheers {submitter}"}
+        page.wait_for_function("() => !document.getElementById('caAcceptConfirm').disabled")
+        dialog.locator("#caAcceptConfirm").click()
+        first.locator(".ca-review-done", has_text="Accepted · comment posted").wait_for()
+        assert dialog.is_hidden()
+        assert requests["accept"] == [{"collectionId": FOCUS, "collectionItemId": 9941, "template": "Cheers {submitter}"}], requests["accept"]
+        assert page.locator("#caReviewNote").text_content().startswith("2 items waiting"), page.locator("#caReviewNote").text_content()
+        # Nobody to mention: the dialog says so and will not post.
+        unknown = page.locator("#caReview .ca-review-row").nth(1)
+        unknown.locator(".ca-accept").click()
+        dialog.locator("#caAcceptError:not(.hidden)").wait_for()
+        assert "did not say who submitted" in dialog.locator("#caAcceptError").text_content()
+        page.wait_for_timeout(300)
+        assert dialog.locator("#caAcceptConfirm").is_disabled()
+        dialog.locator("#caAcceptClose").click()
+        # An empty comment accepts without one, and says so.
+        page.locator("#caReview .ca-review-row").nth(2).locator(".ca-accept").click()
+        dialog.locator("#caAcceptEdit").click()
+        dialog.locator("#caComment").fill("")
+        page.wait_for_function("() => document.getElementById('caAcceptTitle').textContent === 'Accept without a comment?' && !document.getElementById('caAcceptConfirm').disabled")
+        assert dialog.locator("#caAcceptPreview").text_content() == "No comment is posted."
+        dialog.locator("#caAcceptConfirm").click()
+        page.locator("#caReview .ca-review-row").nth(2).locator(".ca-review-done", has_text="Accepted").wait_for()
+        assert requests["accept"][-1] == {"collectionId": FOCUS, "collectionItemId": 9940, "template": ""}, requests["accept"]
+        assert page.locator("#caReview .ca-review-row").nth(1).locator(".ca-accept").text_content() == "Review item"
+        page.locator("#caReview .ca-review-row").nth(1).locator(".ca-accept").click()
+        dialog.locator("#caAcceptEdit").click()
+        dialog.locator("#caCommentReset").click()
+        assert dialog.locator("#caComment").input_value() == DEFAULT_COMMENT
+        assert page.evaluate("() => localStorage.getItem('civitaiCollectalyticsComment')") == "{}"
+        dialog.locator("#caAcceptCancel").click()
         # The creator check opens on whoever was added last.
         assert page.locator("#caCreator").input_value() == ITEMS[0]["creator"]
         assert page.locator("#caCreatorReport .ca-dot").count() >= 1
@@ -208,6 +316,8 @@ try:
         gap = page.evaluate("() => document.querySelector('.ca-bars-panel').getBoundingClientRect().top - document.querySelector('.ca-creator-panel').getBoundingClientRect().bottom")
         assert 0 < gap <= 20, f"the creator bars should follow the creator check directly, not {gap}px below"
         assert snippet[2] == days[2], boxes
+        review_box = page.evaluate("() => { const box = document.querySelector('.ca-review-panel').getBoundingClientRect(); return [Math.round(box.top), Math.round(box.width)]; }")
+        assert review_box[1] == days[2] and review_box[0] < days[0], (review_box, days)
 
         # Bars, most collected first; choosing one opens it in the creator check.
         names = texts(page, "#caCreatorBars .ca-bar-name")
@@ -263,6 +373,9 @@ try:
         # A followed collection without a follower count says so in the snippet.
         page.wait_for_function("() => document.querySelectorAll('#caStats .ca-stat').length && document.getElementById('caOpen').textContent.includes('Museum')")
         assert page.locator("#caOwner").text_content() == "By Curator"
+        # Someone else's collection has no queue here, and none is read.
+        assert page.locator("#caReviewPanel").is_hidden()
+        assert all(query["id"] == [str(FOCUS)] for query in requests["review"]), requests["review"]
         assert texts(page, "#caStats .ca-stat strong")[2] == "—"
         assert page.locator("#caFollowersNote").is_visible()
         assert "<strong>?</strong> followers" in page.locator("#caSource").text_content()

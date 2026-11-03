@@ -32,7 +32,8 @@ from discovery.capture import AutoCapture
 from discovery.archive_calendar import build_request as archive_build_request
 from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
-from discovery.collectalytics import (Collectalytics, NotListed, Unavailable, thumb_allowed,
+from discovery.collectalytics import (Collectalytics, CommentedNotAccepted, NotListed,
+                                      NotReviewable, NotWaiting, Unavailable, thumb_allowed,
                                       with_visible_thumbs)
 from discovery.history import HistoryArchive, RetryBudgetExhausted, parse_day, previous_local_day
 from discovery.selection import GallerySelection, media_type
@@ -284,6 +285,15 @@ def collectalytics_client() -> SocialClient:
     if not connected_or_false():
         raise PermissionError("Sign in to Civitai to read your collections")
     return SocialClient()
+
+
+def review_writable() -> bool:
+    """Whether the sign-in may comment and set collection item status."""
+    try:
+        status = auth_status()
+    except RuntimeError:
+        return False
+    return bool(status.get("collectionsWrite") and status.get("socialWrite"))
 
 
 def collected_image(image_id: int) -> bool:
@@ -1532,6 +1542,29 @@ class Handler(BaseHTTPRequestHandler):
             except NotListed as error: self.json_response({"error": str(error)}, 404)
             except Exception as error: self.internal_error("Collectalytics collection", error)
             return
+        if parsed.path == "/api/collectalytics/review":
+            # Read only: the queue is listed here, and reviewed on Civitai.
+            try: collection_id = int(query.get("id", [""])[0])
+            except ValueError:
+                self.json_response({"error": "Choose a collection by its ID"}, 400)
+                return
+            try:
+                user_id = connected_user_id()
+                queue = COLLECTALYTICS.review_queue(user_id, collection_id,
+                                                    refresh=query.get("refresh", ["0"])[0] == "1")
+                if connected_user_id() != user_id:
+                    COLLECTALYTICS.forget(user_id, collection_id)
+                    self.json_response({"error": "The signed-in account changed. Open the collection again."}, 409)
+                    return
+                hidden_creators, hidden_images = hidden_preferences()
+                self.json_response({**with_visible_thumbs(queue, HISTORY.visible_levels,
+                                                          hidden_creators, hidden_images),
+                                    "canAccept": review_writable()})
+            except PermissionError as error: self.json_response({"error": str(error)}, 401)
+            except NotListed as error: self.json_response({"error": str(error)}, 404)
+            except NotReviewable as error: self.json_response({"error": str(error)}, 403)
+            except Exception as error: self.internal_error("Collectalytics review queue", error)
+            return
         if parsed.path == "/api/collectalytics/image":
             try: image_id = int(query.get("id", [""])[0])
             except ValueError:
@@ -2321,6 +2354,39 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/app/close":
                 self.json_response({"closing": True})
                 request_app_shutdown(self.server)
+                return
+            if parsed.path == "/api/collectalytics/comment-preview":
+                # Renders the comment from the queue already read; nothing is sent to Civitai.
+                item_id = body.get("collectionItemId")
+                try:
+                    self.json_response({"html": COLLECTALYTICS.comment_preview(
+                        connected_user_id(), int(body.get("collectionId")),
+                        int(item_id) if item_id is not None else None,
+                        str(body.get("template") or ""))})
+                except NotListed as error: self.json_response({"error": str(error)}, 404)
+                return
+            if parsed.path == "/api/collectalytics/accept":
+                # Accepting from the review queue, with the reader's thanks comment.
+                if not review_writable():
+                    raise PermissionError("Accepting needs a sign-in that may comment and manage "
+                                          "collections. Sign out and back in to grant it.")
+                user_id = connected_user_id()
+                try:
+                    result = COLLECTALYTICS.accept(user_id, int(body.get("collectionId")),
+                                                   int(body.get("collectionItemId")),
+                                                   str(body.get("template") or ""))
+                except NotListed as error:
+                    self.json_response({"error": str(error)}, 404); return
+                except (NotWaiting, NotReviewable) as error:
+                    self.json_response({"error": str(error)}, 409); return
+                except CommentedNotAccepted as error:
+                    log_internal_error("Collectalytics accept after comment", error.__cause__ or error)
+                    self.json_response({"error": str(error), "commented": True}, 502); return
+                except RuntimeError as error:
+                    # Civitai's own refusal, such as an item that needs a rating first.
+                    if isinstance(error, CivitaiHTTPError): raise
+                    self.json_response({"error": str(error)}, 502); return
+                self.json_response(result)
                 return
             if parsed.path == "/api/collections/add":
                 if not auth_status().get("collectionsWrite"):
