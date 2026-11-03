@@ -127,3 +127,39 @@ textarea.ca-input { resize: vertical; line-height: 1.5; }
 .ca-source summary { color: var(--muted); font-size: 13px; cursor: pointer; }
 .ca-source pre { margin: 6px 0 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg); color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ca-scratch { position: fixed; top: 0; left: -9999px; opacity: 0; }
+
+/* The review queue, full width: a 3:4 still with its details beside it. */
+.ca-grid > .ca-review-panel { grid-column: 1 / -1; }
+.ca-review-open { color: var(--accent); text-decoration: none; font-weight: 700; font-size: 14px; white-space: nowrap; }
+.ca-review-open:hover { text-decoration: underline; }
+.ca-review { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr)); gap: 12px; }
+.ca-review-row { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 14px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.ca-review-row .ca-thumb { width: 168px; aspect-ratio: 3 / 4; }
+.ca-review-row .ca-thumb-badge { font-size: 11px; }
+.ca-review-text { display: grid; gap: 3px; min-width: 0; font-size: 13px; align-content: start; }
+.ca-review-text small { color: var(--muted); }
+.ca-review-text .ca-creator-link { justify-self: start; font-size: 15px; text-decoration: none; }
+.ca-review-text a.ca-review-item { color: var(--accent); text-decoration: none; font-size: 12px; justify-self: start; }
+.ca-review-text a.ca-review-item:hover { text-decoration: underline; }
+.ca-review-submitter a { color: var(--text); }
+.ca-review-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+/* The button stays inside the details column, however narrow. */
+.ca-review-actions > * { max-width: 100%; white-space: normal; }
+.ca-review-error { color: var(--danger-text); }
+.ca-review-done { color: var(--accent); }
+/* The accept dialog, after Music Scout's add dialog. */
+.ca-accept-comment { display: grid; gap: 6px; }
+.ca-accept-comment-head { display: flex; align-items: center; gap: 10px; }
+.ca-accept-comment-head span { font-weight: 700; margin-right: auto; }
+.ca-comment-preview { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); line-height: 1.5; overflow-wrap: anywhere; }
+.ca-comment-preview p { margin: 0 0 .6em; }
+.ca-comment-preview p:last-child { margin-bottom: 0; }
+.ca-comment-preview a { color: var(--accent); }
+/* A mention is a reference to an account, shown the way Civitai shows one. */
+.ca-comment-preview span[data-type="mention"] { color: var(--accent); font-weight: 700; }
+.ca-comment-preview .ca-empty-comment { color: var(--muted); font-style: italic; }
+.ca-accept-editor { display: grid; gap: 6px; justify-items: start; }
+@media (max-width: 520px) {
+  .ca-review-row { grid-template-columns: 120px minmax(0, 1fr); }
+  .ca-review-row .ca-thumb { width: 120px; }
+}

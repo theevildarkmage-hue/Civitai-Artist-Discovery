@@ -20,16 +20,32 @@ From Civitai's source (Oct 2026):
   when the collection is created, each follower, and each collaborator. ``getById``
   lists the collaborators other than the owner, so followers are what remains. It only
   answers for public collections.
+- A collection whose ``write`` is ``Review`` takes submissions from anyone; opening one to
+  submissions needs a membership. What someone without owner, manager or collaborator
+  rights adds waits as ``REVIEW``. The same ``getAllCollectionItems`` with ``statuses:
+  ["REVIEW"]`` and ``forReview: true`` is the queue Civitai's own review page shows, for
+  owners and managers only, and its rows carry the same ``data.user``. Who submitted an
+  item (``addedById``) is not in that answer.
+- ``collection.getUserCollectionItemsByItem`` lists, for one image, its rows in every
+  collection the account owns or may add to, whatever their status, with ``addedById``.
+  That names the submitter; ``user.getCreator`` with ``id`` gives their username.
+- ``collection.updateCollectionItemsStatus`` with ``ACCEPTED`` accepts, for the owner or a
+  manager, and notifies the submitter. Comments go through ``commentv2.upsert``; Civitai's
+  editor writes an @mention as a ``data-type="mention"`` span with ``data-id="mention:ID"``,
+  and that id is what its notifications read.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import html
+import re
 import threading
 import time
 import urllib.parse
 
 from .civitai import normalize
+from .social import CivitaiHTTPError
 from .history import preview_url, video_playback_url, video_still_url
 from .site import SITE_ORIGIN, image_url, profile_url
 
@@ -38,6 +54,26 @@ ITEM_PAGE_SIZE = 100
 # 10,000 items. A larger collection is reported as truncated rather than read forever.
 MAX_ITEM_PAGES = 100
 CACHE_SECONDS = 300
+# The queue changes as soon as someone reviews on Civitai, so it is kept briefly. A queue
+# is read whole up to 1,000 items; a longer one is reported as truncated.
+REVIEW_CACHE_SECONDS = 60
+MAX_REVIEW_PAGES = 10
+# Review stills are shown larger, at 3:4.
+REVIEW_THUMB_WIDTH = 450
+COMMENT_MAX = 2000
+# The comment posted when accepting, written as plain text: [text] links to the collection,
+# **text** is bold, {submitter} and {creator} become @mentions and {collection} its name.
+# A mention is the markup Civitai's editor writes; its comment sanitizer keeps a span's
+# data-type, data-id and data-label, and the new-mention notification job finds the
+# recipient by matching "mention:ID" in the stored comment.
+# Each line is a paragraph. The collection's standard comment comes first, the thanks after.
+THANKS = "Thanks {submitter} for the recommendation."
+DEFAULT_COMMENT = "It is added to [**{collection}**]. " + THANKS
+STANDARD_COMMENTS = {
+    # Music Focus 🎸: the comment Music Scout posts on every video it adds, then the thanks.
+    17980935: ("Your track has [**Music Focus** 🎸] and is added to the collection! 🎧 Give it "
+               "a listen and share more jams if you like. " + THANKS),
+}
 # Every level, so the counts match the collection rather than the reader's filters.
 # Thumbnails are still limited to the reader's levels.
 ALL_LEVELS = 31
@@ -52,6 +88,66 @@ class NotListed(Exception):
 
 class Unavailable(Exception):
     """Civitai no longer serves the image."""
+
+
+class NotReviewable(Exception):
+    """Civitai shows the account no review queue for the collection."""
+
+
+class NotWaiting(Exception):
+    """The item is no longer in the review queue, or cannot be accepted from here."""
+
+
+class CommentedNotAccepted(Exception):
+    """The comment was posted but accepting failed; retrying would post it twice."""
+
+
+def default_comment(collection_id: int) -> str:
+    return STANDARD_COMMENTS.get(int(collection_id), DEFAULT_COMMENT)
+
+
+def _mention(user_id, name) -> str:
+    if not name:
+        return ""
+    if user_id is None:
+        return html.escape(f"@{name}")
+    label = html.escape(str(name), quote=True)
+    return (f'<span data-type="mention" data-id="mention:{int(user_id)}" '
+            f'data-label="{label}">@{html.escape(str(name))}</span>')
+
+
+def comment_html(template: str, collection: dict, item: dict | None) -> str:
+    """The comment as Civitai's editor would write it. Everything typed is escaped."""
+    item = item or {}
+    values = {
+        "submitter": _mention(item.get("submitterId"), item.get("submitter")),
+        "creator": _mention(item.get("creatorId"), item.get("creator")),
+        "collection": html.escape(collection.get("name") or "the collection"),
+    }
+
+    def inline(text: str, bold: bool = True) -> str:
+        out = []
+        pattern = r"(\*\*.+?\*\*|\{\w+\})" if bold else r"(\{\w+\})"
+        for part in re.split(pattern, text):
+            if bold and part.startswith("**") and part.endswith("**") and len(part) > 4:
+                out.append(f"<strong>{inline(part[2:-2], False)}</strong>")
+            elif re.fullmatch(r"\{\w+\}", part) and part[1:-1] in values:
+                out.append(values[part[1:-1]])
+            else:
+                out.append(html.escape(part, quote=False))
+        return "".join(out)
+
+    href = html.escape(f"{collection_url(collection['id'])}?sort=Recently+Added", quote=True)
+    paragraphs = []
+    for line in str(template).splitlines():
+        if not line.strip():
+            continue
+        parts = re.split(r"\[(.+?)\]", line.strip())
+        rendered = "".join(inline(part) if index % 2 == 0 else
+                           f'<a target="_blank" href="{href}">{inline(part)}</a>'
+                           for index, part in enumerate(parts))
+        paragraphs.append(f"<p>{rendered}</p>")
+    return "".join(paragraphs)
 
 
 def collection_url(collection_id: int) -> str:
@@ -77,19 +173,19 @@ def choice_entry(row: object, user_id: int | None) -> dict | None:
     return {"id": int(row["id"]), "name": _text(row.get("name")) or "Untitled collection",
             "owned": owned, "ownerId": owner_id,
             "ownerName": None if owned else (_text(row.get("ownerUsername")) or None),
-            "type": row.get("type"), "read": row.get("read"), "mode": row.get("mode"),
-            "url": collection_url(row["id"])}
+            "type": row.get("type"), "read": row.get("read"), "write": row.get("write"),
+            "mode": row.get("mode"), "url": collection_url(row["id"])}
 
 
-def thumb_url(key: str, media_type: str) -> str | None:
+def thumb_url(key: str, media_type: str, width: int = THUMB_WIDTH) -> str | None:
     """A small still from the item's CDN key; a full URL or an empty key gives none."""
     if not key or "/" in key:
         return None
     quoted = urllib.parse.quote(key)
     if media_type == "video":
         return (f"{CDN_ROOT}/{quoted}/anim=false,transcode=true,optimized=true,"
-                f"width={THUMB_WIDTH}/{quoted}.jpeg")
-    return f"{CDN_ROOT}/{quoted}/width={THUMB_WIDTH}/{quoted}.jpeg"
+                f"width={int(width)}/{quoted}.jpeg")
+    return f"{CDN_ROOT}/{quoted}/width={int(width)}/{quoted}.jpeg"
 
 
 def video_duration(data: dict) -> float | None:
@@ -102,7 +198,7 @@ def video_duration(data: dict) -> float | None:
     return seconds if 0 < seconds < 86400 else None
 
 
-def item_entry(row: object) -> dict | None:
+def item_entry(row: object, width: int = THUMB_WIDTH) -> dict | None:
     """One collection item, reduced to what the statistics and the lookup show."""
     if not isinstance(row, dict) or _int(row.get("id")) is None:
         return None
@@ -122,7 +218,7 @@ def item_entry(row: object) -> dict | None:
         "nsfwLevel": _int(data.get("nsfwLevel")) or 0,
         "url": f"{SITE_ORIGIN}/{ITEM_PATHS[kind]}/{item_id}" if kind in ITEM_PATHS and item_id
         else None,
-        "thumbUrl": thumb_url(_text(data.get("url")), media) if kind == "image" else None,
+        "thumbUrl": thumb_url(_text(data.get("url")), media, width) if kind == "image" else None,
         "duration": video_duration(data) if media == "video" else None,
     }
     if kind == "image" and item_id:
@@ -190,6 +286,10 @@ class Collectalytics:
         self.listed: dict[tuple[int | None, int], dict] = {}
         # Details by image id; they are public and the same for every account.
         self.details: dict[int, tuple[float, dict]] = {}
+        # Review queues, by account and collection id, like the reports.
+        self.queues: dict[tuple[int | None, int], tuple[float, dict]] = {}
+        # Usernames by user id, for submitters; a username rarely changes.
+        self.usernames: dict[int, str | None] = {}
 
     def collections(self, user_id: int | None, refresh: bool = False) -> list[dict]:
         with self.lock:
@@ -227,11 +327,148 @@ class Collectalytics:
                       "items": items, "pages": pages, "truncated": truncated,
                       "fetchedAt": datetime.now(timezone.utc).isoformat()}
             self.reports[(user_id, collection_id)] = (time.monotonic(), report)
-            with self.lock:
-                for item in items:
-                    if item["kind"] == "image" and item["itemId"]:
-                        self.listed[(user_id, item["itemId"])] = item
+            self._list(user_id, items)
             return report
+
+    def review_queue(self, user_id: int | None, collection_id: int,
+                     refresh: bool = False) -> dict:
+        """Items waiting for review in a collection the account owns. Read only."""
+        collection_id = int(collection_id)
+        choice = next((entry for entry in self.collections(user_id)
+                       if entry["id"] == collection_id), None)
+        if choice is None or not choice["owned"]:
+            raise NotListed("Only a collection you own shows its review queue here")
+        with self.lock:
+            lock = self.report_locks.setdefault((user_id, collection_id, "review"),
+                                                threading.Lock())
+        with lock:
+            cached = self.queues.get((user_id, collection_id))
+            if cached and not refresh and time.monotonic() - cached[0] < REVIEW_CACHE_SECONDS:
+                return cached[1]
+            client = self.social()
+            try:
+                items, pages, truncated = self._items(
+                    client, collection_id, statuses=["REVIEW"],
+                    extra={"forReview": True, "reviewSort": "Oldest"},
+                    max_pages=MAX_REVIEW_PAGES, width=REVIEW_THUMB_WIDTH)
+            except CivitaiHTTPError as error:
+                # FORBIDDEN is Civitai's answer to anyone but the owner and its managers.
+                if error.status == 403:
+                    raise NotReviewable("Civitai shows this collection's review queue only "
+                                        "to its owner and managers") from error
+                raise
+            self._submitters(client, collection_id, items)
+            queue = {"collection": choice, "items": items, "pages": pages,
+                     "truncated": truncated, "acceptsSubmissions": choice["write"] == "Review",
+                     "defaultComment": default_comment(collection_id),
+                     "fetchedAt": datetime.now(timezone.utc).isoformat()}
+            self.queues[(user_id, collection_id)] = (time.monotonic(), queue)
+            self._list(user_id, items)
+            return queue
+
+    def accept(self, user_id: int | None, collection_id: int, collection_item_id: int,
+               template: str) -> dict:
+        """Post the thanks comment, then accept. An empty template accepts without one.
+
+        The queue is reread first, so an item reviewed on Civitai meanwhile is left alone.
+        The comment goes first, as Music Scout's does: an item must not land without it.
+        """
+        collection_id, collection_item_id = int(collection_id), int(collection_item_id)
+        template = str(template or "")
+        if len(template) > COMMENT_MAX:
+            raise ValueError(f"Keep the comment under {COMMENT_MAX} characters")
+        with self.lock:
+            lock = self.report_locks.setdefault((user_id, collection_id, "accept"),
+                                                threading.Lock())
+        with lock:
+            queue = self.review_queue(user_id, collection_id, refresh=True)
+            item = next((entry for entry in queue["items"]
+                         if entry["collectionItemId"] == collection_item_id), None)
+            if item is None:
+                raise NotWaiting("That item is no longer waiting for review")
+            content = comment_html(template, queue["collection"], item) if template.strip() else ""
+            if content:
+                if item["kind"] != "image" or not item["itemId"]:
+                    raise NotWaiting("Only images can be accepted with a comment here")
+                if "{submitter}" in template and not item.get("submitter"):
+                    raise NotWaiting("Civitai did not say who submitted this item, so the "
+                                     "comment cannot thank them. Review it on Civitai.")
+            client = self.social()
+            if content:
+                client.comment_on_image(item["itemId"], content)
+            try:
+                client.set_collection_items_status(collection_id, [collection_item_id], "ACCEPTED")
+            except Exception as error:
+                if content:
+                    raise CommentedNotAccepted("Your comment was posted, but accepting the item "
+                                               "failed. Accept it on Civitai.") from error
+                raise
+            with self.lock:
+                cached = self.queues.get((user_id, collection_id))
+                if cached:
+                    kept = [entry for entry in cached[1]["items"]
+                            if entry["collectionItemId"] != collection_item_id]
+                    self.queues[(user_id, collection_id)] = (cached[0], {**cached[1], "items": kept})
+                # The accepted count changed.
+                self.reports.pop((user_id, collection_id), None)
+            return {"collectionItemId": collection_item_id, "accepted": True,
+                    "commented": bool(content)}
+
+    def comment_preview(self, user_id: int | None, collection_id: int,
+                        collection_item_id: int | None, template: str) -> str:
+        """The comment as it would be posted, from the queue already read. Asks nothing."""
+        with self.lock:
+            cached = self.queues.get((user_id, int(collection_id)))
+        if cached is None:
+            raise NotListed("Open the review queue first")
+        queue = cached[1]
+        item = next((entry for entry in queue["items"]
+                     if entry["collectionItemId"] == collection_item_id), None)
+        return comment_html(str(template or "")[:COMMENT_MAX], queue["collection"], item)
+
+    def _submitters(self, client, collection_id: int, items: list[dict]) -> None:
+        """Who added each image, where Civitai says. Left unknown on any failure."""
+        images = [item for item in items if item["kind"] == "image" and item["itemId"]]
+        for item in items:
+            item.update(submitterId=None, submitter=None, submitterProfileUrl=None)
+        try:
+            adders: dict[int, int] = {}
+            for start in range(0, len(images), 100):
+                chunk = images[start:start + 100]
+                values = client.batch_query_optional(
+                    "collection.getUserCollectionItemsByItem",
+                    [{"type": "Image", "imageId": item["itemId"]} for item in chunk])
+                for item, value in zip(chunk, values):
+                    row = next((row for row in value or [] if isinstance(row, dict)
+                                and _int(row.get("collectionId")) == collection_id), None)
+                    adder = _int(row.get("addedById")) if row else None
+                    if adder is not None:
+                        adders[item["collectionItemId"]] = adder
+            with self.lock:
+                missing = sorted({adder for adder in adders.values()} - set(self.usernames))
+            for start in range(0, len(missing), 100):
+                chunk = missing[start:start + 100]
+                values = client.batch_query_optional("user.getCreator",
+                                                     [{"id": value} for value in chunk])
+                with self.lock:
+                    for adder, value in zip(chunk, values):
+                        name = _text(value.get("username")) if isinstance(value, dict) else ""
+                        self.usernames[adder] = name or None
+        except Exception:
+            return
+        with self.lock:
+            for item in images:
+                adder = adders.get(item["collectionItemId"])
+                name = self.usernames.get(adder) if adder is not None else None
+                if adder is not None:
+                    item.update(submitterId=adder, submitter=name,
+                                submitterProfileUrl=profile_url(name) if name else None)
+
+    def _list(self, user_id: int | None, items: list[dict]) -> None:
+        with self.lock:
+            for item in items:
+                if item["kind"] == "image" and item["itemId"]:
+                    self.listed[(user_id, item["itemId"])] = item
 
     def listed_image(self, user_id: int | None, image_id: int) -> dict:
         with self.lock:
@@ -267,21 +504,25 @@ class Collectalytics:
     def forget(self, user_id: int | None, collection_id: int) -> None:
         with self.lock:
             self.reports.pop((user_id, int(collection_id)), None)
+            self.queues.pop((user_id, int(collection_id)), None)
 
     @staticmethod
-    def _items(client, collection_id: int) -> tuple[list[dict], int, bool]:
+    def _items(client, collection_id: int, statuses=("ACCEPTED",), extra=None,
+               max_pages: int | None = None,
+               width: int = THUMB_WIDTH) -> tuple[list[dict], int, bool]:
+        max_pages = max_pages or MAX_ITEM_PAGES
         items: dict[int, dict] = {}
         cursor, seen = None, set()
-        for page in range(1, MAX_ITEM_PAGES + 1):
-            payload = {"collectionId": collection_id, "statuses": ["ACCEPTED"],
-                       "limit": ITEM_PAGE_SIZE, "browsingLevel": ALL_LEVELS}
+        for page in range(1, max_pages + 1):
+            payload = {"collectionId": collection_id, "statuses": list(statuses),
+                       "limit": ITEM_PAGE_SIZE, "browsingLevel": ALL_LEVELS, **(extra or {})}
             if cursor is not None:
                 payload["cursor"] = cursor
             value = client.query("collection.getAllCollectionItems", payload)
             value = value if isinstance(value, dict) else {}
             rows = value.get("collectionItems")
             rows = rows if isinstance(rows, list) else []
-            for entry in (item_entry(row) for row in rows):
+            for entry in (item_entry(row, width) for row in rows):
                 if entry:
                     items.setdefault(entry["collectionItemId"], entry)
             cursor = value.get("nextCursor")
@@ -291,7 +532,7 @@ class Collectalytics:
             if cursor is None or str(cursor) in seen:
                 return list(items.values()), page, False
             seen.add(str(cursor))
-        return list(items.values()), MAX_ITEM_PAGES, True
+        return list(items.values()), max_pages, True
 
     @staticmethod
     def _detail(client, collection_id: int, choice: dict) -> dict:
