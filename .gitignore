@@ -132,3 +132,9 @@ dev/community-test-lab/*
 
 # Read-only candidate artwork acceptance helper; contains no credentials.
 !scripts/verify-public-artwork.mjs
+
+# Reviewed fictional Notification Insights proposal screenshots only.
+!docs/notification-insights/
+!docs/notification-insights/notification-insights-mockup.png
+!docs/notification-insights/notification-person-mockup.png
+!docs/notification-insights/notification-detail-mockup.png

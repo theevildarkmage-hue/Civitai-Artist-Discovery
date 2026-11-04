@@ -1,11 +1,19 @@
 """Reject runtime artifacts and recognizable credentials from tracked/staged source."""
 import argparse
+import hashlib
 from pathlib import Path
 import re
 import subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
 APPROVED_BINARY={'tests/fixtures/recovery.mp4'}
+# These exact reviewed images contain fictional demo records only. Hash pinning
+# prevents a later screenshot replacement from silently publishing account data.
+APPROVED_SCREENSHOTS={
+    'docs/notification-insights/notification-insights-mockup.png': '32331bff90b1e16d4d98fe4a5441501a20b9e6327cb15f00c5fc3a93a4147b72',
+    'docs/notification-insights/notification-person-mockup.png': '815c733b6427eb2376a14c9fc7003305c778a21c6938f3b751ca444d721de354',
+    'docs/notification-insights/notification-detail-mockup.png': 'edacedc19cc62e39c68cb9538d63d4a4938b090ef3ca1f3fb372408f80bac0db',
+}
 PERSONAL_PATH_PATTERN=r'(?i)\b[A-Z]:[\\/]+Users[\\/]+[A-Za-z0-9_.-]+[\\/]'
 PATTERNS=[r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
           r'\b(?:ghp_|github_pat_|sb_secret_|sbp_|sk-proj-)[A-Za-z0-9_-]{20,}',
@@ -16,7 +24,7 @@ def forbidden(name):
     path=Path(name);parts=path.parts
     directories={'reports','logs','cache','caches','data','archive','__pycache__','node_modules'}
     if any(p.lower() in directories or p.lower().startswith(('.venv','data-','data_')) for p in parts[:-1]):return True
-    if name in APPROVED_BINARY:return False
+    if name in APPROVED_BINARY or name in APPROVED_SCREENSHOTS:return False
     if path.name=='.env.example':return name!='supabase/.env.example'
     return (path.name.startswith(('.env','.data-directory')) or
             re.search(r'\.(?:sqlite3(?:-wal|-shm)?|db|dpapi|log|jsonl|pem|key|zip|png|jpe?g|webp|gif|avif|mp4)$',name,re.I) is not None)
@@ -32,6 +40,10 @@ def audit(staged=False):
         if staged:value=subprocess.check_output(['git','-C',str(ROOT),'show',':'+name])
         elif (ROOT/name).is_file():value=(ROOT/name).read_bytes()
         else:continue
+        if name in APPROVED_SCREENSHOTS:
+            if hashlib.sha256(value).hexdigest()!=APPROVED_SCREENSHOTS[name]:
+                failures.append(f'{name}: reviewed fictional screenshot digest mismatch')
+            continue
         for number,line in enumerate(value.decode('utf-8','replace').splitlines(),1):
             if any(re.search(pattern,line) for pattern in [*PATTERNS, PERSONAL_PATH_PATTERN]):
                 failures.append(f'{name}:{number}: sensitive content pattern (value withheld)')
