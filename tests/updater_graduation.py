@@ -55,6 +55,7 @@ class GraduationTests(unittest.TestCase):
             manager = updater.UpdateManager(root/'data', root, '3.0.0-beta.14', executable=root/'CivitaiDiscoveryBeta.exe', frozen=True)
             selected = updater.select_release([release()], manager.current_version)
             for key, value in [('applicationId', 'CivitaiDiscoveryBeta'), ('channel', 'beta'),
+                               ('version', 'v3.0.0'),
                                ('sourceCommit', 'main'), ('assetName', '../escape.zip'),
                                ('assetUrl', 'https://github.com/other/repository/releases/download/escape.zip')]:
                 invalid = dict(selected); invalid[key] = value
