@@ -11,6 +11,9 @@ remain deferred. See the [release notes](docs/3.0-beta-release-notes.md).
 Local stable-readiness work prepares the next bridge beta and stable packaging;
 it is not a published stable release or a Production activation. Supported build,
 full test and recovery commands are in the [readiness guide](docs/3.0-stable-readiness.md).
+Candidate [Windows installation/upgrade instructions](docs/3.0-stable-installation.md)
+and the [Production handoff checklist](docs/3.0-production-handoff.md) distinguish
+local acceptance from the remaining live integration and publication steps.
 
 Current follow-up decisions: [Beta 11 audit and decision tracker](docs/3.0-audit-tracker.md#october-27-2026-decision-record).
 The October 27 record separates conditional recovery maintenance from accepted
