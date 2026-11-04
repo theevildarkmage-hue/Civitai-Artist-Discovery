@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT=test_safety.ROOT
 spec=importlib.util.spec_from_file_location('current_community_recovery',ROOT/'scripts/community-recovery.py')
@@ -16,6 +17,14 @@ BIN=Path(os.environ.get('CAD_POSTGRES_BIN',DEFAULT_BIN))
 AVAILABLE=(BIN/('psql.exe' if os.name=='nt' else 'psql')).is_file()
 
 class ManifestTests(unittest.TestCase):
+    def test_production_credentials_never_fall_back_to_development_store(self):
+        with patch.dict(os.environ,{},clear=True),patch.object(recovery.importlib.util,'spec_from_file_location',side_effect=AssertionError('Development store must not load')):
+            with self.assertRaisesRegex(RuntimeError,'explicitly injected'):recovery.secure_token('production')
+            with patch.dict(os.environ,{'SUPABASE_ACCESS_TOKEN':'synthetic-explicit-production-token'}):
+                self.assertEqual(recovery.secure_token('production'),'synthetic-explicit-production-token')
+            with patch.dict(os.environ,{'SUPABASE_ACCESS_TOKEN':'   '}):
+                with self.assertRaises(RuntimeError):recovery.secure_token('production')
+        with self.assertRaises(ValueError):recovery.secure_token('unknown')
     def test_both_manifests_are_pinned_and_different(self):
         dev=recovery.load_manifest(ROOT/'supabase/recovery/development-v16.json')
         prod=recovery.load_manifest(ROOT/'supabase/production/bootstrap-v1.json')

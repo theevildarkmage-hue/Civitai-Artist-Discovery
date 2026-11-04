@@ -100,7 +100,12 @@ def validate_state(snapshot,catalog,manifest):
     if digest(snapshot['schema'])!=manifest['schemaSha256']:raise RuntimeError('Schema/constraint/index/trigger drift')
     if digest(catalog)!=manifest['catalogSha256']:raise RuntimeError('Routine/role/ACL/RLS drift')
 
-def secure_token():
+def secure_token(environment='development'):
+    if environment not in ('development','production'):raise ValueError('Explicit credential environment required')
+    if environment=='production':
+        token=os.environ.get('SUPABASE_ACCESS_TOKEN')
+        if not token or not token.strip():raise RuntimeError('Production requires an explicitly injected SUPABASE_ACCESS_TOKEN; Development credential fallback is forbidden')
+        return token
     spec=importlib.util.spec_from_file_location('recovery_audit',ROOT/'scripts/community-audit-readonly.py')
     audit=importlib.util.module_from_spec(spec);spec.loader.exec_module(audit)
     return audit.secure_token()
@@ -251,7 +256,7 @@ def main(argv=None):
         ref=args.project_ref or manifest.get('projectRef')
         if not ref:parser.error('Unbound Production manifest requires --project-ref')
         if manifest.get('projectRef') not in (None,ref):parser.error('Project differs from selected manifest')
-        manager=ReadOnlyManagement(ref,secure_token());manager.verify()
+        manager=ReadOnlyManagement(ref,secure_token(manifest['environment']));manager.verify()
         snapshot,catalog=capture(manager,manifest)
         configuration=snapshot['community_private.configuration']
         if len(configuration)!=1:raise RuntimeError('Community configuration singleton missing')
