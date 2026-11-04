@@ -38,6 +38,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
 
     # Seed the discovery store through its normal write path.
     store = TasteStore(Path(temporary) / "discovery")
+    # The synthetic Gallery image has known-empty tags; do not bypass admission.
+    with store.connect() as db:
+        db.execute('INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(9001,?)',
+                   ('2026-11-03T00:00:00Z',))
     taste.auth_status = lambda: {"id": 4242, "connected": True}
     taste.MIN_PAUSE = taste.MAX_PAUSE = 0.0
     creators = [("TestArtistAlpha", 11, 40, True), ("TestArtistBravo", 12, 25, True),
@@ -109,6 +113,8 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 900})
+            page.route('**/app.ico',lambda route:route.fulfill(content_type='image/svg+xml',
+                body='<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>'))
             errors = [];failed_responses=[]
             page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
             page.on("pageerror", lambda error: errors.append(str(error)))
@@ -234,6 +240,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             writer_errors = []
             writer.on("console", lambda m: writer_errors.append(m.text) if m.type == "error" else None)
             writer.on("pageerror", lambda error: writer_errors.append(str(error)))
+            # Source checkouts generate the ICO during packaging; it is unrelated
+            # to dashboard/auth errors and must not make this source fixture flaky.
+            writer.route('**/app.ico',lambda route:route.fulfill(content_type='image/svg+xml',
+                body='<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>'))
             writer.route("**/api/community/config", lambda route: route.fulfill(content_type="application/json", body='{"development":false}'))
             writer.route("**/api/auth-status", lambda route: route.fulfill(status=200,
                 content_type="application/json",

@@ -6,6 +6,7 @@ import secrets
 import threading
 
 from .selection import media_type
+from .build_config import CHANNEL
 from .site import (CONTENT_RATINGS, DEFAULT_CONTENT_RATING, browsing_levels, content_rating,
                    levels_for_rating, rating_for_levels)
 
@@ -29,6 +30,10 @@ class AppSettings:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 raw = {}
+            if not isinstance(raw, dict):
+                # A structurally invalid preference file is handled like malformed JSON.
+                raw = {}
+            legacy_capture_defaults = CHANNEL == 'stable' and bool(raw)
             try:
                 rating = content_rating(raw.get("contentRating"))
             except ValueError:
@@ -61,9 +66,9 @@ class AppSettings:
             emerging_reaction_limit = raw.get("emergingReactionLimit", 0)
             if emerging_reaction_limit not in EMERGING_REACTION_LIMITS:
                 emerging_reaction_limit = 0
-            auto_capture = raw.get("autoCapture", True)
+            auto_capture = raw.get("autoCapture", not legacy_capture_defaults)
             if not isinstance(auto_capture, bool):
-                auto_capture = True
+                auto_capture = not legacy_capture_defaults
             auto_capture_hours = raw.get("autoCaptureHours", 12)
             if auto_capture_hours not in AUTO_CAPTURE_INTERVALS:
                 auto_capture_hours = 12
@@ -86,11 +91,12 @@ class AppSettings:
             # you look at today permanently narrowed what tomorrow's archive could ever
             # contain. Collect widely once; filter what is shown as often as you like.
             #
-            # Owner-approved beta defaults: unset coverage collects all ratings.
-            # Explicit saved coverage and viewing levels remain independent.
+            # Preserve the beta/new-install defaults. Stable upgrades of existing,
+            # nonempty preferences inherit their prior capture ceiling instead of
+            # silently broadening it. Explicit choices remain independent of viewing.
             capture_coverage = raw.get("captureCoverage")
             if capture_coverage not in CONTENT_RATINGS:
-                capture_coverage = "X"
+                capture_coverage = rating if legacy_capture_defaults else "X"
             return {"mediaType": raw.get("mediaType") if raw.get("mediaType") in ("all", "image", "video") else "all",
                     "contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),

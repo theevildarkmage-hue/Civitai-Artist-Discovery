@@ -33,7 +33,11 @@ class AuthenticationBoundary(unittest.TestCase):
         cls.base=f'http://127.0.0.1:{cls.port}'
         env={**os.environ,'CIVITAI_HISTORY_DATA_DIR':str(cls.root),'CAD_DEVELOPMENT':'1','CAD_COMMUNITY_MODE':'fixture','CAD_COMMUNITY_TESTING':'0'}
         env.pop('CAD_COMMUNITY_SAMPLE',None)
-        bootstrap="import socket,runpy,sys\ndef refuse(*args,**kwargs):\n raise PermissionError('No outbound network in auth tests')\nsocket.create_connection=refuse\nsys.argv=sys.argv[1:]\nrunpy.run_path(sys.argv[0],run_name='__main__')"
+        # Missing shared controls must fail deterministically without provider retries.
+        bootstrap=("from discovery.social import SocialClient\n"
+            "def unavailable_controls(*args,**kwargs):\n raise RuntimeError('Isolated provider unavailable')\n"
+            "SocialClient.query=unavailable_controls\n"
+            "import socket,runpy,sys\ndef refuse(*args,**kwargs):\n raise PermissionError('No outbound network in auth tests')\nsocket.create_connection=refuse\nsys.argv=sys.argv[1:]\nrunpy.run_path(sys.argv[0],run_name='__main__')")
         cls.process=subprocess.Popen([sys.executable,'-c',bootstrap,str(ROOT/'server.py'),'--port',str(cls.port),'--no-browser'],
             cwd=ROOT,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         for _ in range(100):
@@ -61,9 +65,11 @@ class AuthenticationBoundary(unittest.TestCase):
         if token.exists():token.unlink()  # Newly created synthetic credential only.
 
     def authorize(self,*,revoked=False):
-        from discovery.cache import MetadataCache
-        MetadataCache(self.root/'cache'/'community-metadata.sqlite3').put('controls:42',{
-            'hiddenUsers':[],'hiddenTags':[],'hiddenImages':[],'blockedUsers':[],'blockedByUsers':[]})
+        from discovery.taste import TasteStore
+        store=TasteStore(self.root/'discovery')
+        with store.connect() as db:
+            store._set_state(db,'account_id',42)
+            store._set_state(db,'hidden_imported_at','2026-11-03T00:00:00Z')
         with patch.object(oauth,'TOKEN_PATH',self.root/'oauth_tokens.dpapi'):
             oauth._save({'client_id':'synthetic-boundary-client','access_token':'synthetic-access',
                 'refresh_token':'synthetic-refresh','expires_at':int(time.time())+3600,
@@ -96,9 +102,9 @@ class AuthenticationBoundary(unittest.TestCase):
 
     def test_missing_shared_controls_fail_closed_without_relaxing_policy(self):
         self.authorize()
-        from discovery.cache import MetadataCache
-        with MetadataCache(self.root/'cache'/'community-metadata.sqlite3').connect() as db:
-            db.execute("DELETE FROM metadata_cache WHERE key='controls:42'")
+        from discovery.taste import TasteStore
+        with TasteStore(self.root/'discovery').connect() as db:
+            db.execute("DELETE FROM sync_state WHERE key='hidden_imported_at'")
         self.assertEqual(self.request('/api/community/gallery')[0],503)
 
     def test_revoked_session_cannot_read_cached_community(self):
