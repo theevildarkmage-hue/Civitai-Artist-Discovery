@@ -17,6 +17,10 @@ class Artifacts(unittest.TestCase):
             commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
             (package/'build-provenance.json').write_text(json.dumps({'sourceCommit':commit,'sourceDirty':True,'executableSha256':hashlib.sha256(exe.read_bytes()).hexdigest(),'buildConfiguration':config}))
             if damage=='credential':(package/'oauth_tokens.dpapi').write_bytes(b'not-a-real-credential')
+            if damage in ('credential-uppercase','sqlite-sidecar','environment-local','profile-directory'):
+                relative={'credential-uppercase':'OAuth_Tokens.DPAPI','sqlite-sidecar':'taste.sqlite3-wal',
+                    'environment-local':'.env.local','profile-directory':'Data/credentials.json'}[damage]
+                rejected=package/relative;rejected.parent.mkdir(parents=True,exist_ok=True);rejected.write_text('synthetic rejection fixture')
             if damage=='exe':exe.write_bytes(b'changed bytes')
             if damage=='configuration':(embedded/'build-configuration.json').write_text('{}')
             result=subprocess.run([sys.executable,'-B',str(ROOT/'scripts/prepare-artifacts.py'),'--package',str(package),'--output',str(root/'artifacts'),'--preview'],cwd=ROOT,capture_output=True,text=True)
@@ -35,6 +39,6 @@ class Artifacts(unittest.TestCase):
             with self.subTest(channel=channel):self.prepare(channel)
     def test_rejects_profile_or_tampered_inputs(self):
         for channel in ('beta','stable'):
-            for damage in ('credential','exe','configuration'):
+            for damage in ('credential','credential-uppercase','sqlite-sidecar','environment-local','profile-directory','exe','configuration'):
                 with self.subTest(channel=channel,damage=damage):self.prepare(channel,damage)
 if __name__=='__main__':unittest.main()

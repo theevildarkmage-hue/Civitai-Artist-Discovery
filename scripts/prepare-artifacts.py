@@ -20,7 +20,10 @@ def main():
     if dirty and not preview:p.error('Final candidate requires clean source')
     files=list(package.rglob('*'))
     if any(f.is_symlink() for f in files):p.error('Package symlinks are forbidden')
-    if any(f.is_file() and (f.suffix in ('.db','.sqlite','.sqlite3','.dpapi','.log','.env') or any(part in ('data','reports','tests','dev') for part in f.relative_to(package).parts)) for f in files):p.error('Runtime/test/secret artifacts in package')
+    if any(f.is_file() and (f.name.lower().startswith('.env') or
+            f.name.lower().endswith(('.db','.sqlite','.sqlite3','.db-wal','.db-shm','.sqlite-wal','.sqlite-shm','.sqlite3-wal','.sqlite3-shm','.dpapi','.log')) or
+            any(part.lower() in ('data','reports','tests','dev') for part in f.relative_to(package).parts)) for f in files):
+        p.error('Runtime/test/secret artifacts in package')
     provenance=json.loads((package/'build-provenance.json').read_text())
     sha=lambda f:hashlib.sha256(f.read_bytes()).hexdigest()
     if provenance.get('sourceCommit')!=commit or provenance.get('executableSha256')!=sha(executable) or provenance.get('buildConfiguration')!=config:p.error('Build provenance/configuration mismatch')
