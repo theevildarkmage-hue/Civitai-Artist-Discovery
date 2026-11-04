@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 
-ENDPOINT='https://aibelmhucizupzvvhdvf.supabase.co/functions/v1/community-v1'
+from .build_config import ENDPOINT
 
 
 class RegistryClient:

@@ -3,7 +3,7 @@ import os
 import sys
 
 # Fixed reviewed service. Identity, invitations and submission policy are server-side.
-BETA_ENDPOINT = "https://aibelmhucizupzvvhdvf.supabase.co/functions/v1/community-v1"
+from .build_config import ENDPOINT as BETA_ENDPOINT
 
 
 def production():

@@ -52,7 +52,9 @@ from discovery.updater import UpdateManager, apply_staged_update
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Discovery 3.0 Beta"
-APP_VERSION = "3.0.0-beta.13"
+APP_VERSION = "3.0.0-beta.14"
+from discovery.build_config import APP_NAME, VERSION as BUILD_VERSION
+APP_VERSION = BUILD_VERSION
 from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
 DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
@@ -1778,6 +1780,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(404)
                 return
             body = target.read_bytes()
+            if target.name == 'index.html':
+                body = body.replace(b'Civitai Discovery 3.0 Beta', APP_NAME.encode('utf-8'))
         except OSError:
             self.send_error(503)
             return

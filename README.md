@@ -1,13 +1,16 @@
 # Civitai Artist Discovery
 
-## Windows beta 3.0.0-beta.12
+## Windows beta 3.0.0-beta.13
 
-Beta.12 adds recommendation previews before confirmation, restores Community
-avatars and follow state, adds optional sound in video details, centers card-menu
-icons, and allows viewing-rating changes during background capture. It also fixes
-post-submit feed timing and thumbnail tag-cache handoffs. See the
-[release notes](docs/3.0-beta-release-notes.md). Community remains invitation-only;
-stable 2.2.1 uses its separate update channel. PR #12's filter switches are excluded.
+The published Windows beta includes recommendation previews, shared Community
+cards and filtering, static video posters, artwork-based video visibility, and
+clearer multi-image indicators. Community remains invitation-only; stable 2.2.1
+uses its separate update channel. PR #12's filter switches and PR #22's analytics
+remain deferred. See the [release notes](docs/3.0-beta-release-notes.md).
+
+Local stable-readiness work prepares the next bridge beta and stable packaging;
+it is not a published stable release or a Production activation. Supported build,
+full test and recovery commands are in the [readiness guide](docs/3.0-stable-readiness.md).
 
 Current follow-up decisions: [Beta 11 audit and decision tracker](docs/3.0-audit-tracker.md#october-27-2026-decision-record).
 The October 27 record separates conditional recovery maintenance from accepted
@@ -38,22 +41,17 @@ Community Beta release preparation is local and default-off. See the
 [publication gates and update channels](docs/3.0-beta-publication-checklist.md)
 and the [owner operations and recovery guide](docs/3.0-beta-operations.md).
 Hosted policy is controlled separately from this source tree. Do not infer the
-current hosted collection or submission setting from these defaults. The identity-only
-security candidate has not been deployed; see [implementation status](docs/3.0-identity-only-authentication.md).
+current hosted collection or submission setting from these defaults. Published betas use the identity-only authentication flow; hosted policy and
+Production readiness remain separately controlled.
 
-## Discovery 3.0 Beta - identity-only security candidate
+## Discovery 3.0 Beta
 
 Use the [beta installation guide](docs/3.0-beta-README.md),
-[privacy and retention policy](docs/3.0-beta-privacy.md),
-[owner operations guide](docs/3.0-beta-operations.md), and
-[separate approval gates](docs/3.0-beta-publication-checklist.md).
-This security candidate is unpublished; an earlier beta is already published.
-A coordinated hosted upgrade and client update are required for the new authentication
-transport. Existing published clients still use the earlier credential flow.
-No new invitation or activation is implied by source availability. Existing stable
-installations and personal profiles remain separate.
-Linux application testing is explicitly waived and Linux support remains experimental.
-The upstream feature documentation below remains available for existing users.
+[privacy and retention policy](docs/3.0-beta-privacy.md), and
+[owner operations guide](docs/3.0-beta-operations.md). Published beta releases use
+signed identity proofs and rotating Discovery sessions; Civitai API credentials
+remain local. A public download does not grant Community membership.
+Linux application testing is owner-waived and Linux support remains experimental.
 
 Civitai Artist Discovery is a local, artist-first browser for finding creators on
 [Civitai](https://civitai.red). Instead of presenting another image-first popularity
@@ -69,7 +67,7 @@ sponsored by Civitai.
 
 ## Project status
 
-Version 2.0 is the current stable release. It introduces the shared image-first interface,
+Version 2.2.1 is the current stable release. The stable application provides the shared image-first interface,
 calendar navigation, streamlined filters and settings, richer artist cards, Time Machine,
 and the redesigned taste profile. Windows is the primary and only routinely tested
 platform.
