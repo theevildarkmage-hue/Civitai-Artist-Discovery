@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -366,6 +367,34 @@ def _restore_apply_journal(journal: dict, path: Path, install: Path, backup: Pat
     return errors
 
 
+def _running_port(data_root: Path, parent_pid: int) -> int | None:
+    """Retain an owned parent's port without trusting a URL as a launch argument."""
+    try:
+        record = _read_json(data_root / 'running-instance.json', None)
+    except UnicodeError:
+        return None
+    if (parent_pid <= 0 or not isinstance(record, dict)
+            or type(record.get('pid')) is not int or record['pid'] != parent_pid
+            or not isinstance(record.get('url'), str)):
+        return None
+    try:
+        url = urllib.parse.urlsplit(record['url'])
+        if (url.scheme != 'http' or url.username is not None or url.password is not None
+                or url.path not in ('', '/') or url.query or url.fragment):
+            return None
+        host = url.hostname
+        if host != 'localhost':
+            address = ipaddress.ip_address(host or '')
+            if not (address.is_loopback or address.is_private) or address.is_unspecified or address.is_multicast:
+                return None
+        port = url.port
+        if port is None or not 1 <= port <= 65535 or port in (8906, 33101, 33201):
+            return None
+        return port
+    except ValueError:
+        return None
+
+
 def apply_staged_update(config_path: Path, *, launch: bool = True,
                         wait_for_process=_wait_for_process) -> dict:
     """Apply one staged package. This function is independently regression-tested."""
@@ -404,7 +433,11 @@ def apply_staged_update(config_path: Path, *, launch: bool = True,
     staged_executable = staged_root / executable_name
     if not staged_executable.is_file():
         raise RuntimeError("The staged executable is missing")
-    wait_for_process(int(config.get("parentPid") or 0))
+    parent_pid = int(config.get("parentPid") or 0)
+    # The server removes its record during shutdown. Read before waiting, including
+    # for old clients whose helper configuration predates this port preservation.
+    relaunch_port = _running_port(data_root, parent_pid)
+    wait_for_process(parent_pid)
     targets = sorted((entry for entry in staged_root.iterdir()
                if entry.name.casefold() != "data"),key=lambda entry:entry.name)
     if not targets:
@@ -466,6 +499,8 @@ def apply_staged_update(config_path: Path, *, launch: bool = True,
         raise
     if launch:
         command = [str(install_root / executable_name), "--updated-from", str(config.get("version") or "")]
+        if relaunch_port is not None:
+            command.extend(['--port', str(relaunch_port)])
         flags = 0
         if os.name == "nt":
             flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP

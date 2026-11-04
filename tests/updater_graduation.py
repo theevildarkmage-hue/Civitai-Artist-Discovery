@@ -124,6 +124,46 @@ class GraduationTests(unittest.TestCase):
             self.assertEqual((root/'data/profile.json').read_text(), 'private portable fixture')
             self.assertFalse((root/'data/update/apply-journal.json').exists())
 
+    def test_relaunch_preserves_owned_parent_port_before_its_record_is_removed(self):
+        with tempfile.TemporaryDirectory(prefix='cad3-graduation-port-') as folder:
+            root = Path(folder); manager, config = self.install_fixture(root)
+            record = root/'data/running-instance.json'
+            updater._write_json(record, {'pid': os.getpid(), 'url': 'http://127.0.0.1:17951'})
+            def wait(pid):
+                self.assertEqual(pid, os.getpid()); record.unlink()
+            with patch.object(updater.subprocess, 'Popen') as launch:
+                updater.apply_staged_update(config, wait_for_process=wait)
+            self.assertEqual(launch.call_args.args[0], [str(root/'CivitaiArtistDiscovery.exe'),
+                             '--updated-from', '3.0.0', '--port', '17951'])
+
+    def test_relaunch_port_rejects_stale_malformed_and_untrusted_records(self):
+        with tempfile.TemporaryDirectory(prefix='cad3-graduation-port-negative-') as folder:
+            root = Path(folder); path = root/'running-instance.json'
+            for url in ('http://127.0.0.1:17951', 'http://192.168.0.3:17951', 'http://localhost:17951',
+                        'http://[::1]:17951'):
+                updater._write_json(path, {'pid': 123, 'url': url})
+                self.assertEqual(updater._running_port(root, 123), 17951)
+                self.assertIsNone(updater._running_port(root, 124))
+                self.assertIsNone(updater._running_port(root, 0))
+            for url in ('https://127.0.0.1:17951', 'http://evil.example:17951',
+                        'http://8.8.8.8:17951', 'http://0.0.0.0:17951',
+                        'http://user@127.0.0.1:17951', 'http://127.0.0.1:17951/path',
+                        'http://127.0.0.1:17951?port=42', 'http://127.0.0.1:17951#x',
+                        'http://127.0.0.1:8906', 'http://127.0.0.1:33101',
+                        'http://127.0.0.1:33201', 'http://127.0.0.1:0',
+                        'http://127.0.0.1:65536', 'http://127.0.0.1:17951 --host evil',
+                        'not a url'):
+                updater._write_json(path, {'pid': 123, 'url': url})
+                self.assertIsNone(updater._running_port(root, 123), url)
+            for value in (None, [], {'pid': True, 'url': 'http://localhost:17951'},
+                          {'pid': '123', 'url': 'http://localhost:17951'}, {'pid': 123, 'url': []}):
+                updater._write_json(path, value)
+                self.assertIsNone(updater._running_port(root, 123))
+            path.write_bytes(b'\xff')
+            self.assertIsNone(updater._running_port(root, 123))
+            path.unlink()
+            self.assertIsNone(updater._running_port(root, 123))
+
     def test_failed_graduation_restores_old_executable_runtime_and_profile(self):
         with tempfile.TemporaryDirectory(prefix='cad3-graduation-rollback-') as folder:
             root = Path(folder); manager, config = self.install_fixture(root)
