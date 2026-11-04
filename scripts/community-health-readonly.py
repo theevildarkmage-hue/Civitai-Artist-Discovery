@@ -1,4 +1,8 @@
-"""Bounded admin-only readiness snapshot; no identities, tokens or log bodies."""
+"""DEPRECATED historical health model; use scripts/community-recovery.py health.
+
+The old main() is retained for historical fixture/evidence compatibility only.
+It is not a supported current-schema health command.
+"""
 import argparse,hashlib,json,os,sys,urllib.request
 from datetime import datetime,timezone
 from pathlib import Path
@@ -41,4 +45,5 @@ def main():
     result={'checkedAt':datetime.now(timezone.utc).isoformat(),'projectRef':REF,'passed':passed,'hostedMutation':False,'function':{k:function.get(k) for k in ('version','status','verify_jwt')},'expectedPolicyDigestsMatch':policy,'aggregates':totals,'providerCostOrInvocationMeasurements':False,'limitations':['Explicit expected migration/policy health only; aggregate registry count, no identity enumeration. Owner-only registry_stats access uses the local management workflow, not a separate Auth/MFA account.','SQL bucket counts are not billed invocations or Civitai request measurements','No provider logs or network metadata retrieved']}
     a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(result,indent=2));print(json.dumps({'passed':passed,'hostedMutation':False}));return not passed
 
-if __name__=='__main__':sys.exit(main())
+if __name__=='__main__':
+    raise SystemExit('Retired health command. Use scripts/community-recovery.py health with a pinned environment manifest; see docs/3.0-recovery.md.')

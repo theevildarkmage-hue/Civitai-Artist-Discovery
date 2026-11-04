@@ -1,4 +1,9 @@
-"""Pure, fail-closed Community catalog models shared by hosted/local verification."""
+"""Historical fail-closed catalog models retained for baseline fixture compatibility.
+
+Current operational validation is the exact manifest-pinned catalog/schema gate
+in scripts/community-recovery.py. Do not widen these historical models/counts to
+make new deployment schemas pass silently. See docs/3.0-recovery.md.
+"""
 BASE_TABLES={'public.'+n for n in ('community_members','community_recommendations','community_audit',
     'community_rate_buckets','community_submission_requests')}
 PRIVATE_TABLES={'community_private.'+n for n in ('configuration','operators','invitations','blocks',
