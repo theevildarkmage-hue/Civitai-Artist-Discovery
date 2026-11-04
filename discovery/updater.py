@@ -106,7 +106,7 @@ def _release_channel(version: str) -> str | None:
     if BETA_VERSION.fullmatch(version):
         return 'beta'
     match = VERSION_PATTERN.fullmatch(version)
-    if match and not match.group('pre') and int(match.group('major')) >= 3:
+    if match and not version.startswith('v') and not match.group('pre') and int(match.group('major')) >= 3:
         return 'stable'
     return None
 
@@ -344,12 +344,14 @@ def _restore_apply_journal(journal: dict, path: Path, install: Path, backup: Pat
         target, original = install / name, backup / name
         try:
             phase = entry.get('phase')
-            entry['phase'] = 'restoring'
-            _write_json(path, journal)
             if original.exists():
+                entry['phase'] = 'restoring'
+                _write_json(path, journal)
                 _remove_entry(target)
                 _replace_with_retry(original, target)
             elif not entry['hadOriginal']:
+                entry['phase'] = 'restoring'
+                _write_json(path, journal)
                 _remove_entry(target)
             elif not target.exists() or phase not in ('intent', 'restoring'):
                 raise RuntimeError('The interrupted update backup is missing')
