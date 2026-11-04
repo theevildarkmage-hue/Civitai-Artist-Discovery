@@ -211,6 +211,20 @@ updater.apply_staged_update(Path(sys.argv[2]),launch=False)
             self.assertEqual((root/'data/profile.json').read_text(),'private portable fixture')
             self.assertEqual((root/'CivitaiDiscoveryBeta.exe').read_bytes(),b'old-beta')
 
+    def test_missing_original_backup_stays_failed_across_recovery_retries(self):
+        with tempfile.TemporaryDirectory(prefix='cad3-graduation-lost-backup-') as folder:
+            root=Path(folder);manager,config=self.install_fixture(root)
+            value=json.loads(config.read_text())
+            binding={key:value.get(key) for key in ('installRoot','stagedRoot','backupRoot','resultPath','executableName','previousExecutableName','version')}
+            path=manager.root/'apply-journal.json'
+            updater._write_json(path,{'format':1,'binding':binding,
+                'entries':[{'name':'CivitaiDiscoveryBeta.exe','hadOriginal':True,'phase':'installed'}]})
+            for _ in range(2):
+                with self.assertRaises(RuntimeError):updater.apply_staged_update(config,launch=False,wait_for_process=lambda pid:None)
+                self.assertTrue(path.exists())
+                self.assertEqual(json.loads(path.read_text())['entries'][0]['phase'],'installed')
+                self.assertEqual((root/'CivitaiDiscoveryBeta.exe').read_bytes(),b'old-beta')
+
     @unittest.skipUnless(os.name=='nt','Windows sharing-lock semantics required')
     def test_real_windows_locked_beta_executable_rolls_back_safely(self):
         with tempfile.TemporaryDirectory(prefix='cad3-graduation-locked-') as folder:
