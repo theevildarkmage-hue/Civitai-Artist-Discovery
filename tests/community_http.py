@@ -32,7 +32,7 @@ else:
     processes=[];handles=[]
     env=os.environ.copy();secret=secrets.token_urlsafe(48);issuer_secret=secrets.token_urlsafe(48)
     seed=3_000_000_000+secrets.randbelow(1000000)
-    creators={};fault='';received=[];scenarios=[];public_active=False;public_artworks={};public_members={}
+    creators={};fault='';received=[];scenarios=[];public_active=False;public_artworks={};public_members={};artwork_calls=0
     flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
     def sql(statement):
         child=subprocess.run(['psql','-X','-A','-t','-v','ON_ERROR_STOP=1'],input=statement+'\n',
@@ -64,8 +64,9 @@ else:
     class Issuer(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
         def do_GET(self):
-            global fault
+            global fault,artwork_calls
             path=urlsplit(self.path);status=200
+            if path.path not in ('/userinfo','/api/v1/me'):artwork_calls+=1
             if path.path in ('/userinfo','/api/v1/me'):
                 try:
                     bearer=self.headers.get('Authorization','').removeprefix('Bearer ')
@@ -166,7 +167,8 @@ else:
             bearer=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
             return request(registry_url,{'apiVersion':1,'operation':'register','appVersion':'3.0.0-beta.1','platform':'Linux',**(extra or {})},auth='Bearer '+bearer)[1]
         result=release_run(sql=sql,env=env,output=output,api=api,register=register)
-        # Exact candidate handler, real Edge/PostgREST/Postgres; provider remains synthetic.
+        # Historical gallery-window schema checkpoint. Its obsolete unscoped
+        # adapter stays denied; current accepted-feed HTTP is a separate tier.
         gallery_port=port();gallery_url=f'http://127.0.0.1:{gallery_port}'
         wait(gallery_url,start_edge(state='enabled',private_beta=True,port_override=gallery_port,gallery_window=True))
         gallery_member=seed+4700000;base_image=seed+95000
@@ -175,20 +177,16 @@ else:
         # resetting counters or weakening the five-person enforcement.
         sql(f"update community_private.invitations set revoked=true where member_id={parked};insert into community_members values({gallery_member},'SyntheticColdGallery');insert into community_private.invitations values({gallery_member},clock_timestamp()+interval '1 day',false);")
         sql(f"insert into community_recommendations(image_id,creator_id,member_id,week) select {base_image}+n,{base_image}+n+100000,{gallery_member},date_trunc('week',clock_timestamp() at time zone 'UTC')::date from generate_series(0,59)n;insert into community_private.artwork_reviews(image_id,state,checked_at,valid_until) select {base_image}+n,'eligible',clock_timestamp()-interval '1 day',clock_timestamp()-interval '1 day' from generate_series(0,59)n;")
-        seen=[];cursor=None;cursors=[]
-        for _ in range(21):
-            code,page=request(gallery_url,{'apiVersion':1,'operation':'gallery','limit':24,'cursor':cursor},auth='Bearer '+member(4700000))
-            assert code==200,(code,page)
-            seen.extend(x['imageId'] for x in page['items'] if base_image<=x['imageId']<=base_image+59)
-            if len(seen)==60:break
-            next_cursor=page.get('nextCursor');assert next_cursor and next_cursor not in cursors,'Cold page ended early or repeated cursor'
-            cursors.append(next_cursor);cursor=int(next_cursor)
-        assert len(seen)==len(set(seen))==60 and seen==sorted(seen,reverse=True)
-        code,warm=request(gallery_url,{'apiVersion':1,'operation':'gallery','limit':24},auth='Bearer '+member(4700000))
-        assert code==200 and len(warm['items'])==24
+        review_hash=lambda:sql(f"select md5(jsonb_agg(to_jsonb(r) order by image_id)::text) from community_private.artwork_reviews r where image_id between {base_image} and {base_image+59};")
+        prior_review=review_hash();prior_artwork_calls=artwork_calls
+        code,page=request(gallery_url,{'apiVersion':1,'operation':'gallery','limit':50},auth='Bearer '+member(4700000))
+        assert code==503 and page.get('code')=='UNAVAILABLE',(code,page)
+        assert review_hash()==prior_review and artwork_calls==prior_artwork_calls
         for role in ('anon','authenticated'):
             assert api(role,'community_prepare_gallery',{'p_member':gallery_member})[0] in (401,403)
-        (output/'gallery-window-http.json').write_text(json.dumps({'passed':True,'coldRows':60,'coldPages':len(cursors)+1,'warmRows':24,'realEdgePostgRESTPostgres':True,'syntheticProvider':True,'hostedMutation':False},indent=2))
+        (output/'gallery-window-http.json').write_text(json.dumps({'passed':True,'historicalAdapterDenied':True,
+            'reviewStateUnchanged':True,'viewerArtworkCalls':0,'currentReadAcceptanceInSeparateTier':True,
+            'realEdgePostgRESTPostgres':True,'syntheticProvider':True,'hostedMutation':False},indent=2))
         sql(f"delete from community_private.artwork_reviews where image_id between {base_image} and {base_image+59};delete from community_recommendations where image_id between {base_image} and {base_image+59};delete from community_private.invitations where member_id={gallery_member};delete from community_members where civitai_id={gallery_member};update community_private.invitations set revoked=false where member_id={parked};")
         assert register().get('registered') is True
         restore_token=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
@@ -285,7 +283,7 @@ else:
                 second_port=port();process=start_edge(private_beta=True,port_override=second_port)
                 url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
             beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,release_probe=release_probe,sql=sql,call=call,request=request,edge=edge,member=member,
-                restart=beta_restart_fast,set_fault=beta_fault_fast,env=env,output=output,seed=seed)
+                restart=beta_restart_fast,set_fault=beta_fault_fast,artwork_requests=lambda:artwork_calls,env=env,output=output,seed=seed)
             (output/'summary.json').write_text(json.dumps({'passed':True,'privateBeta':beta_result,'baselineHttpSkipped':True},indent=2))
             raise SystemExit(0)
         initial=call()
@@ -528,7 +526,7 @@ else:
                 second_port=port();process=start_edge(private_beta=True,port_override=second_port)
                 url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
             beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,release_probe=release_probe,sql=sql,call=call,request=request,edge=edge,member=member,
-                restart=beta_restart,set_fault=beta_fault,env=env,output=output,seed=seed)
+                restart=beta_restart,set_fault=beta_fault,artwork_requests=lambda:artwork_calls,env=env,output=output,seed=seed)
         summary={'passed':True,'runtime':'Deno','realPostgREST':True,'realPostgreSQL':True,
             'syntheticSignedUserInfo':True,'syntheticArtworkMetadata':True,'scenarios':scenarios,'counts':http_counts,
             'httpResponsesRecorded':len(received),'gallery':gallery,'postgresInterruptedAndRecovered':True,

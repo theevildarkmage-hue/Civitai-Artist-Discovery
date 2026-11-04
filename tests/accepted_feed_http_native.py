@@ -70,6 +70,20 @@ def run(sql,env,deno,postgrest,output):
         assert call({'limit':0})[0]==400
         assert len(call({'limit':24})[1]['items'])==24
         assert call({'filters':{'member':7100001}})[0]==400
+        # Current accepted-feed moderation/block policy, independent of obsolete
+        # artwork review leases. Change only fixtures in this owned database.
+        for state in ('hidden','removed','withdrawn'):
+            try:
+                sql("update community_recommendations set status='"+state+"' where image_id=125;")
+                code,page=call();assert code==200
+                assert 125 not in [item['imageId'] for item in page['items']]
+                assert len(page['items'])==50
+            finally:sql("update community_recommendations set status='active' where image_id=125;")
+        try:
+            sql("insert into community_private.invitations values(7100002,clock_timestamp()+interval '1 day',false);insert into community_private.blocks values(7100001,true);")
+            assert call()[1]['code']=='SUBMITTER_BLOCKED'
+            code,page=call(token=other);assert code==200 and page['items']==[]
+        finally:sql('delete from community_private.blocks where member_id=7100001;delete from community_private.invitations where member_id=7100002;')
         denied=0
         for role in ('anon','authenticated'):
             for table in ('community_recommendations','community_members','community_audit','community_submission_requests',
@@ -85,7 +99,7 @@ def run(sql,env,deno,postgrest,output):
         result={'passed':True,'pageSizes':[50,50,25],'pageHTTPms':times,'httpDenials':denied,
             'databaseQueryExecutionMs':[p['Execution Time'] for p in plans],
             'edgeAuthorizationCases':5,'externalArtworkRequests':0,'nativeDenoPostgRESTPostgreSQL':True,'syntheticIdentity':True,
-            'recommendationsUnchanged':True,'hostedRequests':0}
+            'moderatedWithdrawnAndBlockedExcluded':True,'recommendationsUnchanged':True,'hostedRequests':0}
         (output/'accepted-feed-http.json').write_text(json.dumps(result,indent=2));return result
     finally:
         for p in reversed(procs):
