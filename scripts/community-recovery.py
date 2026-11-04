@@ -155,8 +155,14 @@ class OwnedPostgres:
         else:self.directory.chmod(0o700)
         with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
         password=secrets.token_urlsafe(40)
-        self.env={**os.environ,'PGHOST':'127.0.0.1','PGPORT':str(port),'PGUSER':'postgres','PGDATABASE':'postgres','PGPASSWORD':password,'PGCONNECT_TIMEOUT':'5','PGTZ':'UTC','OSTYPE':'msys'}
-        self.env.pop('SUPABASE_ACCESS_TOKEN',None)
+        # libpq gives PGHOSTADDR/PGSERVICE and PGOPTIONS independent authority:
+        # overriding PGHOST alone does not isolate the connection or SQL parser.
+        # Never pass hosted/application credentials into the native restore tools.
+        inherited={key:value for key,value in os.environ.items()
+                   if not key.upper().startswith(('PG','SUPABASE','CAD','CIVITAI'))}
+        self.env={**inherited,'PGHOST':'127.0.0.1','PGPORT':str(port),'PGUSER':'postgres',
+                  'PGDATABASE':'postgres','PGPASSWORD':password,'PGCONNECT_TIMEOUT':'5',
+                  'PGTZ':'UTC','PGOPTIONS':'-c standard_conforming_strings=on','OSTYPE':'msys'}
         try:
             self.command('initdb','-D',str(self.directory/'data'),'--username=postgres','--auth=scram-sha-256','--pwprompt','--encoding=UTF8','--locale=C',input=password+'\n'+password+'\n')
             with (self.directory/'data/postgresql.conf').open('a') as file:file.write(f"\nlisten_addresses='127.0.0.1'\nport={port}\n")

@@ -51,6 +51,37 @@ class ManifestTests(unittest.TestCase):
 
 @unittest.skipUnless(AVAILABLE,'Native PostgreSQL bin directory unavailable; set CAD_POSTGRES_BIN')
 class NativeRecoveryTests(unittest.TestCase):
+    def test_owned_environment_rejects_libpq_redirects_and_restores_quoted_data(self):
+        manifest=recovery.load_manifest(ROOT/'supabase/recovery/development-v16.json')
+        hostile={'PGHOSTADDR':'192.0.2.1','PGHOST':'untrusted.invalid','PGPORT':'1',
+                 'PGSERVICE':'untrusted-service','PGSERVICEFILE':'untrusted-service-file',
+                 'PGSYSCONFDIR':'untrusted-directory','PGDATABASE':'untrusted-db',
+                 'PGUSER':'untrusted-user','PGPASSWORD':'synthetic-untrusted-password',
+                 'PGOPTIONS':'-c standard_conforming_strings=off',
+                 'SUPABASE_ACCESS_TOKEN':'synthetic-hosted-token',
+                 'CAD_TEST_CIVITAI_TOKEN':'synthetic-app-token',
+                 'CIVITAI_API_KEY':'synthetic-api-key'}
+        with patch.dict(os.environ,hostile):
+            with recovery.OwnedPostgres(BIN) as cluster:
+                owned_pg={'PGHOST','PGPORT','PGUSER','PGDATABASE','PGPASSWORD',
+                          'PGCONNECT_TIMEOUT','PGTZ','PGOPTIONS'}
+                self.assertEqual({k for k in cluster.env if k.upper().startswith('PG')},owned_pg)
+                self.assertFalse(any(k.upper().startswith(('SUPABASE','CAD','CIVITAI')) for k in cluster.env))
+                self.assertNotEqual(cluster.env['PGPASSWORD'],hostile['PGPASSWORD'])
+                self.assertEqual(cluster.sql("select current_setting('standard_conforming_strings')"),'on')
+                self.assertEqual(cluster.sql('select host(inet_server_addr())'),'127.0.0.1')
+                self.assertEqual(cluster.sql('select inet_server_port()::text'),cluster.env['PGPORT'])
+                cluster.bootstrap(manifest)
+                value="O'Brien\\literal\\n'; select pg_sleep(999); --"
+                cluster.sql('insert into community_members values(987654321,'+recovery.literal(value)+');')
+                snapshot,catalog=cluster.state(manifest)
+                recovery.validate_state(snapshot,catalog,manifest)
+                cluster.sql('delete from community_members where civitai_id=987654321;')
+                cluster.restore(snapshot,manifest)
+                restored,restored_catalog=cluster.state(manifest)
+                self.assertEqual(recovery.canonical(restored),recovery.canonical(snapshot))
+                self.assertEqual(recovery.canonical(restored_catalog),recovery.canonical(catalog))
+                self.assertEqual(cluster.sql('select username from community_members where civitai_id=987654321'),value)
     def test_clean_production_security_and_normal_quotas(self):
         manifest=recovery.load_manifest(ROOT/'supabase/production/bootstrap-v1.json')
         with recovery.OwnedPostgres(BIN) as cluster:
