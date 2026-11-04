@@ -1,4 +1,4 @@
-"""Read-only Community export, DPAPI encryption, independent owned-cluster restore.
+"""DEPRECATED historical helper. Use scripts/community-recovery.py instead.
 
 This is a scoped application recovery artifact, not a full Supabase/Auth/Storage
 backup. It rejects schema drift rather than silently dropping unknown objects.
@@ -162,4 +162,5 @@ def main():
     (out/'backup-verification.json').write_text(json.dumps(evidence,indent=2))
     print(json.dumps({'passed':True,'checks':len(checks),'independentCluster':True,'hostedMutation':False,'ownedClusterRemoved':True}))
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    raise SystemExit('Retired backup command. Use scripts/community-recovery.py backup with a pinned environment manifest; see docs/3.0-recovery.md. Historical import helpers are retained only for older evidence/tests.')
