@@ -40,7 +40,7 @@ def main():
     if out.exists():p.error('Use a new output directory; stale receipts are not resumed')
     if not 10<=args.timeout<=900:p.error('Per-entry timeout must be 10..900 seconds')
     out.mkdir(parents=True)
-    env={k:v for k,v in os.environ.items() if not (k.startswith(('SUPABASE_','CIVITAI_','COMMUNITY_')) or
+    env={k:v for k,v in os.environ.items() if not (k.upper().startswith(('PG','SUPABASE_','CIVITAI_','COMMUNITY_')) or
         (k.startswith('CAD_') and k!='CAD_POSTGRES_BIN') or any(word in k.upper() for word in ('ACCESS_TOKEN','REFRESH_TOKEN')))}
     env.update(PYTHONIOENCODING='utf-8',PYTHONUNBUFFERED='1',PYTHONDONTWRITEBYTECODE='1')
     before=source_fingerprint()
@@ -82,6 +82,10 @@ def main():
                '--deployment-rehearsal','--private-beta',
                '--http-deno',str(args.http_deno),'--http-postgrest',str(args.http_postgrest)],1800)
             native_state=row['state']
+            accepted=run('native-accepted-feed',[sys.executable,str(ROOT/'scripts/validate-postgres.py'),
+               '--bin',str(args.bin),'--output',str(out/'native-accepted-feed'),'--accepted-feed',
+               '--http-deno',str(args.http_deno),'--http-postgrest',str(args.http_postgrest)],600)
+            if accepted['state']!='passed':native_state=accepted['state']
     else:rows.append({'name':'native','state':'unavailable','reason':'Not requested; run --native with owned tool paths for the complete tier'})
     after=source_fingerprint()
     failures=[r['name'] for r in rows if r['state'] in ('failed','timeout')]

@@ -15,6 +15,7 @@ def run_gallery(edge,member,seed,creators,sql,scratch,output,get_service,start_s
     from discovery.community import build_community,Artwork,SupabaseCommunityBackend,CommunityError
     client=build_community(data,server.community_content_profile,lambda:'fixture:1')
     rows=json.loads(sql('select coalesce(json_agg(json_build_object(\'image\',image_id,\'creator\',creator_id)),\'[]\') from community_recommendations;'))
+    initial_recommendations=len(rows)
     first=seed+60000
     if first%2==0:first+=1
     new_images=[first,first+2,first+4]
@@ -62,7 +63,11 @@ def run_gallery(edge,member,seed,creators,sql,scratch,output,get_service,start_s
             while 'caught up' not in page.locator('#communitySentinel').inner_text().lower():
                 assert time.monotonic()<deadline
                 page.locator('#communitySentinel').scroll_into_view_if_needed();page.mouse.wheel(0,600);page.wait_for_timeout(100)
-            assert len(pages)>=3
+            # The shared Community browser explicitly requests 50 records now.
+            # Assert the dataset's required pages rather than the retired 24 size.
+            assert len(pages)>=max(1,(initial_recommendations+49)//50)
+            from urllib.parse import parse_qs,urlsplit
+            assert all(parse_qs(urlsplit(url).query)['limit']==['50'] for url in pages)
             names=page.locator('#communityGrid .creator-card').evaluate_all('(xs)=>xs.map(x=>x.dataset.username)')
             assert len(names)==len(set(names))
             assert page.locator('#communityGrid .community-credit').count()==len(names)
@@ -89,7 +94,8 @@ def run_gallery(edge,member,seed,creators,sql,scratch,output,get_service,start_s
             page.locator('#communityRecommend').click();page.locator('#communityLink').fill(str(new_images[1]));page.locator('#communityLoad').click();page.locator('#communitySubmit').click()
             page.locator('#communityQuota').filter(has_text='1 left').wait_for()
             old_service.terminate();old_service.wait(timeout=10)
-            # Cached browse remains available; fresh writes fail without partial data.
+            # This historical bridge deliberately retains fixture-mode caching;
+            # it does not establish production stale accepted-feed admission.
             page.locator('#communityRefresh').click();page.wait_for_timeout(300)
             page.locator('#communityGrid .creator-card').first.wait_for(timeout=30000)
             new_service=start_service()
@@ -109,6 +115,6 @@ def run_gallery(edge,member,seed,creators,sql,scratch,output,get_service,start_s
             assert db.execute('select count(*) from recommendations').fetchone()[0]==0
         return {'passed':True,'automaticPageRequests':len(pages),'artistCards':len(names),
             'syntheticMetadataAndDesktopIdentity':True,'communityHttpResponsesMocked':False,
-            'expiredWriteRejected':True,'quotaUpdates':True,'serviceRestart':True,'offlineCachedBrowse':True,
+            'expiredWriteRejected':True,'quotaUpdates':True,'serviceRestart':True,'fixtureOfflineCachedBrowse':True,
             'browserErrors':errors,'simulatorAcceptedRows':0}
     finally:http.shutdown();http.server_close()

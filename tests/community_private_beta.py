@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 
-def run(*,second_instance,legacy_probe,restored_probe,release_probe,sql,call,request,edge,member,restart,set_fault,env,output,seed):
+def run(*,second_instance,legacy_probe,restored_probe,release_probe,sql,call,request,edge,member,restart,set_fault,artwork_requests,env,output,seed):
     assert env.get('CAD_TEST_PG_SYSTEM_IDENTIFIER')==sql('select system_identifier from pg_control_system();')
     assert Path(env['CAD_TEST_PG_DATA_DIR']).resolve()==Path(sql('show data_directory;')).resolve()
     root=Path(__file__).resolve().parents[1]
@@ -41,7 +41,8 @@ def run(*,second_instance,legacy_probe,restored_probe,release_probe,sql,call,req
     history_record="insert into supabase_migrations.schema_migrations values('202610230001','private_beta_security',array['rehearsed candidate']);" if rehearsal_before else ''
     sql(rehearsal_before['retryBundle'] if rehearsal_before else 'begin;'+candidate.read_text()+history_record+'commit;')
     check('migration preserves existing ledger hashes',before==snapshot())
-    # Hold earlier baseline fixtures out of this targeted revalidation exercise.
+    # These historical migration-stage tests retain SQL compatibility coverage;
+    # current accepted-feed HTTP browsing is a separate owned native tier.
     sql("update community_private.artwork_reviews set lease_until=clock_timestamp()+interval '1 day';")
     sql("notify pgrst, 'reload schema';")
     password=secrets.token_urlsafe(32)
@@ -98,6 +99,10 @@ def run(*,second_instance,legacy_probe,restored_probe,release_probe,sql,call,req
     image=seed+80001
     check('first recommendation accepted',call('recommend',artwork=image,idempotencyKey='beta-isolated-key-00001')[0]==200)
     check('successful replay',call('recommend',artwork=image,idempotencyKey='beta-isolated-key-00001')[1].get('replayed') is True)
+    # Prove legacy scoped SQL can see this accepted fixture before testing a block.
+    sql(f"update community_private.artwork_reviews set state='eligible',checked_at=clock_timestamp(),valid_until=clock_timestamp()+interval '1 hour',failure=null where image_id={image};")
+    scoped_gallery=lambda:json.loads(sql(f'select public.community_beta_gallery({seed+1},null,24);'))
+    check('legacy scoped SQL sees admitted historical fixture',image in [x['imageId'] for x in scoped_gallery().get('items',[])])
     ledger=snapshot()
     op('block',seed)
     for operation in ('verify','recommend'):
@@ -106,7 +111,7 @@ def run(*,second_instance,legacy_probe,restored_probe,release_probe,sql,call,req
     check('block preserves ledger and quota',ledger==snapshot())
     second=second_instance()
     check('simultaneous second instance enforces block',request(second,{'apiVersion':1,'operation':'recommend','artwork':image+2},auth='Bearer '+member(0))[1].get('code')=='SUBMITTER_BLOCKED')
-    check('blocked historical recommendations hidden',image not in [x['imageId'] for x in call('gallery',n=1)[1].get('items',[])])
+    check('blocked historical recommendations hidden by scoped SQL',image not in [x['imageId'] for x in scoped_gallery().get('items',[])])
     restart('enabled')
     check('block persists across instance restart',call('verify',artwork=image+2)[1].get('code')=='SUBMITTER_BLOCKED')
     op('unblock',seed)
@@ -152,19 +157,25 @@ def run(*,second_instance,legacy_probe,restored_probe,release_probe,sql,call,req
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:results=list(pool.map(recommend,range(5)))
     check('concurrent quota exactly three accepted',sum(s==200 for s,_ in results)==3)
     check('concurrent rejected requests preserve audit pairing',sql(f"select (select count(*) from community_recommendations where member_id={seed+3})=3 and (select count(*) from community_submission_requests where member_id={seed+3})=3;")=='t')
-    # Stale metadata is quarantined until bounded revalidation succeeds.
+    # At this historical schema checkpoint the unscoped gallery RPC is revoked.
+    # The modern handler must fail closed rather than revive viewer revalidation.
+    # Full current 50-item accepted reads are exercised by --accepted-feed.
     fresh=seed+82001
     check('artwork accepted before metadata change',call('recommend',n=4,artwork=fresh)[0]==200)
     def stale():sql(f"update community_private.artwork_reviews set valid_until=clock_timestamp()-interval '1 second',lease_until=null where image_id={fresh};")
-    def state():return sql(f"select state from community_private.artwork_reviews where image_id={fresh};")
+    def state():return sql(f"select to_jsonb(r) from community_private.artwork_reviews r where image_id={fresh};")
     for fault in ('missing','private','unsupported','unavailable','rating','changed_owner'):
-        stale();set_fault(fault);response=call('gallery',n=4)
-        check('bounded unavailable revalidation '+fault,response[0]==200 and state()=='quarantined' and fresh not in [x['imageId'] for x in response[1].get('items',[])])
-    set_fault('video');stale()
-    video_response=call('gallery',n=4)
-    check('eligible public video survives revalidation',video_response[0]==200 and state()=='eligible' and fresh in [x['imageId'] for x in video_response[1].get('items',[])])
-    set_fault('');stale()
-    check('eligible metadata recovers',call('gallery',n=4)[0]==200 and state()=='eligible')
+        stale();before_review=state();before_provider=artwork_requests()
+        set_fault(fault);response=call('gallery',n=4)
+        check('historical incompatible gallery fails closed '+fault,response[0]==503 and response[1].get('code')=='UNAVAILABLE')
+        check('gallery does not mutate legacy review state '+fault,state()==before_review)
+        check('gallery performs no artwork revalidation '+fault,artwork_requests()==before_provider)
+    set_fault('video')
+    check('video eligibility remains a submission preview check',call('verify',n=4,artwork=fresh+2)[0]==200)
+    set_fault('unsupported')
+    check('unsupported media submission preview denied',call('verify',n=4,artwork=fresh+2)[1].get('code')=='INVALID_ARTWORK')
+    set_fault('')
+    # Retained legacy RPC lease safety is tested directly, never viewer-triggered.
     stale()
     leased=json.loads(sql(f'select public.community_review_candidates({seed+4});'))
     check('revalidation batch bounded',len(leased)<=3 and any(x['imageId']==fresh for x in leased))

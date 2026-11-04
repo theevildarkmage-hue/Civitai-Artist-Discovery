@@ -60,7 +60,7 @@ def main():
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
     database = 'cad3_security_' + secrets.token_hex(6)
-    env = {k:v for k,v in os.environ.items() if not k.startswith(('PG', 'CAD_TEST_', 'CAD_ALLOW_ISOLATED'))}
+    env = {k:v for k,v in os.environ.items() if not k.upper().startswith(('PG', 'CAD_TEST_', 'CAD_ALLOW_ISOLATED'))}
     env.update(PGHOST='127.0.0.1', PGPORT=str(port), PGUSER='cad3_admin', PGPASSWORD=password,
                PGDATABASE='postgres', PGCONNECT_TIMEOUT='5', PGCLIENTENCODING='UTF8',
                PATH=str(binary)+os.pathsep+env.get('PATH',''), PYTHONIOENCODING='utf-8')
@@ -122,12 +122,14 @@ def main():
         migrations = sorted((ROOT/'supabase/migrations').glob('*.sql'))
         if args.accepted_feed:
             for migration in migrations:
-                require(command('psql','-X','-v','ON_ERROR_STOP=1','--single-transaction','-f',str(migration)),migration.name)
+                # Match the reviewed normalized migration transport; raw Windows
+                # -f preserves CRLF in routine bodies and invalidates pinned guards.
+                require(command('psql','-X','-v','ON_ERROR_STOP=1','--single-transaction',input=migration.read_text(encoding='utf-8')),migration.name)
             require(sql('create role community_operator nologin noinherit nobypassrls;'),'Restricted operator')
             candidates=sorted((ROOT/'supabase/beta-migrations').glob('*.sql'))
             for migration in candidates:
                 if migration.name.startswith('202610250001'):continue
-                require(command('psql','-X','-v','ON_ERROR_STOP=1','--single-transaction','-f',str(migration)),migration.name)
+                require(command('psql','-X','-v','ON_ERROR_STOP=1','--single-transaction',input=migration.read_text(encoding='utf-8')),migration.name)
             import runpy
             suite=runpy.run_path(str(ROOT/'tests/accepted_feed_postgres.py'))
             summary['acceptedFeed']=suite['run'](lambda statement:require(sql(statement),'Accepted feed SQL'),sql,output)
@@ -142,14 +144,14 @@ def main():
         atomic_database=database+'_atomic'
         require(sql(f'create database {atomic_database}; revoke connect on database {atomic_database} from public;'),'Atomic bootstrap database')
         atomic_env={**env,'PGDATABASE':atomic_database}
-        require(sql('begin;\n'+'\n'.join(m.read_text() for m in migrations)+'\ncommit;',child_env=atomic_env),'Ordered atomic bootstrap')
-        inventory_sql=(ROOT/'supabase/tests/security_inventory.sql').read_text()
+        require(sql('begin;\n'+'\n'.join(m.read_text(encoding='utf-8') for m in migrations)+'\ncommit;',child_env=atomic_env),'Ordered atomic bootstrap')
+        inventory_sql=(ROOT/'supabase/tests/security_inventory.sql').read_text(encoding='utf-8')
         atomic_inventory=json.loads(require(sql(inventory_sql,child_env=atomic_env),'Atomic inventory'))
         assert len(atomic_inventory['relations'])==5 and len(atomic_inventory['rpcs'])==7
         assert all(t['rlsEnabled'] for t in atomic_inventory['relations'])
         if args.private_beta:
             require(sql('create role community_operator nologin noinherit nobypassrls;',child_env=atomic_env),'Restricted operator group')
-            candidate=(ROOT/'supabase/beta-migrations/202610230001_private_beta_security.sql').read_text()
+            candidate=(ROOT/'supabase/beta-migrations/202610230001_private_beta_security.sql').read_text(encoding='utf-8')
             require(sql('begin;\n'+candidate+'\ncommit;',child_env=atomic_env),'Candidate atomic bootstrap rehearsal')
             summary['privateBetaAtomicBootstrapPassed']=True
         summary['orderedAtomicBootstrapPassed']=True
