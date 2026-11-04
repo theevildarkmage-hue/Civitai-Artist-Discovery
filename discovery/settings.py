@@ -23,17 +23,25 @@ class AppSettings:
     def __init__(self, path: Path):
         self.path = path
         self.lock = threading.RLock()
+        # Capture before startup creates new caches/history. A missing preference
+        # file in a populated profile is an upgrade, not a first installation.
+        try:
+            self._existing_profile = any(item.is_file() for item in path.parent.rglob("*"))
+        except OSError:
+            self._existing_profile = True
 
     def load(self) -> dict:
         with self.lock:
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 raw = {}
             if not isinstance(raw, dict):
                 # A structurally invalid preference file is handled like malformed JSON.
                 raw = {}
-            legacy_capture_defaults = CHANNEL == 'stable' and bool(raw)
+            # Existing profiles must not opt into unattended collection through
+            # inferred defaults, including while passing through a bridge beta.
+            legacy_capture_defaults = self.path.exists() or self._existing_profile
             try:
                 rating = content_rating(raw.get("contentRating"))
             except ValueError:
@@ -91,12 +99,16 @@ class AppSettings:
             # you look at today permanently narrowed what tomorrow's archive could ever
             # contain. Collect widely once; filter what is shown as often as you like.
             #
-            # Preserve the beta/new-install defaults. Stable upgrades of existing,
-            # nonempty preferences inherit their prior capture ceiling instead of
-            # silently broadening it. Explicit choices remain independent of viewing.
+            # Preserve explicit capture choices and fresh-install defaults. Existing
+            # profiles inherit their saved viewing ceiling; ambiguous files
+            # use the safe viewing default until the user chooses otherwise.
             capture_coverage = raw.get("captureCoverage")
             if capture_coverage not in CONTENT_RATINGS:
-                capture_coverage = rating if legacy_capture_defaults else "X"
+                capture_coverage = "X"
+                if legacy_capture_defaults:
+                    capture_coverage = rating_for_levels(levels)
+                    if raw.get("contentRating") is not None:
+                        capture_coverage = min((rating, capture_coverage), key=CONTENT_RATINGS.index)
             return {"mediaType": raw.get("mediaType") if raw.get("mediaType") in ("all", "image", "video") else "all",
                     "contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),
@@ -231,6 +243,21 @@ class AppSettings:
                  "captureCoverage": capture_coverage}
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            # Preserve empty/malformed source bytes before an explicit UI change
+            # replaces them. Never silently overwrite an unreadable preference file.
+            if self.path.exists():
+                original = self.path.read_bytes()
+                try:
+                    parsed = json.loads(original.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    parsed = None
+                if not isinstance(parsed, dict) or not parsed:
+                    backup = self.path.with_name(self.path.name + ".invalid.bak")
+                    if backup.exists() and backup.read_bytes() != original:
+                        backup = self.path.with_name(self.path.name + ".invalid-" + secrets.token_hex(8) + ".bak")
+                    if not backup.exists():
+                        with backup.open("xb") as retained:
+                            retained.write(original)
             temporary = self.path.with_suffix(".tmp")
             temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
             temporary.replace(self.path)
