@@ -121,6 +121,8 @@ def _valid_cached_release(release: object, current_version: str) -> bool:
     if not isinstance(release, dict) or not is_newer(release.get('version'), current_version):
         return False
     version = release['version']
+    if not isinstance(version, str) or version.startswith('v'):
+        return False
     if not _allowed_channel(version, current_version):
         return False
     channel = _release_channel(version)
