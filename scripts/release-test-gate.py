@@ -40,7 +40,8 @@ def main():
     if out.exists():p.error('Use a new output directory; stale receipts are not resumed')
     if not 10<=args.timeout<=900:p.error('Per-entry timeout must be 10..900 seconds')
     out.mkdir(parents=True)
-    env={k:v for k,v in os.environ.items() if not (k.startswith(('SUPABASE_','CAD_TEST_','CAD_ALLOW_ISOLATED','CIVITAI_','COMMUNITY_')) or any(word in k.upper() for word in ('ACCESS_TOKEN','REFRESH_TOKEN')))}
+    env={k:v for k,v in os.environ.items() if not (k.startswith(('SUPABASE_','CIVITAI_','COMMUNITY_')) or
+        (k.startswith('CAD_') and k!='CAD_POSTGRES_BIN') or any(word in k.upper() for word in ('ACCESS_TOKEN','REFRESH_TOKEN')))}
     env.update(PYTHONIOENCODING='utf-8',PYTHONUNBUFFERED='1',PYTHONDONTWRITEBYTECODE='1')
     before=source_fingerprint()
     commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
@@ -78,18 +79,21 @@ def main():
             row=run('native',[sys.executable,str(ROOT/'scripts/validate-postgres.py'),
                '--bin',str(args.bin),'--output',str(out/'native'),'--repeats','1',
                '--device-renewal','--community-access','--release-candidate','--identity-sessions',
-               '--deployment-rehearsal','--private-beta','--beta-only',
+               '--deployment-rehearsal','--private-beta',
                '--http-deno',str(args.http_deno),'--http-postgrest',str(args.http_postgrest)],1800)
             native_state=row['state']
     else:rows.append({'name':'native','state':'unavailable','reason':'Not requested; run --native with owned tool paths for the complete tier'})
     after=source_fingerprint()
     failures=[r['name'] for r in rows if r['state'] in ('failed','timeout')]
     unavailable=[r['name'] for r in rows if r['state']=='unavailable']
+    skipped_python=[r['name'] for r in json.loads((out/'python/results.json').read_text())
+                    if r['state']=='skipped'] if (out/'python/results.json').exists() else []
     result={'sourceCommit':commit,'sourceFingerprintBefore':before,'sourceFingerprintAfter':after,
        'sourceUnchangedDuringRun':before==after,'pythonSummary':python_summary,'entries':rows,
-       'failed':failures,'unavailable':unavailable,'sourceChecksPassed':not failures and node is not None and python_summary is not None and not python_summary['failed'],
+       'failed':failures,'unavailable':unavailable,'skippedPythonEntries':skipped_python,
+       'sourceChecksPassed':not failures and node is not None and python_summary is not None and not python_summary['failed'],
        'fullGatePassed':not failures and not unavailable and before==after and native_state=='passed',
-       'limitations':['Skipped script entries are not counted as executed assertions. Native tier owns its DB/HTTP services; review its detailed receipt for covered delegated tests.','A passing automated gate is not publication, production activation or real-account packaged acceptance approval.']}
+       'limitations':['Skipped script entries are not counted as executed assertions. fullGatePassed means source modules plus the configured owned native tier passed, not that every skipped script entry separately ran. Review native detailed receipts against skippedPythonEntries.','A passing automated gate is not publication, production activation or real-account packaged acceptance approval.']}
     (out/'summary.json').write_text(json.dumps(result,indent=2))
     print(json.dumps(result),flush=True)
     raise SystemExit(1 if failures or before!=after or (args.native and unavailable) or node is None else 0)
