@@ -2,7 +2,7 @@ import {identityTransport} from './community_identity_transport.mjs';
 // Legacy business-rule factory regression. Identity-only entry acceptance is in
 // community_identity_session.mjs, including native SQL mode.
 import assert from 'node:assert/strict';
-let handler,member=7,state='enabled',admitted=true,blocked=false,invalid=false,candidates=[],calls=[],fault='';
+let handler,member=7,state='enabled',admitted=true,blocked=false,invalid=false,calls=[],fault='',providerCalls=0;
 globalThis.Deno={env:{get:n=>({SUPABASE_URL:'https://fixture.invalid',
   SUPABASE_SERVICE_ROLE_KEY:'synthetic-only',COMMUNITY_BETA_STATE:state,COMMUNITY_ALLOWED_RATINGS:'1,2'}[n])},serve:fn=>handler=fn};
 globalThis.fetch=async(url,options={})=>{
@@ -10,15 +10,17 @@ globalThis.fetch=async(url,options={})=>{
     const name=url.split('/').at(-1),args=JSON.parse(options.body);calls.push({name,args});
     if(name==='community_take_rate')return new Response(null,{status:204});
     if(name==='community_access')return Response.json(admitted&&member===7?{invited:true}:{message:'FORBIDDEN'},{status:admitted&&member===7?200:400});
-    if(name==='community_review_candidates')return Response.json(candidates);
-    if(name==='community_record_review')return Response.json({recorded:true});
-    if(name==='community_beta_gallery')return Response.json({apiVersion:1,items:[],nextCursor:null});
+    if(name==='community_recommendation_list'){
+      assert.equal(args.p_member,7);assert.equal(args.p_limit,24);
+      return Response.json({apiVersion:1,feedVersion:3,items:[],nextCursor:null});
+    }
     if(name==='community_report')return Response.json({reported:true});
     if(name.startsWith('community_submit'))return Response.json(blocked?{message:'SUBMITTER_BLOCKED'}:{imageId:123},{status:blocked?400:200});
     if(name==='community_quota')return Response.json({used:0,remaining:3,limit:3});
     throw Error('Unexpected privileged RPC '+name);
   }
   if(url.endsWith('/userinfo'))return Response.json(invalid?{}:{sub:String(member),id:member,username:'SyntheticMember'},{status:invalid?401:200});
+  providerCalls++;
   if(fault==='transient')return Response.json({},{status:503});
   if(fault==='missing')return Response.json({},{status:404});
   if(fault==='private')return Response.json({},{status:403});
@@ -28,7 +30,7 @@ globalThis.fetch=async(url,options={})=>{
 };
 globalThis.fetch=identityTransport(globalThis.fetch);
 const {createCommunityHandler}=await import('../supabase/functions/community-v1/handler.ts');
-handler=createCommunityHandler({fetch:globalThis.fetch,invitationOnly:true});
+handler=createCommunityHandler({fetch:globalThis.fetch,invitationOnly:true,recommendationList:true});
 let checks=0;
 async function check(expected,operation='status',extra={},headers={}) {
   calls=[];
@@ -54,11 +56,12 @@ await check(200,'report',{artwork:123,reason:'abuse'});
 for(const operation of ['verify','recommend','withdraw'])await check('READ_ONLY',operation,{artwork:123});
 await check('INVALID_REQUEST','report',{artwork:123,reason:'arbitrary text'});
 state='enabled';blocked=true;await check('SUBMITTER_BLOCKED','recommend',{artwork:123});blocked=false;
-for(const [value,expected] of [['','eligible'],['owner','owner'],['rating','rating'],['missing','unavailable'],['private','unavailable'],['transient','transient']]) {
-  fault=value;candidates=[{imageId:123,creatorId:42,lease:'00000000-0000-0000-0000-000000000001'}];
+for(const value of ['','owner','rating','missing','private','transient']) {
+  fault=value;const before=providerCalls;
   await check(200,'gallery');
-  const review=calls.find(c=>c.name==='community_record_review');assert.equal(review.args.p_failure,expected==='eligible'?null:expected);
-  assert.equal(review.args.p_member,7);assert.equal(review.args.p_lease,candidates[0].lease);
+  assert.equal(providerCalls,before,'Gallery must not revalidate accepted artwork');
+  assert.ok(calls.some(c=>c.name==='community_recommendation_list'));
+  assert.ok(calls.every(c=>!['community_review_candidates','community_prepare_gallery','community_record_review','community_beta_gallery'].includes(c.name)));
 }
-candidates=Array(4).fill(candidates[0]);await check('UNAVAILABLE','gallery');
+await check('INVALID_REQUEST','gallery',{limit:51});
 console.log(JSON.stringify({passed:true,checks,legacyBusinessRuleFactory:true,syntheticTransport:true}));

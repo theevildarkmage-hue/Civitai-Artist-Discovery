@@ -90,10 +90,11 @@ with tempfile.TemporaryDirectory(prefix='data-test-persistent-browser-',ignore_c
             endpoint.request('/api/community/development/control',{'action':'offline','enabled':True})
             with page.expect_response(lambda response:'/api/community/gallery?' in response.url):
                 page.locator('#communityRefresh').click()
-            page.wait_for_function("()=>document.querySelector('#communityMode').textContent.includes('Cached results')")
+            # Fixture admission stays authoritative; this is not stale production access.
+            page.wait_for_function("()=>document.querySelector('#communityMode').textContent.includes('Current accepted recommendations')")
             page.locator('#communityGrid .creator-card').first.wait_for()
             page.locator('#tabDiscovery').click()
-            page.locator('#communityMode').filter(has_text='Cached results').wait_for()
+            page.locator('#communityMode').filter(has_text='Current accepted recommendations').wait_for()
             page.locator('#tabDiscovery').click();assert page.locator('#discoveryBody').is_visible()
             print('Fixture persistence: restart',flush=True)
             stop();start()

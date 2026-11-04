@@ -47,6 +47,10 @@ with tempfile.TemporaryDirectory(
         ]
     ]
     archive._upsert_normalized(rows, forced_date=day)
+    from discovery.taste import TasteStore
+    with TasteStore(Path(temporary)/'discovery').connect() as db:
+        db.executemany('INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)',
+                       [(row['id'],'2026-11-03T00:00:00Z') for row in rows])
     with archive.connect() as db:
         db.execute("INSERT INTO days(day,complete) VALUES(?,1)", (day,))
     archive.build_artist_index(day)

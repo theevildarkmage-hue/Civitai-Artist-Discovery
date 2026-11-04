@@ -9,7 +9,7 @@ const env={SUPABASE_URL:'https://isolated.supabase.co',SUPABASE_SERVICE_ROLE_KEY
 globalThis.Deno={env:{get:name=>env[name]}};
 const native=process.env.CAD_TEST_IDENTITY_NATIVE==='1';
 if(native && (process.env.CAD_ALLOW_ISOLATED_DB_TESTS!=='1'||process.env.PGHOST!=='127.0.0.1'||!process.env.CAD_TEST_PG_SYSTEM_IDENTIFIER))throw Error('Owned native cluster required');
-let clock=native?Date.now():1800000000000,sql=0,registers=0,providerCalls=0,invited=true,metadataAssetStatus=200;
+let clock=native?Date.now():1800000000000,sql=0,registers=0,providerCalls=0,invited=true,metadataAssetStatus=200,metadataAssetType='video',submitCalls=0;
 const sessionHashes=new Map(),replays=new Set(),wire=[],families=[],attempts=new Set();
 const pair=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
 const jwk={...await crypto.subtle.exportKey('jwk',pair.publicKey),kid:'synthetic',alg:'ES256',use:'sig'};
@@ -79,14 +79,19 @@ async function transport(url,options={}) {
   if(name==='community_access')return invited?Response.json({invited:true}):Response.json({message:'INVITE_ONLY'},{status:400});
   if(name==='community_registry_upsert'){registers++;return Response.json({apiVersion:1,registered:true});}
   if(name==='community_quota')return Response.json({apiVersion:1,remaining:3,used:0,limit:3});
-  if(name==='community_submit_verified'){assert.equal(body.p_preview,true);assert.equal(body.p_creator,9);assert.equal(body.p_artwork.type,'video');return Response.json({apiVersion:1,preview:true});}
+  if(name==='community_submit'){
+   submitCalls++;assert.equal(body.p_preview,true);assert.equal(body.p_creator,9);
+   assert.equal(body.p_member,7);assert.equal(body.p_image,123);assert.equal(body.p_name,'Verified');
+   assert.equal('p_artwork' in body,false,'SQL stores accepted IDs, not client metadata');
+   return Response.json({apiVersion:1,preview:true});
+  }
   throw Error('Unexpected RPC '+name);
  }
  providerCalls++;
  if(url.startsWith('https://civitai.red/api/v1/images?')) {
   assert.equal(options.headers.Authorization,undefined);
   if(metadataAssetStatus!==200)return Response.json({},{status:metadataAssetStatus});
-  return Response.json({items:[{id:123,postId:45,type:'video',username:'Artist',browsingLevel:1,url:'https://image.civitai.com/synthetic.mp4'}]});
+  return Response.json({items:[{id:123,postId:45,type:metadataAssetType,username:'Artist',browsingLevel:1,url:'https://image.civitai.com/synthetic.mp4'}]});
  }
  if(url==='https://civitai.red/api/v1/posts/45') {
   assert.equal(options.headers.Authorization,undefined);
@@ -123,8 +128,15 @@ await check('registry uses session and remains independent of invitations',async
 });
 await check('normal Community status retains quota enforcement',async()=>assert.equal((await call(first,{apiVersion:1,operation:'status'},exchanged.session)).status,200));
 await check('video preview uses only anonymous artwork metadata',async()=>{
+ const before=submitCalls;
  assert.equal((await call(first,{apiVersion:1,operation:'verify',artwork:123},exchanged.session)).preview,true);
+ assert.equal(submitCalls,before+1);
  for(const request of wire.filter(x=>x.url.startsWith('https://civitai')))assert.notEqual(request.options.headers?.Authorization,'Bearer '+exchanged.session);
+});
+await check('unsupported media type cannot reach submission SQL',async()=>{
+ const before=submitCalls;metadataAssetType='audio';
+ const result=await call(first,{apiVersion:1,operation:'verify',artwork:123},exchanged.session);
+ assert.equal(result.code,'INVALID_ARTWORK');assert.equal(submitCalls,before);metadataAssetType='video';
 });
 await check('anonymous metadata auth failure is service failure, not user sign-out',async()=>{
  metadataAssetStatus=401;

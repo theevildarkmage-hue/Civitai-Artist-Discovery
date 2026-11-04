@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -16,9 +17,11 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_pla
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-SCREENSHOTS = ROOT / "archive" / "validation_2026-08-01"
+SCREENSHOTS = test_safety.REPORTS / 'headless-gallery'
 SCREENSHOTS.mkdir(parents=True, exist_ok=True)
-port = 8877
+with socket.socket() as sock:
+    sock.bind(('127.0.0.1',0))
+    port = sock.getsockname()[1]
 
 with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_errors=True) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
@@ -37,6 +40,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-history-test-", ignore_cleanup_
                 "type": "image", "nsfwLevel": "None", "baseModel": "Test",
                 "stats": {"reactionCount": 999 if image_id == 1 else creator % 9}})
     history._upsert_normalized(items, forced_date=yesterday)
+    from discovery.taste import TasteStore
+    with TasteStore(Path(temporary)/'discovery').connect() as db:
+        # Known-empty synthetic tags let this suite reach fallback/navigation;
+        # unknown-tag rejection is exercised by the admission security suites.
+        db.executemany('INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)',
+                       [(item['id'],'2026-11-03T00:00:00Z') for item in items])
     with history.connect() as db:
         db.execute("INSERT OR REPLACE INTO days(day,complete,updated_at) VALUES(?,1,?)", (yesterday, datetime.now().isoformat()))
     history.build_artist_index(yesterday)
