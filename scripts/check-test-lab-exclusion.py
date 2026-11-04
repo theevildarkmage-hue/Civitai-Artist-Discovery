@@ -14,7 +14,10 @@ for path in (ROOT/'static').rglob('*'):
         failures.append(str(path.relative_to(ROOT)))
 build=(ROOT/'scripts/build_exe.ps1').read_text(encoding='utf-8')
 data_lines=[line for line in build.splitlines() if '--add-data' in line]
-if len(data_lines)!=1 or "'static'" not in data_lines[0] or "'server.py'" not in build:
+expected_data=['--add-data "${staticRoot};static" `','--add-data "${configuration};discovery" `']
+if ([line.strip() for line in data_lines]!=expected_data
+        or "Copy-Item -LiteralPath (Join-Path $root 'static') -Destination $staticRoot -Recurse" not in build
+        or 'scripts/configure-build.py' not in build or "'server.py'" not in build):
     failures.append('Unreviewed release data/entry configuration')
 for path in (ROOT/'supabase/functions').rglob('*.ts'):
     text=path.read_text(encoding='utf-8')

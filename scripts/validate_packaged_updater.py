@@ -23,7 +23,9 @@ parser.add_argument("--browser", action="store_true",
 args = parser.parse_args()
 
 package = args.package.resolve()
-executable_name = "CivitaiDiscoveryBeta.exe"
+if package.name not in ('CivitaiDiscoveryBeta','CivitaiArtistDiscovery'):
+    raise SystemExit('Unknown channel package')
+executable_name = package.name + '.exe'
 if not (package / executable_name).is_file():
     raise SystemExit(f"built executable not found in {package}")
 for notice in ['LICENSE.txt', 'THIRD_PARTY_NOTICES.md', 'licenses/Python-LICENSE.txt',
@@ -34,10 +36,10 @@ for notice in ['LICENSE.txt', 'THIRD_PARTY_NOTICES.md', 'licenses/Python-LICENSE
 
 with tempfile.TemporaryDirectory(prefix="civitai-packaged-update-") as temporary:
     base = Path(temporary)
-    install = base / "CivitaiDiscoveryBeta"
+    install = base / package.name
     shutil.copytree(package, install)
     data = install / "data"
-    stage = data / "update" / "staged" / "test-version" / "CivitaiDiscoveryBeta"
+    stage = data / "update" / "staged" / "test-version" / package.name
     shutil.copytree(package, stage)
     personal = data / "personal.sqlite3"
     personal.write_bytes(b"portable-user-data")
@@ -79,7 +81,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-packaged-update-") as temporary
     if os.name=='nt':
         # Real Windows sharing violation against the owned disposable install.
         # Permit reads/writes but deny deletion/rename while the helper runs.
-        failure_stage=data/'update'/'staged'/'locked-version'/'CivitaiDiscoveryBeta'
+        failure_stage=data/'update'/'staged'/'locked-version'/package.name
         shutil.copytree(package,failure_stage)
         failure_config=data/'update'/'locked-apply.json'
         settings=json.loads(config.read_text());settings.update(version='locked-version',stagedRoot=str(failure_stage),backupRoot=str(data/'update'/'backup'/'before-locked'))

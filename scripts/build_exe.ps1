@@ -1,6 +1,9 @@
 # Builds the portable folder application. A self-extracting one-file build would write its
 # runtime to the system temporary folder, contrary to the portable-only storage model.
-param([switch]$OneFile, [string]$OutputRoot, [string]$PythonExecutable = 'python')
+param([switch]$OneFile, [string]$OutputRoot, [string]$PythonExecutable = 'python',
+      [ValidateSet('beta','stable')][string]$Channel = 'beta', [string]$Version,
+      [ValidateSet('development','production')][string]$Environment = 'development',
+      [string]$ProjectRef, [switch]$Preview)
 
 $ErrorActionPreference = 'Stop'
 Set-Alias -Name python -Value $PythonExecutable -Scope Script
@@ -13,22 +16,40 @@ try {
   $buildPaths = @()
   $env:PYTHONHASHSEED = '0'
   $env:SOURCE_DATE_EPOCH = (git show -s --format=%ct HEAD)
-  $package = Join-Path $root 'dist\CivitaiDiscoveryBeta'
+  $applicationId = if ($Channel -eq 'beta') { 'CivitaiDiscoveryBeta' } else { 'CivitaiArtistDiscovery' }
+  if (-not $Version) { $Version = if ($Channel -eq 'stable') { '3.0.0' } else { '3.0.0-beta.14' } }
+  $generatedRoot = Join-Path $root 'build\package-inputs'
+  $package = Join-Path $root ('dist\' + $applicationId)
   if ($OutputRoot) {
     # Keep preview packages, build caches, and generated specs away from release outputs.
     $previewRoot = [System.IO.Path]::GetFullPath($OutputRoot)
     $buildPaths = @('--distpath', (Join-Path $previewRoot 'dist'),
                     '--workpath', (Join-Path $previewRoot 'build'),
                     '--specpath', $previewRoot)
-    $package = Join-Path $previewRoot 'dist\CivitaiDiscoveryBeta'
+    $package = Join-Path $previewRoot ('dist\' + $applicationId)
+    $generatedRoot = Join-Path $previewRoot 'package-inputs'
   }
-  python -B scripts/make_icon.py
+  New-Item -ItemType Directory -Force $generatedRoot | Out-Null
+  $configuration = Join-Path $generatedRoot 'build-configuration.json'
+  $configArgs = @('--channel',$Channel,'--version',$Version,'--environment',$Environment,'--output',$configuration)
+  if ($ProjectRef) { $configArgs += @('--project-ref',$ProjectRef) }
+  if ($Preview) { $configArgs += '--preview' }
+  python -B scripts/configure-build.py @configArgs
+  if ($LASTEXITCODE -ne 0) { throw 'Invalid explicit build target' }
+  $staticRoot = Join-Path $generatedRoot 'static'
+  if (Test-Path -LiteralPath $staticRoot) { throw 'Generated static inputs already exist. Use a fresh OutputRoot for reproducible builds.' }
+  Copy-Item -LiteralPath (Join-Path $root 'static') -Destination $staticRoot -Recurse
+  $icon = Join-Path $staticRoot 'app.ico'
+  $mark = if ($Channel -eq 'beta') { 'beta' } else { 'spark' }
+  python -B scripts/make_icon.py $mark $icon
   if ($LASTEXITCODE -ne 0) { throw "Icon generation exited with code $LASTEXITCODE" }
-  python -B scripts/make_version_file.py
+  Copy-Item -LiteralPath $icon -Destination (Join-Path $staticRoot 'discovery-beta.ico') -Force
+  $versionResource = Join-Path $generatedRoot 'version_info.txt'
+  python -B scripts/make_version_file.py --configuration $configuration --output $versionResource
   if ($LASTEXITCODE -ne 0) { throw "Version resource generation exited with code $LASTEXITCODE" }
   $sourceRecord = Join-Path $root 'build/beta-source.json'
   if ($OutputRoot) { $sourceRecord = Join-Path $previewRoot 'beta-source.json' }
-  python -B scripts/stamp-beta-build.py start --record $sourceRecord
+  python -B scripts/stamp-beta-build.py start --record $sourceRecord --configuration $configuration
   if ($LASTEXITCODE -ne 0) { throw 'Could not record build source' }
 
   # --noupx is explicit rather than assumed: a machine with UPX installed would otherwise
@@ -37,10 +58,11 @@ try {
   if ($LASTEXITCODE) { throw 'Development Test Lab must be excluded from release inputs' }
   python -m PyInstaller --noconfirm --clean --onedir --windowed --noupx `
     --exclude-module discovery.community_dev --exclude-module discovery.community_fixtures `
-    --name CivitaiDiscoveryBeta `
-    --icon (Join-Path $root 'static/app.ico') `
-    --version-file (Join-Path $root 'build/version_info.txt') `
-    --add-data "$(Join-Path $root 'static');static" `
+    --name $applicationId `
+    --icon $icon `
+    --version-file $versionResource `
+    --add-data "${staticRoot};static" `
+    --add-data "${configuration};discovery" `
     @buildPaths (Join-Path $root 'server.py')
   if ($LASTEXITCODE -ne 0) { throw "PyInstaller exited with code $LASTEXITCODE" }
 
@@ -68,9 +90,10 @@ try {
   foreach ($guide in @('3.0-beta-README.md','3.0-beta-linux.md','3.0-beta-privacy.md','3.0-beta-release-notes.md','3.0-beta-operations.md','3.0-beta-publication-checklist.md','3.0-audit-response-2026-10-24.md','3.0-owner-quota-testing.md','3.0-beta-testing-quota-exceptions.md','3.0-audit-closure-2026-10-24.md','3.0-beta-signing-design.md')) {
     Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
-  python -B scripts/stamp-beta-build.py finish --record $sourceRecord --package $package
+  Copy-Item -LiteralPath $configuration -Destination (Join-Path $package 'build-configuration.json')
+  python -B scripts/stamp-beta-build.py finish --record $sourceRecord --package $package --configuration $configuration
   if ($LASTEXITCODE -ne 0) { throw 'Build provenance verification failed' }
-  Write-Host "Built: $package\CivitaiDiscoveryBeta.exe"
+  Write-Host "Built: $package\$applicationId.exe"
 } finally {
   Pop-Location
 }

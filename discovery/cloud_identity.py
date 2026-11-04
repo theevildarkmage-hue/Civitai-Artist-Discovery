@@ -3,7 +3,7 @@ import re
 import time
 import secrets
 
-ENDPOINT = 'https://aibelmhucizupzvvhdvf.supabase.co/functions/v1/community-v1'
+from .build_config import ENDPOINT
 SESSION = re.compile(r'sdc_[A-Za-z0-9_-]{43}')
 
 class EnrollmentError(RuntimeError):
