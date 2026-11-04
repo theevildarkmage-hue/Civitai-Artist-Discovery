@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
                                "dimSeenCards": True, "checkForUpdates": True,
                                **gallery_defaults}
 
-    path.write_text(json.dumps({"contentRating": "X"}), encoding="utf-8")
+    path.write_text(json.dumps({"contentRating": "X", "autoCapture": True, "captureCoverage": "X"}), encoding="utf-8")
     assert view(settings.load()) == {"contentRating": "X", "browsingLevels": [1, 2, 4, 8, 16],
                                "dimSeenCards": True, "checkForUpdates": True,
                                **gallery_defaults}
@@ -73,13 +73,13 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
     assert view(saved) == {"contentRating": "Soft", "browsingLevels": [1, 2],
                      "dimSeenCards": False, "checkForUpdates": False, **gallery_saved}
 
-    # Owner-approved defaults apply to missing fields; explicit coverage survives.
+    # Existing sparse profiles inherit their capture ceiling; explicit coverage survives.
     upgraded = path.with_name("upgraded.json")
     upgraded.write_text(json.dumps({"contentRating": "Soft", "autoCapture": True}), encoding="utf-8")
-    assert AppSettings(upgraded).load()["captureCoverage"] == "X"
+    assert AppSettings(upgraded).load()["captureCoverage"] == "Soft"
     upgraded.write_text(json.dumps({"contentRating": "Mature"}), encoding="utf-8")
-    assert AppSettings(upgraded).load()["captureCoverage"] == "X"
-    assert AppSettings(path.with_name("never-run.json")).load()["captureCoverage"] == "X"
+    assert AppSettings(upgraded).load()["captureCoverage"] == "Mature"
+    assert AppSettings(path.with_name("never-run.json")).load()["captureCoverage"] == "Soft"
     upgraded.write_text(json.dumps({"autoCapture": False,"captureCoverage":"Soft", "hideHighVolumeCreators":False,"highVolumeThreshold":200,"checkForUpdates":False}),encoding="utf-8")
     preserved=AppSettings(upgraded).load()
     assert preserved['autoCapture'] is False and preserved['captureCoverage']=='Soft'
