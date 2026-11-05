@@ -1,5 +1,24 @@
 # Civitai Artist Discovery
 
+## Production stable 3.0.0 candidate — unpublished
+
+The stable Windows candidate is built for the separate Production environment.
+Normal Civitai sign-in will automatically enroll verified users when public
+Community is activated; no invitation, second login or separate registration is
+required. Public enrollment and ordinary quotas are tested on disposable native
+infrastructure. Production Community and Registry remain disabled during private
+owner acceptance; no stable release or public activation has occurred.
+
+[Release notes](docs/3.0-stable-release-notes.md) ·
+[Changelog](docs/3.0-changelog.md) · [Privacy](docs/3.0-privacy.md) ·
+[Install/upgrade/rollback](docs/3.0-stable-installation.md) ·
+[Launch approval sequence](docs/3.0-public-launch.md).
+Privacy/data deletion: [theevildarkmage@gmail.com](mailto:theevildarkmage@gmail.com),
+confirmed by the owner for public listing. Security reports continue through
+[GitHub private vulnerability reporting](SECURITY.md).
+Only a separate explicit owner instruction containing **"Publish"** permits
+activation/publication. Stable 2.2.1 and published beta users remain unchanged.
+
 ## Windows beta 3.0.0-beta.13
 
 The published Windows beta includes recommendation previews, shared Community
@@ -36,7 +55,8 @@ beta usage and compatibility monitoring. Activity updates occur at most once eve
 searchable, and does not grant Community access. To request deletion, contact the
 maintainer through [GitHub Issues](https://github.com/theevildarkmage-hue/Civitai-Artist-Discovery/issues)
 for general support. Do not post tokens, account details or sensitive deletion/security
-requests publicly. A private channel requires owner approval before tester distribution.
+requests publicly. Sensitive privacy/deletion requests use the owner-confirmed
+theevildarkmage@gmail.com; security uses GitHub private vulnerability reporting.
 Later authenticated use can recreate a deleted registry entry.
 
 
