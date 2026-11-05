@@ -90,10 +90,8 @@ try {
   foreach ($guide in @('3.0-beta-README.md','3.0-beta-linux.md','3.0-beta-privacy.md','3.0-beta-release-notes.md','3.0-beta-operations.md','3.0-beta-publication-checklist.md','3.0-audit-response-2026-10-24.md','3.0-owner-quota-testing.md','3.0-beta-testing-quota-exceptions.md','3.0-audit-closure-2026-10-24.md','3.0-beta-signing-design.md','3.0-stable-readiness.md','3.0-stable-installation.md','3.0-production-handoff.md','3.0-recovery.md','3.0-production-bootstrap.md','3.0-audit-tracker.md','3.0-supabase-public-release.md')) {
     Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
-  if ($Channel -eq 'stable') {
-    foreach ($guide in @('3.0-stable-release-notes.md','3.0-changelog.md','3.0-privacy.md','3.0-public-launch.md')) {
-      Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
-    }
+  foreach ($guide in @('3.0-stable-release-notes.md','3.0-changelog.md','3.0-privacy.md','3.0-public-launch.md')) {
+    Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
   Copy-Item -LiteralPath $configuration -Destination (Join-Path $package 'build-configuration.json')
   python -B scripts/stamp-beta-build.py finish --record $sourceRecord --package $package --configuration $configuration

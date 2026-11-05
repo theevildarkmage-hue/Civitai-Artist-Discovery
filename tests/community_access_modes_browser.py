@@ -29,6 +29,7 @@ try:
     page.goto(h.base,wait_until='domcontentloaded');page.locator('#welcome:not(.hidden)').wait_for()
     signed[0]=True;page.reload(wait_until='domcontentloaded')
     page.wait_for_function('()=>document.querySelector("#tabCommunity")?.getAttribute("aria-pressed")==="true"')
+    assert page.locator('#connect').is_hidden() and page.locator('#disconnect').is_visible()
     assert page.locator('.view-tabs > button').first.get_attribute('id')=='tabCommunity'
     if mode=='invite_only_uninvited':
      page.locator('#communityMessage').filter(has_text='Invite Only').wait_for()
@@ -40,6 +41,7 @@ try:
     assert page.get_by_text('Opt in to Community Beta',exact=False).count()==0
     page.reload(wait_until='domcontentloaded')
     page.wait_for_function('()=>document.querySelector("#tabCommunity")?.getAttribute("aria-pressed")==="true"')
+    assert page.locator('#connect').is_hidden() and page.locator('#disconnect').is_visible()
     assert not page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
     page.screenshot(path=str(test_safety.REPORTS/f'community-{width}-{mode}.png'))
     checks+=1;page.close()
