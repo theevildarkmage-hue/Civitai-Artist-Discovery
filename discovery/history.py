@@ -27,7 +27,7 @@ from .diagnostics import redact_sensitive, append_log
 from .models import matches_models, normalize_base_model
 from .thumbnails import ThumbnailHints
 from .search import (SEARCH_CLIENT_KEY, SEARCH_PAGE_SIZE, SEARCH_SLICE_RESULT_LIMIT,
-                     SEARCH_URL, normalize_hit, search_body)
+                     SEARCH_URL, SearchRedirect, validate_search_url, normalize_hit, search_body)
 from .site import (DEFAULT_CONTENT_RATING, RATING_RANK,
                    browsing_levels, content_rating, image_url, levels_for_rating,
                    rating_for_levels)
@@ -1103,12 +1103,17 @@ class HistoryArchive:
                         on_timing: Callable[[str, float], None] | None = None,
                         on_transfer: Callable[[int, int], None] | None = None) -> tuple[dict, int]:
         """POST one bounded query to the search-only endpoint used by Civitai's UI."""
+        try:
+            validate_search_url(SEARCH_URL, initial=True)
+        except ValueError:
+            raise SearchBackendUnavailable('Search requires an approved Civitai HTTPS destination.') from None
         encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
         request = urllib.request.Request(SEARCH_URL, data=encoded, method="POST", headers={
             "Accept": "application/json", "Accept-Encoding": "gzip",
-            "Authorization": f"Bearer {SEARCH_CLIENT_KEY}",
             "Content-Type": "application/json", "User-Agent": USER_AGENT,
         })
+        request.add_unredirected_header('Authorization', f'Bearer {SEARCH_CLIENT_KEY}')
+        opener = urllib.request.build_opener(SearchRedirect)
         diagnostic = {**body, "backend": "browser-search"}
         attempt = 0
         last_failure = None
@@ -1123,7 +1128,7 @@ class HistoryArchive:
                         on_timing("pace", paced)
                     self.api_lane.last_request = time.monotonic()
                     started = time.monotonic()
-                    with urllib.request.urlopen(request, timeout=60) as response:
+                    with opener.open(request, timeout=60) as response:
                         raw = response.read()
                         wire_size = len(raw)
                         if response.headers.get("Content-Encoding") == "gzip":
@@ -1204,7 +1209,7 @@ class HistoryArchive:
 
     def _collect(self, key: str, value: str, start: datetime, end: datetime,
                  rebuilding: bool = False) -> None:
-        """Use exact date-range search by default; retain the old feed for recovery."""
+        """Use the public v1 feed by default; search is an explicit diagnostic option."""
         # Instance-level request replacement is the collector's established test and
         # diagnostic injection seam; keep those deterministic legacy simulations local.
         injected_legacy_request = "_request" in self.__dict__ and "_search_request" not in self.__dict__

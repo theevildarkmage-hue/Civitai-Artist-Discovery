@@ -157,7 +157,7 @@ class AuditRegressions(unittest.TestCase):
         for method,args in ((archive._request,{}),(archive._search_request,{})):
             for retry in ('inf','nan','9999999999'):
                 error=urllib.error.HTTPError('https://isolated.invalid',429,'limited',{'Retry-After':retry},io.BytesIO(b''))
-                with patch.object(history.urllib.request,'urlopen',side_effect=error),patch.object(history.time,'sleep') as sleep:
+                with patch.object(history.urllib.request,'urlopen',side_effect=error),patch.object(history.urllib.request,'build_opener',return_value=Mock(open=Mock(side_effect=error))),patch.object(history.time,'sleep') as sleep:
                     with self.assertRaises(history.RetryBudgetExhausted):method(args)
                 self.assertTrue(all(math.isfinite(call.args[0]) and call.args[0]<=602 for call in sleep.call_args_list))
                 if retry=='9999999999':sleep.assert_not_called()
