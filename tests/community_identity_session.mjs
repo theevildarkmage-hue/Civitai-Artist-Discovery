@@ -10,7 +10,7 @@ globalThis.Deno={env:{get:name=>env[name]}};
 const native=process.env.CAD_TEST_IDENTITY_NATIVE==='1';
 if(native && (process.env.CAD_ALLOW_ISOLATED_DB_TESTS!=='1'||process.env.PGHOST!=='127.0.0.1'||!process.env.CAD_TEST_PG_SYSTEM_IDENTIFIER))throw Error('Owned native cluster required');
 let clock=native?Date.now():1800000000000,sql=0,registers=0,providerCalls=0,invited=true,metadataAssetStatus=200,metadataAssetType='video',submitCalls=0;
-const sessionHashes=new Map(),replays=new Set(),wire=[],families=[],attempts=new Set();
+const sessionHashes=new Map(),replays=new Set(),wire=[],families=[],attempts=new Set(),ingress=[];
 const pair=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
 const jwk={...await crypto.subtle.exportKey('jwk',pair.publicKey),kid:'synthetic',alg:'ES256',use:'sig'};
 const b64=x=>Buffer.from(x).toString('base64url');
@@ -107,6 +107,7 @@ async function check(name,fn){try {await fn();passed++;}catch(error){throw new E
 const create=()=>createIdentityCommunityHandler({fetch:transport,env:name=>env[name],clock:()=>clock});
 const first=create(),second=create();
 async function call(handler,body,token,headers={}) {
+ ingress.push({body,token});
  const response=await handler(new Request('https://isolated.supabase.co/functions/v1/community-v1',{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{}),...headers},body:JSON.stringify(body)}));
  return {status:response.status,...await response.json()};
 }
@@ -268,5 +269,32 @@ await check('expired session denied',async()=>{
   const result=await nativeSQL("update public.community_identity_sessions set created_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' where session_hash='"+digest+"';",false);assert.equal(result.code,0);
  }
  clock+=43200000;assert.equal((await call(first,{apiVersion:1,operation:'status'},exchanged.session)).status,401);
+});
+await check('every assertion session and renewal remains absent from persistence arguments',()=>{
+ const raw=ingress.flatMap(({body,token})=>[body.identityAssertion,body.credential,token]).filter(v=>typeof v==='string'&&v.length>20);
+ assert(raw.length>0);
+ for(const request of wire.filter(x=>x.url.includes('/rpc/')))
+  for(const value of raw)assert(!request.options.body.includes(value),'Raw credential or identity assertion in SQL transport');
+});
+await check('device persistence never receives a private proof key',()=>{
+ for(const request of wire.filter(x=>x.url.endsWith('/community_device_enroll'))){
+  const body=JSON.parse(request.options.body);assert.deepEqual(Object.keys(body.p_device_key).sort(),['crv','kty','x','y']);
+ }
+});
+await check('public provider lookups never carry user credentials',()=>{
+ for(const request of wire.filter(x=>x.url.startsWith('https://civitai')||x.url.startsWith('https://auth.civitai'))){
+  const names=Object.keys(request.options.headers??{}).map(x=>x.toLowerCase());
+  assert(!names.some(x=>['authorization','cookie','apikey'].includes(x)));
+ }
+});
+await check('identity error responses and application logging do not echo credential canaries',async()=>{
+ const canary='AUDIT_PROHIBITED_CREDENTIAL_CANARY_4e8c1',logs=[];
+ const originals=Object.fromEntries(['log','error','warn','info','debug'].map(k=>[k,console[k]]));
+ let result;
+ try {
+  for(const key of Object.keys(originals))console[key]=(...args)=>logs.push(args);
+  result=await call(first,{apiVersion:2,operation:'identityExchange',identityAssertion:canary,challenge:canary});
+ } finally {Object.assign(console,originals);}
+ assert(!JSON.stringify(result).includes(canary));assert(!JSON.stringify(logs).includes(canary));
 });
 console.log(JSON.stringify({passed,failed:0,realSyntheticSignatures:true,providerSimulated:true,identitySQLNative:native,otherRPCsSimulated:true,hostedRequests:0}));
