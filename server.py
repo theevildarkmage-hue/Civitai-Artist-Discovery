@@ -1132,10 +1132,9 @@ def is_own_app_url(url: str) -> bool:
 
 
 def save_instance_url(url: str) -> None:
+    from discovery.atomic_file import write_bytes
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
-    temporary = INSTANCE_FILE.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"url": url, "pid": os.getpid()}), encoding="utf-8")
-    os.replace(temporary, INSTANCE_FILE)
+    write_bytes(INSTANCE_FILE, json.dumps({"url": url, "pid": os.getpid()}).encode("utf-8"))
 
 
 def clear_instance_url(url: str) -> None:

@@ -1452,8 +1452,10 @@ newestDate = shiftDate(centralToday(),-1);
 // view it cannot fill and looks broken rather than unconfigured.
 function setChrome(visible) {
   if (visible && currentView !== "gallery") return;
-  ["accountStatus", "connect", "disconnect", "olderDay", "newerDay",
+  ["accountStatus", "olderDay", "newerDay",
    "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", !visible));
+  $("connect").classList.toggle("hidden", !visible || oauthConnected);
+  $("disconnect").classList.toggle("hidden", !visible || !oauthConnected);
   segmentToolbar.classList.toggle("hidden", !visible);
   document.querySelector(".view-tabs").classList.toggle("hidden", !visible);
 }
