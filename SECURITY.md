@@ -15,6 +15,11 @@ Use ordinary GitHub Issues for general support, non-sensitive bugs and sanitized
 maintenance tracking. Avoid posting exploit instructions or sensitive deployment
 diagnostics publicly while a suspected vulnerability is under investigation.
 
+Sensitive privacy/data-deletion requests use the owner-confirmed
+[theevildarkmage@gmail.com](mailto:theevildarkmage@gmail.com), as disclosed in the
+[stable privacy notice](docs/3.0-privacy.md). Keep security vulnerabilities in the
+private GitHub reporting channel above; no new contact system is required.
+
 Once a vulnerability has been assessed and a correction is available, coordinate
 a public summary explaining impact, affected/fixed versions and update guidance.
 Keep unnecessary exploit detail and private records out of that summary. Existing

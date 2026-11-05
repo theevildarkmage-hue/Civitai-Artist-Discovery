@@ -1,3 +1,13 @@
+# Discovery 3.0.0 stable release preparation
+
+The Production-configured stable candidate is prepared locally and remains
+unpublished. See the [3.0 release notes](3.0-stable-release-notes.md),
+[changelog](3.0-changelog.md), [privacy notice](3.0-privacy.md), and
+[installation/upgrade instructions](3.0-stable-installation.md).
+Production stays disabled until the owner separately instructs "Publish" and
+the coordinated deployment/live smoke/publication gates pass. Stable 2.2.1
+remains the current published stable release. The notes below are historical.
+
 # Civitai Artist Discovery 2.2.0
 
 Civitai's feeds have always mixed videos in with images. This release stops throwing them

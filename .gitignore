@@ -90,6 +90,7 @@ logs/
 !supabase/deployment-baseline.json
 !supabase/recovery/development-v16.json
 !supabase/production/bootstrap-v1.json
+!supabase/production/bootstrap-v2.json
 
 # Reviewed offline video/browser fixtures and availability contract.
 !tests/fixtures/
