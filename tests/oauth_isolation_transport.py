@@ -53,8 +53,18 @@ class Boundary:
         if self.redirect_search:return response(url,code=302,headers={'Location':SINK})
         return response(url,{'items':[],'results':[]})
     def prohibited(self):
-        return [(index,key) for index,event in enumerate(self.events) if urllib.parse.urlsplit(event['url']).hostname.endswith('.supabase.co')
-                for key,value in CANARIES.items() if value in json.dumps(event)]
+        approved={'access':{'auth.civitai.com','civitai.red','civitai.com'},
+                  'refresh':{'auth.civitai.com'},'code':{'auth.civitai.com'},
+                  'api':{'search-new.civitai.com'},'cookie':{'auth.civitai.com'}}
+        def permitted(url,kind):
+            try:
+                parts=urllib.parse.urlsplit(url)
+                return (parts.scheme=='https' and parts.hostname in approved[kind]
+                        and parts.port in (None,443) and parts.username is None and parts.password is None)
+            except ValueError:return False
+        return [(index,key) for index,event in enumerate(self.events)
+                for key,value in CANARIES.items() if value in json.dumps(event)
+                and not permitted(event['url'],key)]
     def record(self,name):
         OBSERVATIONS.append({'name':name,'requests':len(self.events),'supabaseRequests':sum(urllib.parse.urlsplit(e['url']).hostname.endswith('.supabase.co') for e in self.events),
             'prohibitedFields':[{'event':i,'credentialKind':kind} for i,kind in self.prohibited()],
@@ -72,7 +82,7 @@ class Isolation(unittest.TestCase):
     def intercept(self,boundary):
         def intercepted(handler,request):return boundary.open(handler,request)
         self.stack.enter_context(patch.object(urllib.request.HTTPSHandler,'https_open',intercepted))
-    def safe(self,boundary,name):boundary.record(name);self.assertFalse(boundary.prohibited(),'Prohibited credential canary reached Supabase transport boundary; values withheld')
+    def safe(self,boundary,name):boundary.record(name);self.assertFalse(boundary.prohibited(),'Credential canary reached an unauthorized transport destination; values withheld')
     def login(self):
         with socket.socket() as probe:probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]
         self.stack.enter_context(patch.object(oauth,'CALLBACK_PORT',port));self.stack.enter_context(patch.object(oauth,'REDIRECT_URI',f'http://localhost:{port}/oauth/callback'))
@@ -184,6 +194,7 @@ class Isolation(unittest.TestCase):
                 try:oauth._post('token',body)
                 except oauth.OAuthTemporarilyUnavailable:pass
             oauth._revoke(CANARIES['access'],'access_token',oauth.BUILTIN_CLIENT_ID)
+            self.assertEqual(len(boundary.events),6 if code in (301,302,303) else 3)
             self.safe(boundary,'oauth_form_redirect_'+str(code))
     def test_social_read_write_redirects_never_forward_primary_bearer(self):
         for method in ['GET','POST']:
@@ -202,6 +213,20 @@ class Isolation(unittest.TestCase):
         except urllib.error.HTTPError:pass
         self.assertEqual(len(boundary.events),1,'A rejected redirect must not reach its destination')
         self.safe(boundary,'search_cross_host_redirect')
+    def test_search_redirects_reject_every_unapproved_origin_before_following(self):
+        for target in ['https://attacker.invalid/receive','https://auth.civitai.com/receive',
+                       'http://search-new.civitai.com/receive','https://search-new.civitai.com:444/receive']:
+            for code in (301,302,303,307,308):
+                boundary=Boundary();original=boundary.open
+                def redirect(handler,request):
+                    if not boundary.events:
+                        boundary.events.append({'url':request.full_url,'method':request.get_method(),'headers':dict(request.header_items()),'body':(request.data or b'').decode()})
+                        return response(request.full_url,code=code,headers={'Location':target})
+                    return original(handler,request)
+                boundary.open=redirect
+                with self.assertRaises(urllib.error.HTTPError):self.search(boundary)
+                self.assertEqual(len(boundary.events),1)
+                self.safe(boundary,'unapproved_search_redirect_'+str(code))
     def test_configured_search_destination_must_reject_supabase(self):
         import discovery.search
         namespace={'__package__':'discovery','__name__':'discovery._audit_search'}
