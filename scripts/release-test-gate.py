@@ -34,6 +34,8 @@ def main():
     p.add_argument('--bin',type=Path,help='PostgreSQL bin directory for --native')
     p.add_argument('--http-deno',type=Path)
     p.add_argument('--http-postgrest',type=Path)
+    p.add_argument('--package',type=Path,action='append',default=[],
+                   help='Exact clean package folder; repeat for stable Production and beta Development frozen security gates')
     args=p.parse_args()
     out=args.output.resolve()
     if out==ROOT or ROOT in out.parents:p.error('Evidence must be outside this source worktree')
@@ -71,6 +73,29 @@ def main():
         for path in sorted((ROOT/'tests').glob('*.mjs')):
             run('node-'+path.stem,[node,'--experimental-transform-types',str(path)],args.timeout)
     else:rows.append({'name':'node','state':'unavailable','reason':'Node executable unavailable'})
+    packaged_channels=[]
+    for package in args.package:
+        package=package.resolve()
+        try:
+            provenance=json.loads((package/'build-provenance.json').read_text(encoding='utf-8'))
+            config=provenance['buildConfiguration'];channel=config['channel']
+            expected='production' if channel=='stable' else 'development'
+            if (channel not in ('stable','beta') or channel in packaged_channels
+                or provenance['sourceCommit']!=commit or provenance['sourceDirty']
+                or config['preview'] or config['environment']!=expected):
+                raise ValueError('Package does not match clean current source/channel')
+            application='CivitaiArtistDiscovery' if channel=='stable' else 'CivitaiDiscoveryBeta'
+            executable=package/(application+'.exe')
+            if hashlib.sha256(executable.read_bytes()).hexdigest()!=provenance['executableSha256']:
+                raise ValueError('Package executable differs from recorded provenance')
+            row=run('frozen-isolation-'+channel,[sys.executable,str(ROOT/'tests/oauth_isolation_transport.py'),
+                '--frozen-exe',str(executable),'--output',str(out/('frozen-isolation-'+channel+'.json'))],args.timeout)
+            if row['state']=='passed':packaged_channels.append(channel)
+        except (OSError,ValueError,KeyError):
+            rows.append({'name':'frozen-isolation-package','state':'failed','reason':'Package provenance missing, invalid, duplicate or different source'})
+    missing_channels=sorted({'stable','beta'}-set(packaged_channels))
+    if missing_channels:rows.append({'name':'frozen-isolation','state':'unavailable',
+        'reason':'Full gate requires both Production stable and Development beta packages','missingChannels':missing_channels})
     native_state='unavailable'
     if args.native:
         if not all((args.bin,args.http_deno,args.http_postgrest)):
@@ -95,6 +120,7 @@ def main():
     result={'sourceCommit':commit,'sourceFingerprintBefore':before,'sourceFingerprintAfter':after,
        'sourceUnchangedDuringRun':before==after,'pythonSummary':python_summary,'entries':rows,
        'failed':failures,'unavailable':unavailable,'skippedPythonEntries':skipped_python,
+       'packagedChannelsVerified':sorted(packaged_channels),
        'sourceChecksPassed':not failures and node is not None and python_summary is not None and not python_summary['failed'],
        'fullGatePassed':not failures and not unavailable and before==after and native_state=='passed',
        'limitations':['Skipped script entries are not counted as executed assertions. fullGatePassed means source modules plus the configured owned native tier passed, not that every skipped script entry separately ran. Review native detailed receipts against skippedPythonEntries.','A passing automated gate is not publication, production activation or real-account packaged acceptance approval.']}

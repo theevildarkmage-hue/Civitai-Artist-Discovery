@@ -242,6 +242,7 @@ def _load_stored() -> dict:
 
 
 def _save(tokens: dict) -> None:
+    tokens = {key: value for key, value in tokens.items() if key != 'id_token'}
     with _FILE_LOCK:
         _save_stored(tokens)
         global _ROTATED_PENDING
@@ -249,6 +250,7 @@ def _save(tokens: dict) -> None:
 
 def _save_rotated(tokens):
     """A redeemed remote rotation must not be discarded if secure storage fails."""
+    tokens = {key: value for key, value in tokens.items() if key != 'id_token'}
     try:_save(tokens)
     except (OSError,OAuthSetupError):
         global _ROTATED_PENDING
@@ -581,9 +583,11 @@ def _refreshed_tokens(active: str, rejected_token: str | None = None) -> dict:
         except OAuthReauthenticationRequired:
             _save({**tokens,'reauth_required':True})
             raise
+        refreshed.pop('id_token', None)
         if not isinstance(refreshed.get('access_token'),str) or not refreshed['access_token']:
             raise OAuthTemporarilyUnavailable('Civitai did not return a valid refreshed authorization.')
         tokens = {**tokens,**refreshed, "identity": tokens.get("identity", {}), "client_id": active,'reauth_required':False}
+        tokens.pop('id_token', None)
         tokens["expires_at"] = int(time.time()) + int(tokens.get("expires_in", 3600)); _save_rotated(tokens)
         return tokens
 

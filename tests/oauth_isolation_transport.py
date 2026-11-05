@@ -1,7 +1,7 @@
 """Synthetic OAuth canaries at urllib's final HTTPS boundary; zero external I/O.
 
-The search-key regressions intentionally fail on the audited 9a candidate.
-Optional frozen mode executes the actual candidate's extracted Python modules.
+The regressions failed on the audited 9a candidate. Source and both release
+channels execute the same checks; frozen mode uses the actual packaged modules.
 """
 import sys
 from pathlib import Path
@@ -12,7 +12,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(test_safety.ROOT))
-from discovery import oauth,cloud_identity,community,registry,history,diagnostics
+from discovery import oauth,cloud_identity,community,registry,history,diagnostics,social
 
 CANARIES={'access':'AUDIT_CIVITAI_ACCESS_CANARY_8bc37','refresh':'AUDIT_CIVITAI_REFRESH_CANARY_4bd17',
           'api':'AUDIT_CIVITAI_APIKEY_CANARY_61f20','code':'AUDIT_AUTHORIZATION_CODE_CANARY_84f51',
@@ -86,6 +86,7 @@ class Isolation(unittest.TestCase):
         self.assertEqual(oauth.login(timeout=5)['id'],7)
     def test_login_callback_storage_operations_registry_renewal_and_logout(self):
         boundary=Boundary();self.intercept(boundary);self.login()
+        self.assertEqual(oauth.reconnect_community(timeout=5)['id'],7)
         stored=oauth._load();self.assertNotIn('id_token',stored)
         encrypted=oauth.TOKEN_PATH.read_bytes();self.assertTrue(all(v.encode() not in encrypted for v in [*CANARIES.values(),ASSERTION]))
         backend=community.SupabaseCommunityBackend(cloud_identity.ENDPOINT,identity_token_provider=oauth.get_community_session)
@@ -101,7 +102,7 @@ class Isolation(unittest.TestCase):
         oauth.disconnect();self.assertFalse(oauth.TOKEN_PATH.exists())
         self.safe(boundary,'login_callback_storage_registry_operations_renewal_logout')
         exchanges=[e for e in boundary.events if e['body'].startswith('{') and json.loads(e['body']).get('operation')=='identityExchange']
-        self.assertEqual(len(exchanges),1);self.assertEqual(json.loads(exchanges[0]['body'])['identityAssertion'],ASSERTION)
+        self.assertEqual(len(exchanges),2);self.assertEqual(json.loads(exchanges[0]['body'])['identityAssertion'],ASSERTION)
         self.assertNotIn('authorization',{k.lower() for k in exchanges[0]['headers']})
     def test_malformed_legacy_credentials_fail_before_cloud_transport(self):
         boundary=Boundary();self.intercept(boundary)
@@ -137,6 +138,15 @@ class Isolation(unittest.TestCase):
         # Local DPAPI storage is real; this checks minimization, not cloud leakage.
         self.safe(boundary,'unexpected_refresh_assertion')
         self.assertFalse('id_token' in oauth._load(),'Unexpected refresh identity assertion retained in protected local storage; values withheld')
+    def test_stale_assertion_and_failed_rotation_pending_state_are_discarded(self):
+        boundary=Boundary();self.intercept(boundary);self.login()
+        stored=oauth._load();stored.update(id_token=ASSERTION,expires_at=0)
+        oauth._save_stored(stored)  # Model an older encrypted profile without touching a real one.
+        oauth.get_access_token();self.assertFalse('id_token' in oauth._load())
+        with patch.object(oauth,'_save_stored',side_effect=PermissionError('Synthetic sharing lock')):
+            with self.assertRaises(oauth.OAuthTemporarilyUnavailable):oauth._save_rotated({**stored,'id_token':ASSERTION})
+        self.assertFalse('id_token' in oauth._pending_for_profile()['tokens'])
+        self.safe(boundary,'stale_assertion_rotation_pending')
     def test_lost_renewal_reply_retry_contains_only_discovery_credential(self):
         boundary=Boundary();self.intercept(boundary);self.login();session=oauth._load()['discovery_session'];session['renewal']['pending_request']='p'*43
         original=boundary.open;attempts=[]
@@ -173,14 +183,24 @@ class Isolation(unittest.TestCase):
             for body in [{'grant_type':'authorization_code','code':CANARIES['code']},{'grant_type':'refresh_token','refresh_token':CANARIES['refresh']}]:
                 try:oauth._post('token',body)
                 except oauth.OAuthTemporarilyUnavailable:pass
+            oauth._revoke(CANARIES['access'],'access_token',oauth.BUILTIN_CLIENT_ID)
             self.safe(boundary,'oauth_form_redirect_'+str(code))
-    def search(self,boundary,url=None):
+    def test_social_read_write_redirects_never_forward_primary_bearer(self):
+        for method in ['GET','POST']:
+            boundary=Boundary(redirect_search=True);self.intercept(boundary)
+            with patch.object(social,'get_access_token',return_value=CANARIES['access']):
+                social.SocialClient()._request(urllib.request.Request('https://civitai.red/api/trpc/synthetic',method=method,data=b'{}' if method=='POST' else None))
+            self.assertEqual(len(boundary.events),2);self.safe(boundary,'social_'+method+'_cross_origin_redirect')
+    def search(self,boundary,url=None,body=None):
         self.intercept(boundary)
         self.stack.enter_context(patch.object(history,'SEARCH_CLIENT_KEY',CANARIES['api']))
         if url:self.stack.enter_context(patch.object(history,'SEARCH_URL',url))
-        archive=history.HistoryArchive(self.root/'history');archive._search_request({'limit':1})
+        archive=history.HistoryArchive(self.root/'history');return archive._search_request(body or {'limit':1})
     def test_search_redirect_must_not_forward_api_key_to_supabase(self):
-        boundary=Boundary(redirect_search=True);self.search(boundary)
+        boundary=Boundary(redirect_search=True)
+        try:self.search(boundary)
+        except urllib.error.HTTPError:pass
+        self.assertEqual(len(boundary.events),1,'A rejected redirect must not reach its destination')
         self.safe(boundary,'search_cross_host_redirect')
     def test_configured_search_destination_must_reject_supabase(self):
         import discovery.search
@@ -188,11 +208,67 @@ class Isolation(unittest.TestCase):
         code=SEARCH_CODE or compile(Path(discovery.search.__file__).read_text(encoding='utf-8'),discovery.search.__file__,'exec')
         with patch.dict(os.environ,{'CIVITAI_SEARCH_HOST':'https://masrxykkbqngtbeeqpbq.supabase.co','CIVITAI_SEARCH_INDEX':'audit','CIVITAI_SEARCH_CLIENT_KEY':CANARIES['api']}):exec(code,namespace)
         self.assertEqual(namespace['SEARCH_CLIENT_KEY'],CANARIES['api'])
-        boundary=Boundary();self.search(boundary,namespace['SEARCH_URL'])
+        boundary=Boundary()
+        try:self.search(boundary,namespace['SEARCH_URL'])
+        except history.SearchBackendUnavailable:pass
+        self.assertFalse(boundary.events,'An unsafe initial origin must fail before any transport')
         self.safe(boundary,'configured_search_destination')
+    def test_unsafe_search_urls_and_indexes_are_rejected_before_transport(self):
+        values=['http://search-new.civitai.com/indexes/images_v6/search',
+                'https://search-new.civitai.com.evil.invalid/indexes/images_v6/search',
+                'https://user:password@search-new.civitai.com/indexes/images_v6/search',
+                'https://search-new.civitai.com:444/indexes/images_v6/search',
+                'https://search-new.civitai.com/indexes/images_v6/search?key=synthetic',
+                'https://search-new.civitai.com/indexes/images_v6/search#fragment',
+                'https://search-new.civitai.com/indexes/../search',
+                'https://search-new.civitai.com/indexes/a%2fb/search',
+                'https://search-new.civitai.com\\@isolated.supabase.co/indexes/a/search',
+                'https://search-new.civitai.com/indexes/a/search\r\nInjected: value']
+        for value in values:
+            boundary=Boundary()
+            with self.assertRaises(history.SearchBackendUnavailable):self.search(boundary,value)
+            self.assertFalse(boundary.events)
+            self.safe(boundary,'unsafe_search_url')
+    def test_authenticated_safe_redirects_preserve_required_request_fields(self):
+        body={'q':'','filter':'nsfwLevel = 1','limit':50,'offset':100,'sort':['createdAt:desc']}
+        for code in [301,302,303,307,308]:
+            boundary=Boundary();original=boundary.open
+            def redirect(handler,request):
+                if not boundary.events:
+                    boundary.events.append({'url':request.full_url,'method':request.get_method(),'headers':dict(request.header_items()),'body':request.data.decode()})
+                    return response(request.full_url,code=code,headers={'Location':'https://search-new.civitai.com/redirected'})
+                return original(handler,request)
+            boundary.open=redirect;self.search(boundary,body=body)
+            self.assertEqual(len(boundary.events),2)
+            for event in boundary.events:self.assertEqual({k.lower():v for k,v in event['headers'].items()}['authorization'],'Bearer '+CANARIES['api'])
+            self.assertEqual(json.loads(boundary.events[0]['body']),body)
+            self.assertEqual(boundary.events[1]['method'],'POST' if code in (307,308) else 'GET')
+            if code in (307,308):self.assertEqual(json.loads(boundary.events[1]['body']),body)
+            self.safe(boundary,'safe_search_redirect_'+str(code))
+    def test_search_retry_preserves_pagination_filters_and_credentials(self):
+        boundary=Boundary();original=boundary.open
+        def retry(handler,request):
+            if not boundary.events:
+                boundary.events.append({'url':request.full_url,'method':request.get_method(),'headers':dict(request.header_items()),'body':request.data.decode()})
+                return response(request.full_url,code=429,headers={'Retry-After':'0'})
+            return original(handler,request)
+        boundary.open=retry;self.intercept(boundary)
+        archive=history.HistoryArchive(self.root/'history');body={'filter':'nsfwLevel = 2','limit':24,'offset':48}
+        with patch.object(history,'SEARCH_CLIENT_KEY',CANARIES['api']),patch.object(archive,'_wait_api_lane',return_value=0),patch.object(history.time,'sleep'):
+            archive._search_request(body)
+        self.assertEqual(len(boundary.events),2)
+        self.assertTrue(all(json.loads(e['body'])==body for e in boundary.events));self.safe(boundary,'search_retry_paging_filters')
+    def test_search_redirect_loops_remain_bounded(self):
+        boundary=Boundary();self.intercept(boundary)
+        def loop(handler,request):
+            boundary.events.append({'url':request.full_url,'method':request.get_method(),'headers':dict(request.header_items()),'body':(request.data or b'').decode()})
+            return response(request.full_url,code=307,headers={'Location':'https://search-new.civitai.com/loop'})
+        boundary.open=loop
+        with self.assertRaises(urllib.error.HTTPError):self.search(boundary)
+        self.assertLessEqual(len(boundary.events),11);self.safe(boundary,'bounded_search_redirect_loop')
 
 def frozen(executable):
-    global oauth,cloud_identity,community,registry,history,diagnostics,MODE,SEARCH_CODE
+    global oauth,cloud_identity,community,registry,history,diagnostics,social,MODE,SEARCH_CODE
     from PyInstaller.archive.readers import CArchiveReader
     import discovery
     pyz=CArchiveReader(str(executable)).open_embedded_archive('PYZ.pyz');sys.frozen=True;sys._MEIPASS=str(executable.parent/'_internal')
@@ -200,10 +276,11 @@ def frozen(executable):
     wire=types.ModuleType('urllib.request');wire.__file__=str(executable.parent/'_internal/urllib/request.py');wire.__package__='urllib'
     sys.modules['urllib.request']=wire;urllib.request=wire;exec(pyz.extract('urllib.request'),wire.__dict__)
     SEARCH_CODE=pyz.extract('discovery.search')
-    for short in ['build_config','device_identity','diagnostics','community','cloud_identity','registry','oauth','search','history']:
+    for short in ['build_config','device_identity','diagnostics','community','cloud_identity','registry','oauth','social','search','history']:
         name='discovery.'+short;module=types.ModuleType(name);module.__file__=str(executable.parent/'_internal/discovery'/(short+'.py'));module.__package__='discovery'
         sys.modules[name]=module;setattr(discovery,short,module);exec(pyz.extract(name),module.__dict__)
     oauth,cloud_identity,community,registry,history,diagnostics=[sys.modules['discovery.'+n] for n in ['oauth','cloud_identity','community','registry','history','diagnostics']]
+    social=sys.modules['discovery.social']
     MODE='frozen';return hashlib.sha256(executable.read_bytes()).hexdigest()
 
 if __name__=='__main__':
