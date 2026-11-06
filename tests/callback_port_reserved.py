@@ -5,6 +5,8 @@ callback listener cannot, and Civitai's redirect lands on the app — which answ
 and strands the user mid-login with no way to tell what went wrong.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 import os
 from pathlib import Path

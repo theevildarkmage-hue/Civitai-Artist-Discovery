@@ -1,4 +1,5 @@
 """False successes are audited and interrupted captures resume across app restarts."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from datetime import datetime, timedelta, timezone
 import os
@@ -28,7 +29,7 @@ def hit(image_id, start=START):
             "user": {"username": "test"}, "stats": {}}
 
 
-with tempfile.TemporaryDirectory(prefix="capture-recovery-", ignore_cleanup_errors=True) as temporary:
+with tempfile.TemporaryDirectory(prefix="cad3-capture-recovery-", ignore_cleanup_errors=True) as temporary:
     root = Path(temporary)
     archive = HistoryArchive(root / "history")
     settings = AppSettings(root / "settings.json")

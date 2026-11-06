@@ -1,5 +1,7 @@
 """Red collection stays metadata-light and rating changes are coverage-aware."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile

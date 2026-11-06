@@ -1,50 +1,12 @@
-# Civitai Artist Discovery 2.2.1
+# Discovery 3.0.0 stable release preparation
 
-Released October 16, 2026.
-
-Maintenance update to the 2.x artist discovery app.
-
-## Smoother artwork browsing
-
-- Video cards choose better still previews and recover from interrupted or stalled
-  playback, with a Retry control when automatic recovery is exhausted.
-- Content rating buttons now toggle correctly. The compact Content selector and
-  full Filters panel stay synchronized and open beside their buttons.
-- Left and Right navigate the focused or hovered artist carousel. Inputs, native
-  video controls, and open dialogs keep their normal keyboard behavior.
-- Confirmed missing images are skipped in Daily Gallery, saved days, and Time Machine.
-  Other usable artwork stays in the carousel; exhausted cards disappear without
-  deleting archive records. Temporary failures retain a recovery option.
-- Filters include All, Images only, and Videos only. Combined media/model filters
-  use consistent artwork counts, representatives, reaction totals, and pagination.
-- Interrupted daily captures remain resumable, and saved-day calendar status updates
-  without a page reload. Transient tag and reaction checks stay retryable.
-
-## Reliability and security
-
-- Concurrent settings changes preserve each other's values.
-- The source restart helper closes only the verified instance for its checkout.
-- OAuth authorization headers are not forwarded on redirects; request Origin and
-  JSON content-type validation are stricter.
-- Update installation validates backup and receipt destinations before touching files.
-- Diagnostic errors redact common credential fields and authorization headers.
-- Pillow is updated to 12.3.0, with additional security and browser regression tests.
-- The Windows package uses a patched Python 3.14.8 runtime and OpenSSL 3.5.9.
-
-Windows packages remain unsigned. LAN sharing is optional and unauthenticated: anyone
-who can reach it can use the connected account's controls. Keep it off on untrusted
-networks and do not expose its port to the internet.
-
-Large-scale browsing performance and automated release builds remain future work.
-
-## Updating
-
-The intended asset is `CivitaiArtistDiscovery-2.2.1.zip`, accompanied by its SHA-256
-checksum file. Packaged users can use the normal verified in-app update once this
-release is published. The portable `data/` folder is preserved. Source users should
-install the updated requirements in their Python environment before starting the app.
-
----
+The Production-configured stable candidate is prepared locally and remains
+unpublished. See the [3.0 release notes](3.0-stable-release-notes.md),
+[changelog](3.0-changelog.md), [privacy notice](3.0-privacy.md), and
+[installation/upgrade instructions](3.0-stable-installation.md).
+Production stays disabled until the owner separately instructs "Publish" and
+the coordinated deployment/live smoke/publication gates pass. Stable 2.2.1
+remains the current published stable release. The notes below are historical.
 
 # Civitai Artist Discovery 2.2.0
 

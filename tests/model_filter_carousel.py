@@ -1,5 +1,7 @@
 """A generation-model filter applies to both card covers and their carousels."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -27,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-model-filter-", ignore_cleanup_
     archive._upsert_normalized([
         {"id": 8101, "postId": 8101, "username": "ModelArtist",
          "createdAt": f"{day}T14:00:00Z", "url": pixel, "width": 8, "height": 8,
-         "type": "image", "nsfwLevel": "None", "baseModel": "Pony",
+         "type": "video", "nsfwLevel": "None", "baseModel": "MiniMax H3YuE2-3B",
          "stats": {"reactionCount": 2}},
         {"id": 8102, "postId": 8102, "username": "ModelArtist",
          "createdAt": f"{day}T13:00:00Z", "url": pixel, "width": 8, "height": 8,
@@ -62,21 +64,22 @@ with tempfile.TemporaryDirectory(prefix="civitai-model-filter-", ignore_cleanup_
                     "oauthJob": {"state": "complete"}})))
             page.route("**/api/discovery/summary", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"hasData":true,"sync":{"running":false}}'))
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.wait_for_selector(".creator-card", timeout=15000)
 
             page.click("#filterToggle")
-            page.wait_for_selector('#modelMenu input[value="Pony"]')
+            page.wait_for_selector('#modelMenu input[value="YuE2-3B"]')
             with page.expect_response(lambda response: "/api/history/artists?" in response.url
-                                      and "model=Pony" in response.url):
-                page.check('#modelMenu input[value="Pony"]')
+                                      and "model=YuE2-3B" in response.url):
+                page.check('#modelMenu input[value="YuE2-3B"]')
             page.wait_for_selector(".creator-card")
 
             page.wait_for_selector('.image-position', timeout=10000)
-            page.wait_for_function("document.querySelector('.image-position').textContent === '1 of 1 images'")
+            page.wait_for_function("()=>document.querySelector('.image-position').textContent.startsWith('1 of 1 images')")
             assert page.is_hidden('.carousel-arrow.next'), 'single matching image should have no carousel arrows'
-            images = page.evaluate("""async () => (await fetch('/api/history/artist?date=' + galleryCalendarState().date + '&segment=all&username=ModelArtist&model=Pony')).json()""")
-            assert len(images['images']) == 1 and images['images'][0]['baseModel'] == 'Pony'
+            images = page.evaluate("""async () => (await fetch('/api/history/artist?date=' + galleryCalendarState().date + '&segment=all&username=ModelArtist&model=YuE2-3B')).json()""")
+            assert len(images['images']) == 1 and images['images'][0]['baseModel'] == 'MiniMax H3 | YuE2-3B'
             browser.close()
     finally:
         process.terminate()

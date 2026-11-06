@@ -1,4 +1,5 @@
 """Transient tag/reaction failures stay errors; only safe reads may be replayed."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -108,7 +109,7 @@ for failure in [
         assert send.call_count == 3
 
 with tempfile.TemporaryDirectory(
-    prefix="retry-correctness-", ignore_cleanup_errors=True
+    prefix="cad3-retry-correctness-", ignore_cleanup_errors=True
 ) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     from discovery.taste import TasteStore
@@ -133,7 +134,9 @@ with tempfile.TemporaryDirectory(
     import server
 
     handler = server.Handler.__new__(server.Handler)
+    handler.client_address=("127.0.0.1",12345)
     handler.path = "/api/reaction-status?imageId=1"
+    handler.headers = {}
     handler.host_allowed = lambda: True
     responses = []
     handler.json_response = lambda value, status=200: responses.append((status, value))

@@ -14,7 +14,7 @@ function availableCard(el) {
 document.addEventListener('keydown', event => {
   if (!['ArrowLeft', 'ArrowRight'].includes(event.key) || event.defaultPrevented ||
       event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || document.hidden) return;
-  if (document.querySelector('dialog[open],.filter-panel:not(.hidden),.content-panel:not(.hidden),.calendar-panel:not(.hidden),#preferencesMenu:not(.hidden),.card-action-menu:not(.hidden)')) return;
+  if (document.querySelector('dialog[open],.filter-panel:not(.hidden),.calendar-panel:not(.hidden),#preferencesMenu:not(.hidden),.card-action-menu:not(.hidden)')) return;
   const focus = document.activeElement;
   if (focus?.isContentEditable || focus?.closest(nativeArrowControl)) return;
   const focusedCard = focus?.closest('.creator-card');
@@ -37,7 +37,7 @@ document.addEventListener('click', event => {
 export function createCreatorCard(a, context) {
   const { api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore } = context;
   const selectedDate = context.date, selectedSegment = context.segment;
-  let images = [a.representative], index = 0, current = images[0], imagesLoaded = a.imageCount <= 1;
+  let images = context.images ? [...context.images] : [a.representative], index = 0, current = images[0], imagesLoaded = !!context.images || a.imageCount <= 1;
   // The listing can include a cached decision. Unknown artwork still passes through
   // checkImageTags before any preview URL is attached, including in Time Machine.
   if (current.tagState?.known) imageTagState.set(String(current.id), current.tagState);
@@ -86,6 +86,7 @@ export function createCreatorCard(a, context) {
   el.querySelector('.info-button').setAttribute('aria-label', 'Image details');
   el.querySelector('.more-menu').setAttribute('aria-label', `More actions for ${a.username}`);
   el.querySelector('.more-menu').setAttribute('aria-expanded', 'false');
+  el.querySelector('.more-menu').innerHTML = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>';
   const actionMenu = document.createElement('div');
   actionMenu.className = 'card-action-menu hidden';
   actionMenu.setAttribute('role', 'menu');
@@ -93,11 +94,12 @@ export function createCreatorCard(a, context) {
   el.append(actionMenu);
   const main = el.querySelector(".image-button img"), age = el.querySelector(".image-age"), reaction = el.querySelector(".reaction-slot"), position = el.querySelector(".image-position"), progress = el.querySelector(".image-progress"), open = el.querySelector(".open-image"), navStatus = el.querySelector(".card-nav-status"), navMessage = navStatus.lastElementChild, showVideo = attachCardVideo(el, main); wireAvatarFallback(el.querySelector("img.creator-avatar"), a.username);
   function renderReactions() {
+    context.onArtworkChange?.(current);
     reaction.innerHTML = reactionBar(current);
     wireReactions();
     if (navigating) reaction.querySelectorAll("[data-reaction]").forEach(button => { button.disabled = true; });
   }
-  function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!context.canWrite()) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
+  function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!context.canWrite()) return toast("Civitai did not grant reaction access."); button.disabled = true; const targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (context.notifyReactionState) context.notifyReactionState(imageId); else if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
   function cardDate() {
     const value = selectedDate || String(current.createdAt || '').slice(0, 10);
     const date = new Date(`${value}T12:00:00`);
@@ -255,6 +257,11 @@ export function createCreatorCard(a, context) {
   function resetActionMenu() {
     actionMenu.innerHTML = `<button type="button" data-action="collections" role="menuitem">♡ Add image to collection</button><button type="button" data-action="hide" class="danger-item" role="menuitem">⊘ Hide this artist</button>`;
     actionMenu.querySelector('[data-action="collections"]').onclick = event => { event.stopPropagation(); showCollections(); };
+    const recommend = document.createElement('button');
+    recommend.type = 'button'; recommend.setAttribute('role', 'menuitem');
+    recommend.textContent = 'Recommend to Community';
+    recommend.onclick = event => { event.stopPropagation(); closeActionMenu(); window.CivitaiCommunity?.recommend(current.id); };
+    actionMenu.prepend(recommend);
     actionMenu.querySelector('[data-action="hide"]').onclick = async event => {
       event.stopPropagation();
       if (context.canManageContentControls && !context.canManageContentControls()) {
@@ -275,6 +282,15 @@ export function createCreatorCard(a, context) {
   // fetches immediately — so a whole page of cards requested every preview at once and
   // saturated the connection. Artwork is attached only as a card nears the viewport.
   el.paintImages = paint;
+  el.appendImages = additions => {
+    const ids = new Set(images.map(image => String(image.id)));
+    for (const image of additions) if (!ids.has(String(image.id))) {
+      images.push(image); ids.add(String(image.id));
+      if (image.tagState?.known) imageTagState.set(String(image.id), image.tagState);
+    }
+    a.imageCount = images.length; imagesLoaded = true; paint();
+    hydrateReactionStates(images).catch(error => console.warn('Reaction history could not be loaded', error));
+  };
   el.prepareArtwork = prepareArtwork;
   el.removeHiddenImage = async imageId => {
     imageTagState.delete(String(imageId));
@@ -290,9 +306,16 @@ export function createCreatorCard(a, context) {
   el.dataset.seenDate = selectedDate;
   if (!a.seen) seenObserver.observe(el);
   const follow = el.querySelector(".follow-button");
+  el.addEventListener('creatorfollow', ({detail}) => {
+    a.following = detail.following; a.userId = detail.userId;
+    follow.classList.toggle('is-following', a.following);
+    follow.textContent = a.following ? '\u2713 Following' : '+ Follow';
+  });
   follow.onclick = () => toggleCreatorFollow(follow, a, { api, canWrite: context.canWrite, toast });
   el.addEventListener("reactionstate", () => { if (document.body.contains(el)) renderReactions(); });
-  el.applyCreatorMetadata = metadata => { a.avatarUrl = metadata.avatarUrl; a.following = !!metadata.following; a.userId = metadata.userId; const oldAvatar = el.querySelector(".creator-avatar"); if (a.avatarUrl && oldAvatar && oldAvatar.getAttribute("src") !== a.avatarUrl) { const image = document.createElement("img"); image.className = "creator-avatar"; image.src = a.avatarUrl; image.alt = ""; wireAvatarFallback(image, a.username); oldAvatar.replaceWith(image); } follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; applyCreatorFollowers(el, metadata); };
+  // Avatar and follower count only; Community reads follow state separately.
+  el.applyCreatorProfile = metadata => { a.avatarUrl = metadata.avatarUrl; const oldAvatar = el.querySelector(".creator-avatar"); if (a.avatarUrl && oldAvatar && oldAvatar.getAttribute("src") !== a.avatarUrl) { const image = document.createElement("img"); image.className = "creator-avatar"; image.src = a.avatarUrl; image.alt = ""; wireAvatarFallback(image, a.username); oldAvatar.replaceWith(image); } applyCreatorFollowers(el, metadata); };
+  el.applyCreatorMetadata = metadata => { a.following = !!metadata.following; a.userId = metadata.userId; el.applyCreatorProfile(metadata); follow.classList.toggle("is-following", a.following); follow.textContent = a.following ? "✓ Following" : "+ Follow"; };
   el.clearAccountMetadata = () => { a.following = false; follow.classList.remove("is-following"); follow.textContent = "+ Follow"; };
   el.setAttribute('aria-busy', 'true');
   paint(); return el;

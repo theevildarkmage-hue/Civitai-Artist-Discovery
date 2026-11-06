@@ -1,13 +1,21 @@
 """An overnight tab discovers synced dates without reloading or changing galleries."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from functools import partial
 from http.server import ThreadingHTTPServer
 import json
 import threading
+import sys
 
 from playwright.sync_api import sync_playwright
-from v2_visual_baseline import DAY, ROOT, StaticHandler, install_fixture
+import v2_visual_baseline as fixture
+from v2_visual_baseline import ROOT, StaticHandler, install_fixture
+sys.path.insert(0,str(ROOT))
+from discovery.history import LOCAL_ZONE
+
+# Pin the overnight date to the fall DST boundary rather than today's wall clock.
+DAY = fixture.DAY = '2026-10-31'
 
 
 server = ThreadingHTTPServer(('127.0.0.1', 0), partial(StaticHandler, directory=str(ROOT / 'static')))
@@ -19,7 +27,10 @@ try:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page(viewport={'width': 1366, 'height': 900}, timezone_id='America/Chicago')
-        page.clock.install(time=f'{next_day}T23:59:50-05:00')
+        before_midnight=datetime.combine(date.fromisoformat(next_day),time(23,59,50),
+                                         LOCAL_ZONE)
+        assert before_midnight.utcoffset()==timedelta(hours=-6)
+        page.clock.install(time=before_midnight.isoformat())
         install_fixture(page, base_url)
         phase = {'morning': False, 'all': False, 'down': False, 'requests': 0}
         errors, artist_requests = [], []

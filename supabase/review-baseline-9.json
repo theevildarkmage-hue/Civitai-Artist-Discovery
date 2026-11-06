@@ -1,0 +1,45 @@
+{
+  "projectRef": "aibelmhucizupzvvhdvf",
+  "schemaModel": "automatic",
+  "files": [
+    {
+      "path": "supabase/migrations/202610140001_community_v1.sql",
+      "sqlLfSha256": "60d45077374f98240491e427cd3558cf8ffda7c719c0f6e4687cf8cc66312696"
+    },
+    {
+      "path": "supabase/migrations/202610150001_submission_idempotency.sql",
+      "sqlLfSha256": "22e1b5d74d1033714e813a5efbdb5dbc0a72563ff90041dbb3186fbfa87c5cb8"
+    },
+    {
+      "path": "supabase/migrations/202610210001_community_rpc_guards.sql",
+      "sqlLfSha256": "ca1c0d0ed06a495718454bb73c29e96c1a2ade04e8c794c6745e07fd9f43c764"
+    },
+    {
+      "path": "supabase/migrations/202610220001_replay_identity_guards.sql",
+      "sqlLfSha256": "9bac2a9197ea32e4ab1e5949cb5cc4c481c98d7bb317615a7ae9fa416fb93188"
+    },
+    {
+      "path": "supabase/beta-migrations/202610230001_private_beta_security.sql",
+      "sqlLfSha256": "fb5a9959398fe31a59e622e0840d15ffe385423f1ad4bb6467759dbd684c9a66"
+    },
+    {
+      "path": "supabase/beta-migrations/202610230002_application_registry.sql",
+      "sqlLfSha256": "995045fe4f4b59a16343308177638b09341d530baf9c9289fd03fabb77327a38"
+    },
+    {
+      "path": "supabase/beta-migrations/202610230003_owner_administration.sql",
+      "sqlLfSha256": "23fc301e7cdb22abfa56c7533061699a53d4e824c54ded37388052ebf71960c1"
+    },
+    {
+      "path": "supabase/beta-migrations/202610230004_automatic_registry.sql",
+      "sqlLfSha256": "c8861707716c9c931f1205fa78012ba112bcd07709604426c852d195072ef0ce"
+    },
+    {
+      "path": "supabase/beta-migrations/202610240001_owner_quota_exception.sql",
+      "sqlLfSha256": "af941e9d0f7186a3ac73111485159b6d258cb3234ff5e18c0ba7c08e2eb1faaa"
+    }
+  ],
+  "approvedPublicCommit": "1f2b25307818da81aff9f3b74dd4455a357a5a54",
+  "functionVersion": 28,
+  "region": "us-west-2"
+}

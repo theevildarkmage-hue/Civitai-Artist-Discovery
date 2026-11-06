@@ -6,9 +6,12 @@ through -- and because those cards are then on screen, reading on from there dim
 they never actually passed.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -20,7 +23,9 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-PORT = 8907
+with socket.socket() as port_probe:
+    port_probe.bind(('127.0.0.1',0))
+    PORT = port_probe.getsockname()[1]
 
 
 def tm_card(name, image_id):
@@ -97,6 +102,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-view-scroll-", ignore_cleanup_e
                 content_type="application/json", body='{"images":{}}'))
             page.route("**/api/history/prepare**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"prepared":false}'))
+            page.add_init_script("sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             page.wait_for_selector(".creator-card", timeout=20000)
             page.mouse.wheel(0, 900)

@@ -2,6 +2,8 @@
 notice on their own, with a live link to where it is actually managed.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -17,7 +19,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 PORT = 8898
-SHOTS = ROOT / "reports" / "hidden-note"
+SHOTS = test_safety.REPORTS / "hidden-note"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="civitai-hidden-note-", ignore_cleanup_errors=True) as temporary:
@@ -71,6 +73,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-hidden-note-", ignore_cleanup_e
             page.route("**/api/discovery/hidden*", lambda route: route.fulfill(status=200,
                 content_type="application/json", body=hidden_state["body"]))
 
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             page.wait_for_selector(".creator-card", timeout=30000)
 

@@ -1,5 +1,7 @@
 """Reaction selections survive carousel navigation and remain image-specific."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -19,6 +21,7 @@ PORT = 8883
 with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanup_errors=True) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     from discovery.history import HistoryArchive
+    from discovery.taste import TasteStore
 
     history = HistoryArchive(Path(temporary) / "history")
     value = (datetime.now() - timedelta(days=1)).date().isoformat()
@@ -36,6 +39,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
     with history.connect() as db:
         db.execute("INSERT INTO days(day,complete,updated_at) VALUES(?,1,?)", (value, datetime.now().isoformat()))
     history.build_artist_index(value)
+    # Navigation checks cached tag metadata before admitting another image. This
+    # synthetic fixture has known empty tags; no live Civitai login is available.
+    taste = TasteStore(Path(temporary) / 'discovery')
+    with taste.connect() as db:
+        db.executemany('INSERT INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)',
+                       [(item['id'], datetime.now().isoformat()) for item in items])
 
     env = {**os.environ, "CIVITAI_HISTORY_DATA_DIR": temporary}
     process = subprocess.Popen([sys.executable, str(ROOT / "server.py"), "--port", str(PORT), "--no-browser"], cwd=ROOT, env=env)
@@ -61,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
                 from urllib.parse import parse_qs, urlparse
                 ids = [int(value) for value in parse_qs(urlparse(route.request.url).query).get("imageId", [])]
                 route.fulfill(status=200, content_type="application/json", body=json.dumps({"images": {
-                    str(image_id): {"reactions": sorted(selected.get(image_id, set()))} for image_id in ids}}))
+                    str(image_id): {"reactions": sorted(selected.get(image_id, set())), "stats": {}} for image_id in ids}}))
 
             def reaction(route):
                 request = json.loads(route.request.post_data)
@@ -79,12 +88,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-reaction-state-", ignore_cleanu
 
             page.route("**/api/reaction", reaction)
             page.route("**/api/reaction-status**", reaction_status)
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             card = page.locator(".creator-card")
             card.wait_for()
             first_id = card.get_attribute("data-id")
             assert first_id == "8102", "fixture must open on the middle image"
             card.locator('[data-reaction="Laugh"].selected').wait_for()
+            assert card.locator('.total-reactions').inner_text() == 'Total 10', 'missing live counts must preserve archive counts'
 
             like = card.locator('[data-reaction="Like"]')
             like.click(); page.wait_for_timeout(50)

@@ -6,6 +6,7 @@ import secrets
 import threading
 
 from .selection import media_type
+from .build_config import CHANNEL
 from .site import (CONTENT_RATINGS, DEFAULT_CONTENT_RATING, browsing_levels, content_rating,
                    levels_for_rating, rating_for_levels)
 
@@ -22,13 +23,25 @@ class AppSettings:
     def __init__(self, path: Path):
         self.path = path
         self.lock = threading.RLock()
+        # Capture before startup creates new caches/history. A missing preference
+        # file in a populated profile is an upgrade, not a first installation.
+        try:
+            self._existing_profile = any(item.is_file() for item in path.parent.rglob("*"))
+        except OSError:
+            self._existing_profile = True
 
     def load(self) -> dict:
         with self.lock:
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 raw = {}
+            if not isinstance(raw, dict):
+                # A structurally invalid preference file is handled like malformed JSON.
+                raw = {}
+            # Existing profiles must not opt into unattended collection through
+            # inferred defaults, including while passing through a bridge beta.
+            legacy_capture_defaults = self.path.exists() or self._existing_profile
             try:
                 rating = content_rating(raw.get("contentRating"))
             except ValueError:
@@ -40,15 +53,19 @@ class AppSettings:
             dim_seen_cards = raw.get("dimSeenCards", True)
             if not isinstance(dim_seen_cards, bool):
                 dim_seen_cards = True
+            # Videos in the details view play with sound unless the user turns it off.
+            detail_video_sound = raw.get("detailVideoSound", True)
+            if not isinstance(detail_video_sound, bool):
+                detail_video_sound = True
             check_for_updates = raw.get("checkForUpdates", True)
             if not isinstance(check_for_updates, bool):
                 check_for_updates = True
-            hide_high_volume = raw.get("hideHighVolumeCreators", False)
+            hide_high_volume = raw.get("hideHighVolumeCreators", True)
             if not isinstance(hide_high_volume, bool):
-                hide_high_volume = False
-            high_volume_threshold = raw.get("highVolumeThreshold", 100)
+                hide_high_volume = True
+            high_volume_threshold = raw.get("highVolumeThreshold", 50)
             if high_volume_threshold not in HIGH_VOLUME_THRESHOLDS:
-                high_volume_threshold = 100
+                high_volume_threshold = 50
             emerging_reaction_mode = raw.get("emergingReactionMode", "balanced")
             if emerging_reaction_mode not in EMERGING_REACTION_MODES:
                 emerging_reaction_mode = "balanced"
@@ -57,9 +74,9 @@ class AppSettings:
             emerging_reaction_limit = raw.get("emergingReactionLimit", 0)
             if emerging_reaction_limit not in EMERGING_REACTION_LIMITS:
                 emerging_reaction_limit = 0
-            auto_capture = raw.get("autoCapture", False)
+            auto_capture = raw.get("autoCapture", not legacy_capture_defaults)
             if not isinstance(auto_capture, bool):
-                auto_capture = False
+                auto_capture = not legacy_capture_defaults
             auto_capture_hours = raw.get("autoCaptureHours", 12)
             if auto_capture_hours not in AUTO_CAPTURE_INTERVALS:
                 auto_capture_hours = 12
@@ -82,19 +99,21 @@ class AppSettings:
             # you look at today permanently narrowed what tomorrow's archive could ever
             # contain. Collect widely once; filter what is shown as often as you like.
             #
-            # An install that predates this setting inherits the coverage it has been
-            # collecting at all along -- its viewing rating -- rather than the wider new
-            # default. Quietly starting to download explicit artwork onto someone's disk
-            # because they updated is not a decision an upgrade gets to make for them; a
-            # first run with no settings file at all has nothing to preserve and takes the
-            # wide default, so archives are complete from the start.
+            # Preserve explicit capture choices and fresh-install defaults. Existing
+            # profiles inherit their saved viewing ceiling; ambiguous files
+            # use the safe viewing default until the user chooses otherwise.
             capture_coverage = raw.get("captureCoverage")
             if capture_coverage not in CONTENT_RATINGS:
-                capture_coverage = rating if raw else "X"
+                capture_coverage = "X"
+                if legacy_capture_defaults:
+                    capture_coverage = rating_for_levels(levels)
+                    if raw.get("contentRating") is not None:
+                        capture_coverage = min((rating, capture_coverage), key=CONTENT_RATINGS.index)
             return {"mediaType": raw.get("mediaType") if raw.get("mediaType") in ("all", "image", "video") else "all",
                     "contentRating": rating_for_levels(levels),
                     "browsingLevels": list(levels),
                     "dimSeenCards": dim_seen_cards,
+                    "detailVideoSound": detail_video_sound,
                     "checkForUpdates": check_for_updates,
                     "hideHighVolumeCreators": hide_high_volume,
                     "highVolumeThreshold": high_volume_threshold,
@@ -107,6 +126,24 @@ class AppSettings:
                     "allowLanAccess": allow_lan_access,
                     "captureCoverage": capture_coverage}
 
+    def transactional_update(self, *, effect=None, **changes) -> dict:
+        """Restore the exact prior preference file if a dependent update fails."""
+        with self.lock:
+            previous = self.path.read_bytes() if self.path.exists() else None
+            try:
+                value = self._update(**changes)
+                if effect is not None:
+                    effect(value)
+                return value
+            except Exception:
+                if previous is None:
+                    self.path.unlink(missing_ok=True)
+                else:
+                    temporary = self.path.with_suffix(".tmp")
+                    temporary.write_bytes(previous)
+                    temporary.replace(self.path)
+                raise
+
     def update(self, **changes) -> dict:
         # The entire read/modify/write must be one transaction. Locking just the
         # final replace lets concurrent filter/settings requests lose each other.
@@ -116,6 +153,7 @@ class AppSettings:
     def _update(self, *, media_type_value: object = None, browsing_levels_value: object = None,
                content_rating_value: object = None,
                dim_seen_cards_value: object = None,
+               detail_video_sound_value: object = None,
                check_for_updates_value: object = None,
                hide_high_volume_creators_value: object = None,
                high_volume_threshold_value: object = None,
@@ -137,6 +175,10 @@ class AppSettings:
                           else dim_seen_cards_value)
         if not isinstance(dim_seen_cards, bool):
             raise ValueError("dimSeenCards must be true or false")
+        detail_video_sound = (current["detailVideoSound"] if detail_video_sound_value is None
+                              else detail_video_sound_value)
+        if not isinstance(detail_video_sound, bool):
+            raise ValueError("detailVideoSound must be true or false")
         check_for_updates = (current["checkForUpdates"] if check_for_updates_value is None
                              else check_for_updates_value)
         if not isinstance(check_for_updates, bool):
@@ -187,6 +229,7 @@ class AppSettings:
                  "contentRating": rating_for_levels(levels),
                  "browsingLevels": list(levels),
                  "dimSeenCards": dim_seen_cards,
+                 "detailVideoSound": detail_video_sound,
                  "checkForUpdates": check_for_updates,
                  "hideHighVolumeCreators": hide_high_volume,
                  "highVolumeThreshold": high_volume_threshold,
@@ -200,6 +243,21 @@ class AppSettings:
                  "captureCoverage": capture_coverage}
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            # Preserve empty/malformed source bytes before an explicit UI change
+            # replaces them. Never silently overwrite an unreadable preference file.
+            if self.path.exists():
+                original = self.path.read_bytes()
+                try:
+                    parsed = json.loads(original.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    parsed = None
+                if not isinstance(parsed, dict) or not parsed:
+                    backup = self.path.with_name(self.path.name + ".invalid.bak")
+                    if backup.exists() and backup.read_bytes() != original:
+                        backup = self.path.with_name(self.path.name + ".invalid-" + secrets.token_hex(8) + ".bak")
+                    if not backup.exists():
+                        with backup.open("xb") as retained:
+                            retained.write(original)
             temporary = self.path.with_suffix(".tmp")
             temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
             temporary.replace(self.path)

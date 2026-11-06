@@ -1,5 +1,7 @@
 """A stale profile refreshes quietly, while a recent one does not."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import json
 import os
@@ -58,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-profile-auto-refresh-", ignore_
                 recent: profileRefreshDue({hasData: true, lastSyncAt: new Date(Date.now() - 23*60*60*1000).toISOString()}),
                 empty: profileRefreshDue({hasData: false, lastSyncAt: null})
             })""")
-            assert due == {"missing": True, "stale": True, "recent": False, "empty": False}, due
+            assert due == {"missing": True, "stale": True, "recent": False, "empty": True}, due
 
             page.evaluate("""() => {
                 oauthConnected = true;
@@ -86,4 +88,4 @@ with tempfile.TemporaryDirectory(prefix="civitai-profile-auto-refresh-", ignore_
         process.wait(timeout=10)
 
 print({"twentyFourHourCheck": True, "staleRefreshStarts": True,
-       "recentProfileSkipped": True, "emptyProfileLeftForOnboarding": True})
+       "recentProfileSkipped": True, "emptyProfileRefreshesWithoutBlocking": True})

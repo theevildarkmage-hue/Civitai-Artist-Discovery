@@ -1,5 +1,7 @@
 """Daily blocks publish only after every browsing-level feed crosses the boundary."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import tempfile

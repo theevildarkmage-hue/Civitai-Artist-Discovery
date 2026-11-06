@@ -1,4 +1,5 @@
 """Run the real restart script with mocked OS operations; never stop a live app."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ if os.name == 'nt':
 $ErrorActionPreference = 'Stop'
 . (Join-Path $env:RESTART_REPOSITORY 'scripts\restart.ps1')
 $root = $env:RESTART_FIXTURE
-$data = Join-Path $root 'data'
+$data = Join-Path $root 'data-dev-3.0'
 New-Item -ItemType Directory -Path $data | Out-Null
 $script:instanceFile = Join-Path $data 'running-instance.json'
 $script:process = [pscustomobject]@{ExecutablePath='C:\Python314\python.exe';CommandLine=('python "' + (Join-Path $root 'server.py') + '" --port 8906')}
@@ -49,7 +50,7 @@ $script:owner=123
 Restart-DiscoverySource -Root $root -NoBrowser
 if ($script:closed -ne 1 -or $script:waited -ne 1 -or $script:started -ne 1) { throw 'Wrong process scope' }
 '''
-    with tempfile.TemporaryDirectory(prefix='restart-scope-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='cad3-restart-scope-') as temporary:
         script = Path(temporary) / 'test.ps1'
         script.write_text(harness, encoding='utf-8')
         env = {**os.environ, 'RESTART_REPOSITORY': str(ROOT), 'RESTART_FIXTURE': temporary}

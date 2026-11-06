@@ -1,4 +1,5 @@
 """Listing hints are bounded, rating compatible, ephemeral, and never rewrite archives."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from pathlib import Path
 import sys
@@ -44,7 +45,7 @@ for opaque in [THUMB + "?signature=private", "https://image.civitai.com/opaque/p
 hints.capture({"items": [{"id": 4, "type": "image", "url": CDN, "thumbnail": {"url": THUMB}}]}, 1)
 assert hints.get(4, CDN, [1]) is None
 
-with tempfile.TemporaryDirectory(prefix="video-hints-") as temporary:
+with tempfile.TemporaryDirectory(prefix="cad3-video-hints-") as temporary:
     archive = HistoryArchive(Path(temporary))
     archive._upsert_normalized([{"id": 1, "username": "Artist", "createdAt": "2026-10-15T12:00:00Z",
                                 "url": CDN, "type": "video", "browsingLevel": 1}])

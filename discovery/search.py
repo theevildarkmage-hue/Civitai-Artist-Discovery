@@ -6,11 +6,15 @@ from .models import normalize_base_model
 
 from datetime import datetime
 import os
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
 # These values are intentionally public: Civitai ships the same host and search-only
-# client key to every browser that opens /search/images. Environment overrides give a
-# packaged hotfix path if Civitai rotates the browser key or index before an app update.
+# client key to every browser that opens /search/images. Key/index overrides support
+# rotation, but an override cannot move credentials off the reviewed search origin.
 SEARCH_HOST = os.environ.get("CIVITAI_SEARCH_HOST", "https://search-new.civitai.com").rstrip("/")
 SEARCH_CLIENT_KEY = os.environ.get(
     "CIVITAI_SEARCH_CLIENT_KEY",
@@ -18,6 +22,41 @@ SEARCH_CLIENT_KEY = os.environ.get(
 )
 SEARCH_INDEX = os.environ.get("CIVITAI_SEARCH_INDEX", "images_v6")
 SEARCH_URL = f"{SEARCH_HOST}/indexes/{SEARCH_INDEX}/search"
+APPROVED_SEARCH_HOSTS = frozenset({'search-new.civitai.com'})
+
+
+def validate_search_url(value: str, *, initial: bool = False) -> tuple[str, str, int]:
+    """Validate before attaching a key and again before following a redirect."""
+    try:
+        if (not isinstance(value, str) or len(value) > 4096
+                or any(c.isspace() or ord(c) < 32 for c in value) or '\\' in value):
+            raise ValueError()
+        parsed = urllib.parse.urlsplit(value)
+        if (parsed.scheme != 'https' or parsed.hostname not in APPROVED_SEARCH_HOSTS
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port not in (None, 443) or parsed.fragment
+                or (initial and (parsed.query or not re.fullmatch(r'/indexes/[A-Za-z0-9_-]{1,128}/search', parsed.path)))):
+            raise ValueError()
+        return ('https', parsed.hostname, 443)
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError('Search requires an approved Civitai HTTPS destination.') from None
+
+
+class SearchRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            if validate_search_url(req.full_url) != validate_search_url(newurl):
+                raise ValueError()
+        except ValueError:
+            raise urllib.error.HTTPError(req.full_url, code, 'Unsafe search redirect rejected', headers, fp) from None
+        if code in (307, 308) and req.get_method() == 'POST':
+            redirected = urllib.request.Request(newurl, data=req.data, headers=dict(req.headers),
+                origin_req_host=req.origin_req_host, unverifiable=True, method='POST')
+        else:
+            redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and req.get_header('Authorization'):
+            redirected.add_unredirected_header('Authorization', req.get_header('Authorization'))
+        return redirected
 IMAGE_LOCATION = os.environ.get(
     "CIVITAI_IMAGE_LOCATION",
     "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA",

@@ -1,5 +1,7 @@
 """Reactions refresh in 100-image batches, and a detail lookup names its browsing level."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path

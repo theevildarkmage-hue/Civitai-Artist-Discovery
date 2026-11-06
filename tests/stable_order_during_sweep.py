@@ -14,6 +14,8 @@ a page, then have their tags "arrive" — as the sweep would — and fetch the n
 and assert the two pages together contain no repeats.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

@@ -5,6 +5,8 @@ IF NOT EXISTS leaves those columns in place, so any positional INSERT silently
 works on a fresh database and fails on every real user's archive.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import os
 from pathlib import Path

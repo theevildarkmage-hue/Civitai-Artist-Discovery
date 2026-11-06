@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict, deque
+from collections import defaultdict, deque, OrderedDict
 from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import SimpleCookie
 import json
 import math
 import mimetypes
@@ -23,9 +24,12 @@ import urllib.parse
 import urllib.error
 import webbrowser
 import traceback
+from discovery.community import (build_community, CommunityError, ContentProfile)
+from discovery.cache import ThumbnailCache
 
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
+from discovery.archive_calendar import build_request as archive_build_request
 from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
 from discovery.history import HistoryArchive, RetryBudgetExhausted, parse_day, previous_local_day
@@ -36,7 +40,7 @@ from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
 from discovery.paths import application_root, data_root
 from discovery.settings import AppSettings
 from discovery.site import SITE_ORIGIN, profile_url
-from discovery.diagnostics import append_log, log_browser_events
+from discovery.diagnostics import append_log, log_browser_events, community_failure
 from discovery.social import (CivitaiHTTPError, SocialClient, auth_status,
                               following_ids, reaction_names)
 from discovery.taste import (EMERGING_FOLLOWERS, GALLERY_HEART_MIN, TasteStore,
@@ -47,10 +51,17 @@ from discovery.updater import UpdateManager, apply_staged_update
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
-APP_NAME = "Civitai Artist Discovery"
-APP_VERSION = "2.2.1"
+APP_NAME = "Civitai Discovery 3.0 Beta"
+APP_VERSION = "3.0.0-beta.14"
+from discovery.build_config import APP_NAME, VERSION as BUILD_VERSION, CHANNEL, ENVIRONMENT
+APP_VERSION = BUILD_VERSION
+from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
+DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
 DATA_ROOT = data_root()
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
+from discovery.registry import RegistryClient
+REGISTRY = RegistryClient(APP_VERSION)
+PERSONAL_THUMBNAILS=ThumbnailCache(DATA_ROOT/'cache'/'artwork-thumbnails',allow_downscale=True)
 CACHE = CandidateCache(DATA_ROOT / "cache" / "candidates.json")
 FOLLOW_CACHE = DATA_ROOT / "following.json"
 CREATOR_PROFILES = DATA_ROOT / "cache" / "creator_profiles.json"
@@ -65,7 +76,7 @@ CAPTURE = AutoCapture(HISTORY, SETTINGS)
 # Shares HISTORY's paced request lane, so priming queues behind a day build rather
 # than racing it for the same API budget.
 TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
-WRITE_LOCK = threading.Lock()
+WRITE_LOCK = threading.RLock()
 ARTWORK_AVAILABILITY = ArtworkAvailability()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
@@ -93,6 +104,82 @@ REACTIONS = {"Like": "likeCount", "Heart": "heartCount", "Laugh": "laughCount", 
 INSTANCE_FILE = DATA_ROOT / "running-instance.json"
 INSTANCE_MUTEX = None
 RUNNING_PORT = None
+COMMUNITY = None
+COMMUNITY_LOCK = threading.Lock()
+COMMUNITY_VIEW_SESSION = os.urandom(16).hex()  # Cache generation, never authentication material.
+
+
+def community_content_profile(token):
+    """Both galleries use the same imported account controls and settings."""
+    isolated=os.environ.get('CAD_COMMUNITY_MODE')=='fixture' and os.environ.get('CAD_COMMUNITY_TESTING')=='1'
+    if not isolated and not TASTE.ensure_current_account():raise CommunityError('AUTH_REQUIRED',401)
+    with TASTE.connect() as db:imported=TASTE._state(db,'hidden_imported_at')
+    if not imported and not isolated:TASTE.import_hidden_preferences()
+    with TASTE.connect() as db:
+        return ContentProfile(levels=frozenset(SETTINGS.load()['browsingLevels']),
+            creators=frozenset(r[0] for r in db.execute('select creator_id from hidden_creators')),
+            usernames=frozenset(r[0] for r in db.execute('select username_key from hidden_creators where username_key is not null')),
+            images=frozenset(r[0] for r in db.execute('select image_id from hidden_images')),
+            tags=frozenset(r[0] for r in db.execute('select tag_name from hidden_tags')),
+            tag_ids=frozenset(r[0] for r in db.execute('select tag_id from hidden_tags')),
+            blocked_creators=frozenset(r[0] for r in db.execute("select creator_id from hidden_creators where reason='blocked'")),
+            blocked_usernames=frozenset(r[0] for r in db.execute("select username_key from hidden_creators where reason='blocked' and username_key is not null")))
+
+def shared_cached_artwork(image):
+    """Compatibility for local actions; source is the same Gallery image cache."""
+    from discovery.community import Artwork
+    store=image_store(image)
+    if not store:raise CommunityError('INVALID_ARTWORK',404)
+    value=HISTORY.gallery_images([image])[0] if store is HISTORY else store.detail(image)
+    tags=TASTE.image_tags(image)
+    if value['browsingLevel'] not in SETTINGS.load()['browsingLevels']:raise CommunityError('CONTENT_FILTERED',403)
+    hidden,images=hidden_preferences()
+    creator=COMMUNITY.listed_creator(image) if COMMUNITY else None
+    profile=community_content_profile(None)
+    if creator in profile.creators|profile.blocked_creators or value['username'].casefold() in hidden or image in images or (TASTE.hidden_tag_names() and (not tags['known'] or any(t['hidden'] for t in tags['tags']))):raise CommunityError('CONTENT_FILTERED',403)
+    return Artwork(image,creator or 0,value['username'],value['browsingLevel'],value['url'],tuple(t['name'] for t in tags['tags']),tags_known=tags['known'],base_model=value['baseModel'],media_type=value['type'])
+
+
+def community_client():
+    global COMMUNITY
+    with COMMUNITY_LOCK:
+        if COMMUNITY is None:
+            from discovery.oauth import get_access_token
+            COMMUNITY = build_community(DATA_ROOT, community_content_profile, get_access_token)
+            COMMUNITY.gallery_resolver=shared_cached_artwork
+            if COMMUNITY.mode=='supabase':COMMUNITY.thumbnails=PERSONAL_THUMBNAILS
+    return COMMUNITY
+
+
+def community_detail_metadata(client, artwork):
+    """Reuse local collector metadata, otherwise cache one on-demand detail locally."""
+    image_id = int(artwork['id'])
+    store = image_store(image_id)
+    fields = ('prompt', 'negativePrompt', 'resources', 'baseModel', 'width', 'height', 'createdAt', 'stats')
+    if store:
+        detail = store.detail(image_id)
+    else:
+        from discovery.community_security import test_identity
+        if test_identity(DATA_ROOT):
+            return {}  # No outbound request or fabricated generation metadata in fixtures.
+        key = f'{client.mode}:detail:{image_id}'
+        def load():
+            from discovery.civitai import normalize
+            payload, _ = HISTORY._request({'imageId':image_id, 'withMeta':'true',
+                                           'browsingLevel':artwork['browsingLevel']},
+                                          minimum_interval=1.5, request_attempts=3, request_timeout=20)
+            raw = next((row for row in payload.get('items', []) if row.get('id') == image_id), None)
+            if not raw or str(raw.get('username', '')).casefold() != artwork['username'].casefold():
+                raise CommunityError('INVALID_ARTWORK', 404)
+            value = normalize(raw)
+            return {name:value[name] for name in fields if name in value}
+        entry = client.store.get(key)
+        if entry:
+            if entry['stale']: client.store.refresh(key, load, background=True)
+            detail = entry['value']
+        else:
+            detail = load(); client.store.put(key, detail)
+    return {name:detail[name] for name in fields if name in detail}
 # How long a restarting copy waits for the outgoing one to release the single-instance
 # mutex and its port. Both are held until that process finishes its shutdown, and a
 # replacement that gave up immediately would leave the reader with no app running.
@@ -107,23 +194,23 @@ PROFILE_CACHE: dict = {"key": None, "value": {}}
 
 
 def creator_profiles() -> dict:
-    try:
-        info = CREATOR_PROFILES.stat()
-    except OSError:
-        return {}
-    key = (info.st_mtime_ns, info.st_size)
     with WRITE_LOCK:
-        if PROFILE_CACHE["key"] == key:
-            return PROFILE_CACHE["value"]
-    try:
-        value = json.loads(CREATOR_PROFILES.read_text(encoding="utf-8"))
-        profiles = value.get("byUsername", {}) if isinstance(value, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
-    with WRITE_LOCK:
-        PROFILE_CACHE["key"], PROFILE_CACHE["value"] = key, profiles
-    return profiles
-
+        try:
+            info = CREATOR_PROFILES.stat()
+        except OSError:
+            return {}
+        key = (info.st_mtime_ns, info.st_size)
+        with WRITE_LOCK:
+            if PROFILE_CACHE["key"] == key:
+                return PROFILE_CACHE["value"]
+        try:
+            value = json.loads(CREATOR_PROFILES.read_text(encoding="utf-8"))
+            profiles = value.get("byUsername", {}) if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+        with WRITE_LOCK:
+            PROFILE_CACHE["key"], PROFILE_CACHE["value"] = key, profiles
+        return profiles
 
 def profile_avatar(profile: dict | None) -> str | None:
     picture = (profile or {}).get("profilePicture") or {}
@@ -239,25 +326,40 @@ def attach_preview_tags(artists: list[dict]) -> list[dict]:
     ids = [(artist.get("representative") or {}).get("id") for artist in artists]
     tags = TASTE.image_tags_many(value for value in ids if value is not None)
     for artist, image_id in zip(artists, ids):
+        if artist.get('representative'):artist['representative']=personal_preview(artist['representative'])
         state = tags.get(image_id)
         if state and state["known"]:
             artist["representative"] = {**artist["representative"], "tagState": state}
     return artists
 
 
+def personal_preview(image):
+    # Preserve anonymous/mock fixture transports; the authenticated desktop uses
+    # a bounded local cache for actual Civitai image previews, including carousels.
+    if (image.get('type')=='image' and urllib.parse.urlsplit(image.get('url','')).hostname=='image.civitai.com'
+            and connected_user_id()):
+        return {**image,'url':f'/api/history/thumbnail/{image["id"]}',
+            'thumbnailUrl':f'/api/history/thumbnail/{image["id"]}',
+            # CDN hints allow bounded probes if a cached preview fails. Display still
+            # requires the existing rating, account and complete-tag checks.
+            'availabilitySources':list(dict.fromkeys(filter(None,(image.get('thumbnailUrl'),image['url']))))}
+    return image
+
+
 def followed_usernames(user_id: int | None = None) -> set[str]:
     expected_user_id = user_id if user_id is not None else connected_user_id()
     if expected_user_id is None:
         return set()
-    if FOLLOW_CACHE.exists():
-        try:
-            data = json.loads(FOLLOW_CACHE.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or int(data.get("userId", -1)) != expected_user_id:
+    with WRITE_LOCK:
+        if FOLLOW_CACHE.exists():
+            try:
+                data = json.loads(FOLLOW_CACHE.read_text(encoding="utf-8"))
+                if not isinstance(data, dict) or int(data.get("userId", -1)) != expected_user_id:
+                    return set()
+                return {str(name).casefold() for name in data.get("usernames", [])} if isinstance(data, dict) else set()
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 return set()
-            return {str(name).casefold() for name in data.get("usernames", [])} if isinstance(data, dict) else set()
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            return set()
-    return set()
+        return set()
 
 
 # The account's own Civitai Content Controls. Read from the local mirror on every
@@ -288,12 +390,7 @@ def visible_creator_keys(key: str, hidden_images: set) -> set:
 
 def hidden_preferences() -> tuple[set, set]:
     """(creator username keys, image ids) the account has chosen not to see."""
-    try:
-        return TASTE.hidden_creator_keys(), TASTE.hidden_image_ids()
-    except Exception:
-        # Content Controls are a filter, not the feature. If the mirror cannot be read,
-        # show the gallery rather than failing it.
-        return set(), set()
+    return TASTE.hidden_creator_keys(), TASTE.hidden_image_ids()
 
 
 GALLERY_VIEWS = ("discovery", "followed", "new", "emerging", "foryou")
@@ -687,7 +784,8 @@ def day_view_order(key: str, view: str, pinned_username: str | None,
 # immediately, since decorate_history_artist reads that fresh on every request; only
 # their *position* waits for a new session, matching "dims now, moves to the bottom on
 # refresh" rather than shifting the list while they are actively scrolling it.
-ORDER_CACHE: dict = {}
+ORDER_CACHE_LIMIT = 64
+ORDER_CACHE: OrderedDict = OrderedDict()
 
 
 def _seen_last(key: str, order: list[str] | None, total: int | None,
@@ -726,12 +824,16 @@ def cached_day_view_order(key: str, view: str, pinned_username: str | None, sign
     with WRITE_LOCK:
         cached = ORDER_CACHE.get(cache_key)
         if cached is not None and cached[0] == session_token:
+            ORDER_CACHE.move_to_end(cache_key)
             return cached[1], cached[2]
     order, total = day_view_order(key, view, pinned_username, signals, hidden_images,
                                   hidden_creators, eligible_creators, seen, archive)
     order, total = _finish_order(key, view, order, total, hidden_images, seen, archive)
     with WRITE_LOCK:
         ORDER_CACHE[cache_key] = (session_token, order, total)
+        ORDER_CACHE.move_to_end(cache_key)
+        while len(ORDER_CACHE) > ORDER_CACHE_LIMIT:
+            ORDER_CACHE.popitem(last=False)
     return order, total
 
 
@@ -743,17 +845,37 @@ def _follower_fields(profile: object) -> dict:
     return {"followers": count, "emerging": count is not None and count < EMERGING_FOLLOWERS}
 
 
-def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
-    """Resolve visible creators and cache their avatars and follow state."""
+FOLLOW_STATUS_LOCK = threading.Lock()
+FOLLOW_STATUS_CACHE = {}
+
+
+def creator_follow_status(user_ids: list[int]) -> dict:
+    """One account-scoped following-list read; no per-creator profile lookups."""
+    account = connected_user_id()
+    if account is None: raise CommunityError('AUTH_REQUIRED', 401)
+    with FOLLOW_STATUS_LOCK:
+        if FOLLOW_STATUS_CACHE.get('account') != account or time.monotonic() >= FOLLOW_STATUS_CACHE.get('expires', 0):
+            payload = SocialClient().query('user.getFollowingUsers', {})
+            if not isinstance(payload, list) and not (isinstance(payload, dict) and
+                    any(isinstance(payload.get(key), list) for key in ('items', 'users', 'following'))):
+                raise RuntimeError('Civitai follow status is unavailable')
+            if connected_user_id() != account: raise CommunityError('AUTH_EXPIRED', 401)
+            FOLLOW_STATUS_CACHE.update(account=account, expires=time.monotonic()+60, ids=following_ids(payload))
+        return {'accountId': account, 'following': {str(user): user in FOLLOW_STATUS_CACHE['ids'] for user in user_ids}}
+
+
+def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -> dict[str, dict]:
+    """Resolve visible creators and cache their avatars and, optionally, follow state."""
     clean = list(dict.fromkeys(name.strip() for name in usernames if name.strip()))[:100]
     # Copied because this adds newly resolved creators before writing the file back, and
     # creator_profiles() hands out the shared cached parse.
     profiles = dict(creator_profiles())
     missing = [name for name in clean if name.casefold() not in profiles]
     client = SocialClient()
-    identity = auth_status()
-    account_user_id = int(identity["id"])
-    followed_ids = following_ids(client.query("user.getFollowingUsers", {}))
+    if include_follow:
+        identity = auth_status()
+        account_user_id = int(identity["id"])
+        followed_ids = following_ids(client.query("user.getFollowingUsers", {}))
 
     if missing:
         # A deleted or renamed creator is an ordinary condition in a saved daily
@@ -769,17 +891,18 @@ def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
             temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "byUsername": profiles}, ensure_ascii=False, indent=2), encoding="utf-8")
             temporary.replace(CREATOR_PROFILES)
 
-    followed_names = {
-        str(profile.get("username") or name)
-        for name, profile in profiles.items()
-        if profile.get("id") is not None and int(profile["id"]) in followed_ids
-    }
-    with WRITE_LOCK:
-        temporary = FOLLOW_CACHE.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "userId": account_user_id,
-            "username": identity.get("username"), "count": len(followed_names),
-            "usernames": sorted(followed_names, key=str.casefold)}, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(FOLLOW_CACHE)
+    if include_follow:
+        followed_names = {
+            str(profile.get("username") or name)
+            for name, profile in profiles.items()
+            if profile.get("id") is not None and int(profile["id"]) in followed_ids
+        }
+        with WRITE_LOCK:
+            temporary = FOLLOW_CACHE.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "userId": account_user_id,
+                "username": identity.get("username"), "count": len(followed_names),
+                "usernames": sorted(followed_names, key=str.casefold)}, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(FOLLOW_CACHE)
 
     follower_counts = TASTE.follower_counts(clean)
 
@@ -791,42 +914,50 @@ def enrich_creator_metadata(usernames: list[str]) -> dict[str, dict]:
         if fields["followers"] is None and cached_count is not None:
             fields = {"followers": cached_count,
                       "emerging": cached_count < EMERGING_FOLLOWERS}
-        return {
+        result = {
             "username": name,
             "avatarUrl": profile_avatar(profile),
-            "following": bool(
-                (profile or {}).get("id") is not None
-                and int(profile["id"]) in followed_ids
-            ),
             "userId": (profile or {}).get("id"),
             # The all-day sweep stores counts in SQLite. The profile cache carries
             # avatars and ids, but is populated only for cards the user has loaded.
             **fields,
         }
+        if include_follow:
+            result["following"] = bool(
+                (profile or {}).get("id") is not None
+                and int(profile["id"]) in followed_ids
+            )
+        return result
     return {name.casefold(): result_for(name) for name in clean}
 
 
-def start_oauth_login() -> None:
+def start_oauth_login(*,community_only=False) -> None:
     with OAUTH_LOCK:
         if OAUTH_JOB["state"] == "loading": return
         OAUTH_JOB.update({"state": "loading", "error": None})
     def run():
         try:
-            oauth_login()
+            if community_only:
+                from discovery.oauth import reconnect_community
+                identity=reconnect_community()
+            else:identity=oauth_login()
+            if not community_only and SETTINGS.load()["autoCapture"]:CAPTURE.start()
+            REGISTRY.reauthenticated(identity)
             # Mirror the account's Content Controls straight away, so the first gallery
             # after signing in already respects them. A failure here must not fail the
             # sign-in: the filter is a refinement, not the point of connecting.
             try:
-                TASTE.import_hidden_preferences()
+                if not community_only:TASTE.import_hidden_preferences()
             except Exception as error:
                 log_internal_error("Content controls import", error)
             with OAUTH_LOCK: OAUTH_JOB["state"] = "complete"
         except Exception as error:
-            log_internal_error("OAuth authorization", error)
+            community_failure(DATA_ROOT,'reconnect' if community_only else 'exchange',error)
             # Most failures stay generic on purpose, but setup problems are the user's to
             # fix and unfixable by retrying, so those say what is actually wrong.
-            message = str(error) if isinstance(error, OAuthSetupError) else \
-                "Civitai authorization failed. Please try again."
+            # Never expose arbitrary provider exception text through the job.
+            message = ("Community reconnect did not complete. Daily remains connected. Check your computer clock, use the same account and retry." if community_only else
+                       "Civitai authorization failed. Check the callback port and try again.")
             with OAUTH_LOCK: OAUTH_JOB.update({"state": "error", "error": message})
     threading.Thread(target=run, daemon=True, name="civitai-oauth").start()
 
@@ -1001,10 +1132,9 @@ def is_own_app_url(url: str) -> bool:
 
 
 def save_instance_url(url: str) -> None:
+    from discovery.atomic_file import write_bytes
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
-    temporary = INSTANCE_FILE.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"url": url, "pid": os.getpid()}), encoding="utf-8")
-    os.replace(temporary, INSTANCE_FILE)
+    write_bytes(INSTANCE_FILE, json.dumps({"url": url, "pid": os.getpid()}).encode("utf-8"))
 
 
 def clear_instance_url(url: str) -> None:
@@ -1029,6 +1159,7 @@ def bind_http_server(host: str, port: int, replacing: bool) -> ThreadingHTTPServ
 
 def request_app_shutdown(server: ThreadingHTTPServer) -> None:
     """Stop background work and ask the local HTTP server to exit."""
+    CAPTURE.stop()
     HISTORY.cancel()
     TASTE.stop_sync()
     for event in SWEEP_CANCEL.values():
@@ -1071,12 +1202,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.json_response({"error": "The app encountered an internal error. Details were saved to the local error log."}, 500)
 
-    def json_response(self, value: object, status: int = 200) -> None:
+    def json_response(self, value: object, status: int = 200, headers=None) -> None:
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in (headers or {}).items(): self.send_header(key, value)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -1087,44 +1219,150 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self) -> None:  # noqa: N802
-        if not self.host_allowed():
+        from discovery.local_security import browser_request_allowed, static_relative_path
+        if not self.host_allowed() or not browser_request_allowed(self.headers):
             self.send_error(403); return
+        if not self.path.startswith('/') or self.path.startswith('//'):
+            self.send_error(400); return
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
-        if parsed.path == "/api/artists":
+        if getattr(sys,'frozen',False) and (parsed.path.startswith(('/__dev/','/api/community/development/')) or parsed.path in ('/api/test-isolation','/community-fixture.svg')):
+            self.send_error(404);return
+        if parsed.path=='/api/community/beta':
+            from discovery.community_beta import configuration
+            self.json_response(configuration(DATA_ROOT));return
+        if parsed.path == '/api/development/diagnostics':
+            if not development_diagnostics_enabled() or self.client_address[0] not in ('127.0.0.1','::1'):
+                self.send_error(404);return
+            from discovery.community_security import authorize_test
+            from discovery.dev_diagnostics import snapshot
             try:
-                limit = min(1000, max(1, int(query.get("limit", [500])[0])))
-                target = min(3000, max(limit, int(query.get("target", [1000])[0])))
-                refresh = query.get("refresh", ["false"])[0].lower() == "true"
-                nonce = query.get("nonce", ["0"])[0]
-                with WRITE_LOCK: state = CACHE.collect(target=target, refresh=refresh)
-                items = state.get("items", [])
-                artists = artist_gallery(items, limit, nonce)
-                try: read_only = not bool(auth_status().get("socialWrite"))
-                except Exception: read_only = True
-                self.json_response({
-                    "artists": artists,
-                    "imageCount": len(items),
-                    "artistCount": len({item["username"].casefold() for item in items}),
-                    "updatedAt": state.get("updatedAt"),
-                    "lastCollect": state.get("lastCollect"),
-                    "oauthProfileCache": CREATOR_PROFILES.exists(),
-                    "readOnly": read_only,
-                })
-            except Exception as error:
-                self.internal_error("Legacy artist feed", error)
+                authorize_test(self.headers,DATA_ROOT)
+                with TASTE.lock:job=dict(TASTE.job)
+                self.json_response(snapshot(ROOT,DATA_ROOT,APP_VERSION,DEVELOPMENT_COMMIT,
+                    auth_status=auth_status,job=job,probe=query.get('probe')==['1']))
+            except PermissionError:self.send_error(403)
+            except Exception as error:self.internal_error('Development diagnostics',error)
             return
+        if parsed.path.startswith('/api/history/thumbnail/'):
+            try:
+                if not auth_status().get('id'):raise CommunityError('AUTH_REQUIRED',401)
+                from discovery.community import positive_id
+                image_id=positive_id(parsed.path.rsplit('/',1)[-1])
+                with HISTORY.connect() as db:row=db.execute('SELECT * FROM images WHERE id=?',(image_id,)).fetchone()
+                if not row or row['type']!='image':raise CommunityError('INVALID_ARTWORK',404)
+                level=row['browsing_level'] or {'None':1,'Soft':2,'Mature':4,'X':8}.get(row['nsfw_level'])
+                hidden_names,hidden_images=hidden_preferences()
+                tags=TASTE.image_tags_many([image_id])[image_id]
+                if (level not in SETTINGS.load()['browsingLevels'] or row['username_key'] in hidden_names or image_id in hidden_images
+                        or (TASTE.hidden_tag_names() and (not tags['known'] or any(tag['hidden'] for tag in tags['tags'])))):
+                    raise CommunityError('CONTENT_FILTERED',403)
+                body,kind=PERSONAL_THUMBNAILS.get(row['url'])
+                self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
+                self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+                self.end_headers();self.wfile.write(body)
+            except CommunityError as error:self.json_response(error.response(),error.status)
+            except Exception as error:self.community_unavailable('history_thumbnail',error)
+            return
+        if parsed.path.startswith('/api/history/') and os.environ.get('CAD_COMMUNITY_TESTING')!='1':
+            requested_day=query.get('date',[None])[0]
+            requested_id=query.get('id',[None])[0]
+            with HISTORY.connect() as db:
+                if requested_day:
+                    fixture=db.execute("SELECT 1 FROM block_images b JOIN images i ON i.id=b.image_id WHERE b.block_key=? AND i.url LIKE '%/community-fixture.svg%' LIMIT 1",(requested_day,)).fetchone()
+                elif requested_id:
+                    fixture=db.execute("SELECT 1 FROM images WHERE id=? AND url LIKE '%/community-fixture.svg%'",(requested_id,)).fetchone()
+                else:fixture=None
+            if fixture:
+                if parsed.path=='/api/history/status':
+                    self.json_response({'complete':False,'date':requested_day,'fixtureArchiveExcluded':True});return
+                self.json_response({'error':'This archive contains isolated test artwork, not personal Civitai metadata.','code':'TEST_ARCHIVE'},409);return
+        if parsed.path.startswith('/api/community/'):
+            try:self.require_community_session()
+            except CommunityError as error:
+                self.json_response(error.response(),error.status);return
+            except Exception as error:
+                self.community_unavailable('status',error);return
+        if parsed.path.startswith('/api/community/thumbnail/'):
+            try:
+                client=community_client()
+                token=None
+                if client.mode=='fixture':
+                    cookie=SimpleCookie();cookie.load(self.headers.get('Cookie',''))
+                    member=cookie.get('cad_fixture_member')
+                    token=f'fixture:{member.value if member else "1"}'
+                    if token not in client.verifier.members:raise CommunityError('AUTH_REQUIRED',401)
+                profile=client.profile_provider(token)
+                from discovery.community import positive_id
+                art,_=client.browse_artwork(positive_id(parsed.path.rsplit('/',1)[-1]),profile)
+                body,kind=client.thumbnails.get(art.preview,video=art.media_type=='video')
+                self.send_response(200);self.send_header('Content-Type',kind)
+                self.send_header('Content-Length',str(len(body)))
+                self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+                self.end_headers();self.wfile.write(body)
+            except CommunityError as error:self.json_response(error.response(),error.status)
+            except Exception as error:self.community_unavailable('thumbnail',error)
+            return
+        if parsed.path == '/api/test-isolation':
+            from discovery.community_security import test_identity
+            identity = test_identity(DATA_ROOT)
+            if identity: self.json_response(identity)
+            else: self.send_error(404)
+            return
+        if parsed.path == "/api/community/config":
+            from discovery.community_beta import configuration
+            beta=configuration(DATA_ROOT)
+            if beta['production']:
+                self.json_response({'apiVersion':1,'development':False,'members':[],'beta':beta});return
+            from discovery.community_security import fixture_enabled
+            development = fixture_enabled()
+            members = community_client().verifier.members.values() if development else []
+            self.json_response({"apiVersion": 1, "development": development,
+                "members": [{'id': m.id, 'username': m.username} for m in members]}); return
+        if parsed.path.startswith("/api/community/"):
+            operation = parsed.path.rsplit("/", 1)[-1]
+            if operation not in ("status", "gallery",'detail'):
+                self.json_response({"error": "Unknown community operation"}, 404); return
+            payload = {'refresh':query.get('refresh',['0'])[0]=='1'}
+            if operation=='gallery' and 'refreshContext' in query:payload['refreshContext']=query['refreshContext'][0]
+            if operation=='gallery':
+                payload['cursor']=query.get('cursor',[None])[0]
+                try:payload['limit']=int(query.get('limit',['50'])[0])
+                except ValueError:
+                    self.json_response({'code':'INVALID_REQUEST','error':'Invalid page size'},400);return
+            if operation=='detail':payload={'artwork':query.get('id',[None])[0]}
+            self.community_response(operation, payload); return
+        if parsed.path == "/community-fixture.svg":
+            if os.environ.get("CAD_DEVELOPMENT") != "1" or os.environ.get("CAD_COMMUNITY_MODE") != "fixture" or os.environ.get('CAD_COMMUNITY_TESTING')!='1':
+                self.send_error(404); return
+            try:self.require_community_session()
+            except CommunityError as error:
+                self.json_response(error.response(),error.status);return
+            # Synthetic, local artwork: no internet images, credentials or third-party assets.
+            value = query.get("id", ["1001"])[0]
+            hue = (int(value) * 37) % 360 if value.isascii() and value.isdigit() and len(value) < 16 else 200
+            body = (f'<svg xmlns="http://www.w3.org/2000/svg" width="640" height="800" viewBox="0 0 640 800">'
+                    f'<rect width="640" height="800" fill="hsl({hue},45%,18%)"/>'
+                    f'<circle cx="450" cy="230" r="100" fill="hsl({hue},65%,65%)"/>'
+                    '<path d="M0 650L200 310L400 650L550 420L640 600V800H0Z" fill="#27383d"/>'
+                    '<text x="35" y="45" fill="white" opacity=".55" font-size="18">Development fixture</text></svg>').encode()
+            self.send_response(200); self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", str(len(body))); self.send_header("Cache-Control", "no-store")
+            self.end_headers(); self.wfile.write(body); return
         if parsed.path == "/api/auth-status":
             try:
                 # Renew a token that is close to lapsing. Reading the stored token does not
                 # refresh it, so an idle app would sit until the authorization expired and
                 # the next action failed. The page polls this, so the session stays alive
                 # while someone is reading rather than dying underneath them.
-                try: renew_session_if_stale()
-                except Exception: pass
+                from discovery.oauth import session_status, get_community_session
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
-                self.json_response({**auth_status(), "oauthJob": job})
-            except Exception:
+                identity=session_status()
+                if identity.get('connected') and not identity.get('needsReauthentication'):
+                    REGISTRY.authenticated(identity,get_community_session)
+                self.json_response({**identity, "oauthJob": job})
+            except Exception as error:
+                community_failure(DATA_ROOT,'auth_status',error)
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
                 self.json_response({"connected": False, "socialWrite": False,
                                     "userWrite": False,
@@ -1143,8 +1381,9 @@ class Handler(BaseHTTPRequestHandler):
                     archives = bool(db.execute("SELECT 1 FROM days WHERE complete=1 LIMIT 1").fetchone())
             except Exception:
                 archives = False
-            self.json_response({"timezoneSource": "browser", "storage": "Windows Local AppData",
-                "hasArchives": archives, "version": APP_VERSION})
+            self.json_response({"timezoneSource": "America/Chicago", "archiveCalendar": "America/Chicago", "latestCompleteDay": previous_local_day(), "storage": f"Isolated Discovery 3.0 {ENVIRONMENT} directory",
+                "channel": CHANNEL, "environment": ENVIRONMENT,
+                "hasArchives": archives, "version": APP_VERSION, "developmentDiagnostics": development_diagnostics_enabled()})
             return
         if parsed.path == "/api/settings":
             self.json_response({**SETTINGS.load(), "siteOrigin": SITE_ORIGIN,
@@ -1304,7 +1543,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/history/calendar":
             try:
-                self.json_response({"days": HISTORY.calendar_days()})
+                days=HISTORY.calendar_days()
+                if os.environ.get('CAD_COMMUNITY_TESTING')!='1':
+                    with HISTORY.connect() as db:
+                        excluded={row[0].split('#')[0] for row in db.execute("SELECT DISTINCT b.block_key FROM block_images b JOIN images i ON i.id=b.image_id WHERE i.url LIKE '%/community-fixture.svg%'")}
+                    days=[day for day in days if day['date'] not in excluded]
+                self.json_response({"days": days})
             except Exception as error:
                 self.internal_error("History calendar", error)
             return
@@ -1413,12 +1657,24 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("History artist page", error)
             return
+        if parsed.path == '/api/follow-status':
+            try:
+                raw = query.get('userId', [])
+                if not 1 <= len(raw) <= 100: raise ValueError('Provide 1 to 100 creator IDs')
+                ids = list(dict.fromkeys(int(value) for value in raw))
+                if any(value <= 0 for value in ids): raise ValueError('Invalid creator ID')
+                self.json_response(creator_follow_status(ids))
+            except CommunityError as error:self.json_response(error.response(), error.status)
+            except ValueError as error:self.json_response({'error': str(error)}, 400)
+            except Exception as error:self.internal_error('Follow status', error)
+            return
         if parsed.path == "/api/creator-metadata":
             try:
                 if not connected_or_false():
                     self.json_response({"error": "Connect Civitai to load creator profiles and follow state."}, 401)
                     return
-                self.json_response({"creators": enrich_creator_metadata(query.get("username", []))})
+                self.json_response({"creators": enrich_creator_metadata(
+                    query.get("username", []), include_follow=query.get("follow", ["1"])[0] != "0")})
             except Exception as error:
                 self.internal_error("Creator metadata", error)
             return
@@ -1431,10 +1687,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not raw_ids or len(raw_ids) > 100:
                     raise ValueError("Request between 1 and 100 image IDs")
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not collected_image(image_id) for image_id in image_ids):
+                if any(not self.collected_image(image_id) for image_id in image_ids):
                     raise ValueError("Image is not in this history archive")
                 values = SocialClient().batch_query_optional("image.get", [{"id": image_id} for image_id in image_ids])
-                self.json_response({"images": {str(image_id): {"reactions": sorted(reaction_names(value))}
+                self.json_response({"images": {str(image_id): {"reactions": sorted(reaction_names(value)), "stats": live_reaction_stats(value)}
                     for image_id, value in zip(image_ids, values) if value is not None}})
             except ValueError as error:
                 self.json_response({"error": str(error)}, 400)
@@ -1481,8 +1737,9 @@ class Handler(BaseHTTPRequestHandler):
                 key = HISTORY.archive_key(value, query.get("segment", ["all"])[0])
                 models = [item for item in query.get("model", []) if item][:20]
                 self.json_response({"date": value, "username": username,
-                    "images": GallerySelection(HISTORY, key, models, media_type(query.get("media", ["all"])[0]),
-                                               hidden_preferences()[1]).artist_images(key, username)})
+                    "images": [personal_preview(image) for image in
+                        GallerySelection(HISTORY, key, models, media_type(query.get("media", ["all"])[0]),
+                                         hidden_preferences()[1]).artist_images(key, username)]})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Artist image history", error)
             return
@@ -1506,15 +1763,31 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Image details", error)
             return
-        path = "index.html" if parsed.path == "/" else urllib.parse.unquote(parsed.path).lstrip("/")
-        target = (STATIC / path).resolve()
-        if STATIC.resolve() not in target.parents and target != STATIC.resolve():
+        try:
+            # Reject Windows UNC, drive/ADS and traversal syntax lexically. A
+            # containment check after resolve() is too late to prevent SMB access.
+            path = static_relative_path(parsed.path)
+        except (ValueError, UnicodeError):
             self.send_error(403)
             return
-        if not target.is_file():
-            self.send_error(404)
+        try:
+            root = STATIC.resolve()
+            target = (STATIC / path).resolve()
+            if root not in target.parents:
+                self.send_error(403)
+                return
+            if not target.is_file():
+                self.send_error(404)
+                return
+            body = target.read_bytes()
+            if target.name == 'index.html':
+                body = body.replace(b'Civitai Discovery 3.0 Beta', APP_NAME.encode('utf-8'))
+                from discovery.source_notice import render as render_source_notice
+                notice = render_source_notice(frozen=bool(getattr(sys, 'frozen', False)), environment=ENVIRONMENT)
+                body = body.replace(b'</header>', b'</header>' + notice.encode('utf-8'), 1)
+        except OSError:
+            self.send_error(503)
             return
-        body = target.read_bytes()
         self.send_response(200)
         mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if mime.startswith("text/") or mime in {"application/javascript", "application/json"}: mime += "; charset=utf-8"
@@ -1533,7 +1806,78 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass
 
+    def community_response(self, operation, payload):
+        try:
+            from discovery.community_beta import require_enabled
+            require_enabled(DATA_ROOT)
+            self.require_community_session()
+            # Simulator identities stay local; normal LAN uses the host OAuth session.
+            from discovery.community_security import test_identity
+            if test_identity(DATA_ROOT) and self.client_address[0] not in ("127.0.0.1", "::1"):
+                raise CommunityError("FORBIDDEN", 403)
+            if os.environ.get("CAD_COMMUNITY_MODE") == "offline":
+                raise CommunityError("UNAVAILABLE", 503)
+            client = community_client()
+            from discovery.community_security import fixture_enabled
+            token = None
+            if fixture_enabled():
+                cookie = SimpleCookie(); cookie.load(self.headers.get('Cookie', ''))
+                identity = cookie.get('cad_fixture_member')
+                selected = identity.value if identity else '1'
+                if selected not in {str(m.id) for m in client.verifier.members.values()}:
+                    raise CommunityError('AUTH_EXPIRED', 401)
+                token = f'fixture:{selected}'
+            result = client.request(operation, payload, self.client_address[0], fixture_token=token)
+            if operation == 'status':
+                result = {**result, 'viewSession':COMMUNITY_VIEW_SESSION}
+            if operation == 'gallery' and result.get('feedVersion')!=3:
+                client.remember_presented(result['items'], self.community_viewer(token))
+            if operation == 'detail':
+                result = {**result, **community_detail_metadata(client, result)}
+            if operation == 'recommend' and getattr(client, 'dev_lost_response', False):
+                client.dev_lost_response = False
+                raise CommunityError('UNAVAILABLE', 503)
+            self.json_response(result)
+        except CommunityError as error:
+            self.json_response(error.response(), error.status)
+        except Exception as error:self.community_unavailable(operation,error)
+
+    def community_unavailable(self, operation, error):
+        diagnostic=community_failure(DATA_ROOT,operation,error)
+        self.json_response({**CommunityError("UNAVAILABLE",503).response(),'diagnosticId':diagnostic},503)
+
+    def community_viewer(self, token):
+        from discovery.community_security import test_identity
+        # Callers have already required the nonce or real OAuth session.
+        if test_identity(DATA_ROOT):
+            return ('isolated', token)
+        return (auth_status().get('id'), token)
+
+    def community_artwork(self, image_id=None, username=None):
+        if COMMUNITY is None:
+            return None
+        try:
+            self.require_community_session()
+            token = None
+            if COMMUNITY.mode == 'fixture':
+                cookie = SimpleCookie(); cookie.load(self.headers.get('Cookie', ''))
+                member = cookie.get('cad_fixture_member')
+                token = f'fixture:{member.value if member else "1"}'
+                if token not in COMMUNITY.verifier.members:
+                    return None
+            viewer = self.community_viewer(token)
+            if username is not None:
+                return COMMUNITY.presented_creator(username, viewer, token)
+            return COMMUNITY.presented_artwork(image_id, viewer, token)
+        except CommunityError:
+            return None
+
+    def collected_image(self, image_id):
+        return collected_image(image_id) or self.community_artwork(image_id) is not None
+
     def request_json(self) -> dict:
+        from discovery.community_security import authorize_test
+        authorize_test(self.headers, DATA_ROOT)
         origin = self.headers.get("Origin")
         if origin:
             parsed = urllib.parse.urlsplit(origin)
@@ -1552,12 +1896,74 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("JSON body must be an object")
         return value
 
+    def require_community_session(self):
+        """Normal OAuth, or an explicitly challenged isolated automation process."""
+        from discovery.community_security import test_identity,authorize_test
+        if test_identity(DATA_ROOT):
+            try:authorize_test(self.headers,DATA_ROOT)
+            except PermissionError:raise CommunityError('AUTH_REQUIRED',401) from None
+            return
+        from discovery.oauth import get_access_token,status,OAuthReauthenticationRequired,OAuthTemporarilyUnavailable
+        try:
+            get_access_token()
+            identity=status()
+            if not identity.get('connected') or int(identity.get('id') or 0)<=0:raise ValueError()
+        except OAuthReauthenticationRequired:raise CommunityError('AUTH_EXPIRED',401) from None
+        except OAuthTemporarilyUnavailable:raise CommunityError('UNAVAILABLE',503) from None
+        except Exception:raise CommunityError('AUTH_REQUIRED',401) from None
+
     def do_POST(self) -> None:  # noqa: N802
-        if not self.host_allowed():
+        from discovery.local_security import browser_request_allowed
+        if not self.host_allowed() or not browser_request_allowed(self.headers):
             self.send_error(403); return
         parsed = urllib.parse.urlparse(self.path)
         try:
             body = self.request_json()
+            if getattr(sys,'frozen',False) and parsed.path.startswith(('/__dev/','/api/community/development/')):
+                self.send_error(404);return
+            if parsed.path=='/api/community/beta':
+                self.send_error(404);return
+            if parsed.path=='/api/community/reconnect':
+                if body:
+                    self.json_response(CommunityError('INVALID_REQUEST').response(),400);return
+                try:
+                    from discovery.oauth import status
+                    if not status().get('connected'):raise CommunityError('AUTH_REQUIRED',401)
+                    from discovery.oauth import client_id,BUILTIN_CLIENT_ID,COMMUNITY_UNSUPPORTED_CLIENT
+                    if client_id()!=BUILTIN_CLIENT_ID:
+                        self.json_response({'code':'UNSUPPORTED_CLIENT','error':COMMUNITY_UNSUPPORTED_CLIENT},409);return
+                except CommunityError:raise
+                except Exception:raise CommunityError('AUTH_REQUIRED',401) from None
+                start_oauth_login(community_only=True)
+                self.json_response({'started':True},202);return
+            if parsed.path.startswith('/api/community/'):
+                try:self.require_community_session()
+                except CommunityError:raise
+                except Exception as error:
+                    self.community_unavailable('status',error);return
+            if parsed.path == '/api/community/development/member':
+                from discovery.community_security import fixture_enabled
+                if not fixture_enabled() or self.client_address[0] != '127.0.0.1':
+                    self.json_response(CommunityError('FORBIDDEN', 403).response(), 403); return
+                value = body.get('member')
+                if type(value) is not int or f'fixture:{value}' not in community_client().verifier.members:
+                    self.json_response(CommunityError('INVALID_REQUEST').response(), 400); return
+                self.json_response({'apiVersion': 1, 'member': value, 'development': True}, headers={
+                    'Set-Cookie': f'cad_fixture_member={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000'})
+                return
+            if parsed.path == '/api/community/development/control':
+                from discovery.community_security import control, test_identity
+                if not test_identity(DATA_ROOT) or self.client_address[0] != '127.0.0.1':
+                    self.json_response(CommunityError('FORBIDDEN', 403).response(), 403); return
+                try: self.json_response(control(community_client(), body))
+                except CommunityError as error: self.json_response(error.response(), error.status)
+                return
+            if parsed.path.startswith("/api/community/"):
+                operation = parsed.path.rsplit("/", 1)[-1]
+                allowed = {'artwork','reason'} if operation == 'report' else {'artwork','idempotencyKey'} if operation == 'recommend' else {'artwork'}
+                if operation not in ("verify", "recommend", "withdraw", "report") or 'artwork' not in body or not set(body) <= allowed:
+                    self.json_response(CommunityError("INVALID_REQUEST").response(), 400); return
+                self.community_response(operation, body); return
             if parsed.path == "/api/artwork/availability":
                 self.json_response(ARTWORK_AVAILABILITY.check(body.get("sources")))
                 return
@@ -1597,29 +2003,23 @@ class Handler(BaseHTTPRequestHandler):
                 with OAUTH_LOCK: OAUTH_JOB.update({"state": "idle", "error": None})
                 self.json_response({"connected": False}); return
             if parsed.path == "/api/settings":
-                previous = SETTINGS.load()
                 content_change = ("browsingLevels" in body or "contentRating" in body)
                 gallery_change = any(name in body for name in (
                     "hideHighVolumeCreators", "highVolumeThreshold",
                     "emergingReactionMode", "emergingReactionLimit", "mediaType"))
-                value = SETTINGS.update(media_type_value=body.get("mediaType"),
+                value = SETTINGS.transactional_update(
+                                        effect=(lambda value: HISTORY.set_content_filter(value["browsingLevels"])) if content_change else None,
+                                        media_type_value=body.get("mediaType"),
                                         browsing_levels_value=body.get("browsingLevels"),
                                         content_rating_value=body.get("contentRating"),
                                         dim_seen_cards_value=body.get("dimSeenCards"),
+                                        detail_video_sound_value=body.get("detailVideoSound"),
                                         check_for_updates_value=body.get("checkForUpdates"),
                                         hide_high_volume_creators_value=body.get("hideHighVolumeCreators"),
                                         high_volume_threshold_value=body.get("highVolumeThreshold"),
                                         emerging_reaction_mode_value=body.get("emergingReactionMode"),
                                         emerging_reaction_limit_value=body.get("emergingReactionLimit"),
                                         allow_lan_access_value=body.get("allowLanAccess"))
-                if content_change:
-                    try:
-                        HISTORY.set_content_filter(value["browsingLevels"])
-                    except Exception:
-                        SETTINGS.update(browsing_levels_value=previous["browsingLevels"],
-                                        dim_seen_cards_value=previous["dimSeenCards"],
-                                        check_for_updates_value=previous["checkForUpdates"])
-                        raise
                 if content_change or gallery_change:
                     with WRITE_LOCK:
                         ORDER_CACHE.clear()
@@ -1666,7 +2066,7 @@ class Handler(BaseHTTPRequestHandler):
                 # instead of being stranded on a port that no longer answers.
                 restart_args = ["--port", str(RUNNING_PORT), "--no-browser", "--replacing"]
                 command = ([str(UPDATES.executable), *restart_args] if UPDATES.supported
-                           else [str(UPDATES.executable), str(Path(__file__).resolve()), *restart_args])
+                           else [str(UPDATES.executable), '-B', str(Path(__file__).resolve()), *restart_args])
                 flags = 0
                 if os.name == "nt":
                     flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -1680,10 +2080,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"acknowledged": True})
                 return
             if parsed.path == "/api/history/start":
-                value = str(body.get("date") or previous_local_day())
-                self.json_response(HISTORY.start(value, str(body.get("startUtc") or ""),
-                    str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"),
-                    str(body.get("segment") or "all"), body.get("contentRating")), 202)
+                self.json_response(HISTORY.start(*archive_build_request(body),body.get("contentRating")),202)
                 return
             if parsed.path == "/api/history/capture":
                 enabled = body.get("enabled")
@@ -1695,7 +2092,7 @@ class Handler(BaseHTTPRequestHandler):
                                 auto_capture_hours_value=hours if hours is not None else None,
                                 auto_capture_minute_value=minute,
                                 capture_coverage_value=body.get("coverage"))
-                if SETTINGS.load()["autoCapture"]:
+                if SETTINGS.load()["autoCapture"] and connected_or_false():
                     CAPTURE.start()
                     if body.get("runNow"):
                         CAPTURE.trigger()
@@ -1732,8 +2129,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"added": TIME_MACHINE.refill(name)})
                 return
             if parsed.path == "/api/history/rebuild":
-                value = str(body.get("date") or previous_local_day())
-                self.json_response(HISTORY.rebuild(value, str(body.get("startUtc") or ""), str(body.get("endUtc") or ""), str(body.get("timezone") or "Local"), str(body.get("segment") or "all")), 202)
+                self.json_response(HISTORY.rebuild(*archive_build_request(body)),202)
                 return
             if parsed.path == "/api/history/cancel":
                 value = str(body.get("date") or "")
@@ -1771,7 +2167,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(profile, dict) or not profile.get("id"):
                     raise ValueError("Civitai could not find that artist")
                 user_id = int(profile["id"])
-                if not (HISTORY.has_creator(username) or TASTE.has_creator(user_id)):
+                if not (HISTORY.has_creator(username) or TASTE.has_creator(user_id)
+                        or self.community_artwork(username=username)):
                     raise ValueError("Artist is not in this app's saved gallery")
                 supplied_id = body.get("userId")
                 if supplied_id is not None and int(supplied_id) != user_id:
@@ -1802,21 +2199,40 @@ class Handler(BaseHTTPRequestHandler):
                                           str(body.get("segment") or "all"))
                 self.json_response(start_sweep(kind, key), 202)
                 return
+            if parsed.path == '/api/history/images':
+                raw=body.get('imageIds')
+                if not isinstance(raw,list) or not 1<=len(raw)<=50 or any(type(i) is not int or i<=0 for i in raw):raise ValueError('Provide 1 to 50 IDs')
+                viewer=connected_user_id()
+                if not viewer:raise CommunityError('AUTH_REQUIRED',401)
+                if any(not collected_image(i) and not (COMMUNITY and COMMUNITY.listed(i)) for i in raw):raise CommunityError('FORBIDDEN',403)
+                profile=community_content_profile(None)
+                images=HISTORY.gallery_images(raw,SocialClient())
+                hidden,excluded=hidden_preferences()
+                allowed=[i for i in images if i['browsingLevel'] in profile.levels and i['username'].casefold() not in hidden and i['id'] not in excluded
+                    and (not COMMUNITY or COMMUNITY.listed_creator(i['id']) not in profile.creators|profile.blocked_creators)]
+                if viewer!=connected_user_id():raise CommunityError('AUTH_EXPIRED',401)
+                if COMMUNITY:COMMUNITY.remember_presented([{'artwork':i} for i in allowed],self.community_viewer(None))
+                self.json_response({'images':[personal_preview(i) for i in allowed],
+                    'counts':{'requested':len(raw),'metadata':len(images),'contentControls':len(images)-len(allowed),'unavailable':len(raw)-len(images)}})
+                return
             if parsed.path == "/api/history/tags":
                 raw_ids = body.get("imageIds")
                 if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 100:
                     self.json_response({"error": "Provide 1 to 100 image IDs"}, 400)
                     return
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not collected_image(image_id) for image_id in image_ids):
+                if any(not self.collected_image(image_id) for image_id in image_ids):
                     self.json_response({"error": "An image is not in this history archive"}, 400)
                     return
+                tag_viewer=connected_user_id()
+                if tag_viewer:community_content_profile(None)
                 tags = TASTE.image_tags_many(image_ids)
                 # Cached checks remain useful in read-only/offline test and recovery
                 # states. A live lookup needs OAuth, but the ordinary signed-in gallery
                 # always has it before reaching this endpoint.
                 if connected_or_false() and any(not value["known"] for value in tags.values()):
                     tags = TASTE.ensure_image_tags_many(SocialClient(), image_ids)
+                if tag_viewer!=connected_user_id():raise CommunityError('AUTH_EXPIRED',401)
                 self.json_response({"images": {str(image_id): tags[image_id]
                                                 for image_id in image_ids}})
                 return
@@ -1849,7 +2265,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 image_id = int(body.get("imageId"))
                 collection_id = int(body.get("collectionId"))
-                if not collected_image(image_id):
+                if not self.collected_image(image_id):
                     raise ValueError("Image is not in this app's saved gallery")
                 client = SocialClient()
                 collection = next((row for row in client.writable_image_collections(connected_user_id())
@@ -1874,6 +2290,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.handle_follow(body)
                 return
             self.json_response({"error": "Unknown action"}, 404)
+        except CommunityError as error:
+            self.json_response(error.response(),error.status)
         except PermissionError as error:
             self.json_response({"error": str(error)}, 403)
         except (ValueError, TypeError, json.JSONDecodeError) as error:
@@ -1890,7 +2308,7 @@ class Handler(BaseHTTPRequestHandler):
         state = CACHE.load(); item = next((row for row in state.get("items", []) if int(row.get("id", -1)) == image_id), None)
         stores = image_stores(image_id)
         in_history = bool(stores)
-        if item is None and not in_history:
+        if item is None and not in_history and self.community_artwork(image_id) is None:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
         payload = client.query("image.get", {"id": image_id})
@@ -1922,7 +2340,12 @@ class Handler(BaseHTTPRequestHandler):
             if changed or live:
                 for store in stores:
                     store.update_stats(image_id, {**store.stats(image_id), **stats})
-        else: stats = {**item.get("stats", {}), **live}
+        else:
+            stats = {**(item or {}).get("stats", {}), **live}
+            if item is None and changed:
+                delta = 1 if desired else -1; key = REACTIONS[reaction]
+                stats[key] = max(0, int(stats.get(key, 0)) + delta)
+                stats["reactionCount"] = max(0, int(stats.get("reactionCount", 0)) + delta)
         self.json_response({"imageId": image_id, "reactions": sorted(current), "stats": stats, "changed": changed})
 
     def handle_follow(self, body: dict) -> None:
@@ -1934,7 +2357,8 @@ class Handler(BaseHTTPRequestHandler):
         profile = next((value for value in creator_profiles().values() if int(value.get("id", -1)) == user_id), None)
         client = SocialClient()
         if profile is None and username_hint and (HISTORY.has_creator(username_hint)
-                                                  or TASTE.has_creator(user_id)):
+                                                  or TASTE.has_creator(user_id)
+                                                  or self.community_artwork(username=username_hint)):
             resolved = client.query("user.getCreator", {"username": username_hint})
             if isinstance(resolved, dict) and resolved.get("id"):
                 profile = resolved; user_id = int(resolved["id"])
@@ -1960,6 +2384,7 @@ class Handler(BaseHTTPRequestHandler):
                 "usernames": sorted(names.values(), key=str.casefold)}, indent=2), encoding="utf-8")
             temporary.replace(FOLLOW_CACHE)
         TASTE.set_following(user_id, desired)
+        with FOLLOW_STATUS_LOCK: FOLLOW_STATUS_CACHE.clear()
         self.json_response({"userId": user_id, "following": desired, "changed": changed})
 
     def log_message(self, format: str, *args: object) -> None:
@@ -1968,20 +2393,23 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    if not getattr(sys, 'frozen', False):
+        parser.add_argument('--stable', action='store_true',
+                            help='Use the stable Production service and a separate local profile')
     parser.add_argument("--host", default=None)
-    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--port", type=int, default=8907)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--replacing", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    allow_lan_access = SETTINGS.load()["allowLanAccess"]
-    bind_host = args.host or ("0.0.0.0" if allow_lan_access else "127.0.0.1")
-    allowed_hosts = {"127.0.0.1", "localhost", "::1"} | ({"0.0.0.0"} if allow_lan_access else set())
-    if bind_host not in allowed_hosts:
-        raise ValueError("For your privacy, this app can only listen on the local computer "
-                          "unless LAN access is turned on in settings")
+    from discovery.community_security import disable_test_outbound
+    disable_test_outbound(DATA_ROOT)
+    bind_host = args.host or ("0.0.0.0" if SETTINGS.load()['allowLanAccess'] else "127.0.0.1")
+    if bind_host not in ('127.0.0.1','0.0.0.0') or (bind_host=='0.0.0.0' and not SETTINGS.load()['allowLanAccess']) or args.port in (8906,33101,33201):
+        raise ValueError("Network binding requires explicit LAN sharing; use a separate Discovery 3.0 port")
     if not claim_single_instance(args.no_browser, args.replacing):
         return
+    if not SETTINGS.path.exists():SETTINGS.update()
     # The OAuth redirect is registered against one fixed port, so the app must never
     # occupy it: doing so leaves the callback listener unable to bind and Civitai's
     # redirect lands on this server, which answers 404 and strands the sign-in.
@@ -1994,23 +2422,19 @@ def main() -> None:
     actual_port = server.server_address[1]
     global RUNNING_PORT
     RUNNING_PORT = actual_port
-    # With LAN access on, the window opens on this computer's network address rather
-    # than loopback. Both reach the same server, but only the network one can be read
-    # off the address bar and typed into a phone, which is the entire point of the
-    # setting: loopback would leave the reader to hunt for the address themselves.
     addresses = lan_addresses() if bind_host == "0.0.0.0" else []
     url = f"http://{addresses[0]}:{actual_port}" if addresses else f"http://127.0.0.1:{actual_port}"
     save_instance_url(url)
     UPDATES.schedule_success_cleanup()
     # Only starts a worker when the preference is on; otherwise nothing runs.
-    if SETTINGS.load()["autoCapture"]:
+    if SETTINGS.load()["autoCapture"] and connected_or_false():
         CAPTURE.start()
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
     if bind_host == "0.0.0.0":
         print(f"LAN access is ON: other devices on your network can reach this app at {url}. "
-              f"Anyone who can reach that address can use the app, including follow/react "
-              f"actions. Turn this off in Settings if you don't want that.")
+              "Anyone who can reach that address can use the app, including follow/react "
+              "actions. Turn this off in Settings if you do not want that.")
     tray = None
     if not args.no_browser:
         try:
@@ -2041,9 +2465,13 @@ if __name__ == "__main__":
             main()
     except Exception:
         DATA_ROOT.mkdir(parents=True, exist_ok=True)
-        (DATA_ROOT / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
+        append_log(DATA_ROOT, traceback.format_exc())
+        # The replacement helper reports through its receipt, not a blocking
+        # startup dialog. Failed unattended installs must return a failing status.
+        if len(sys.argv)==3 and sys.argv[1]=='--apply-update':raise SystemExit(1)
         if getattr(sys, "frozen", False) and os.name == "nt":
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, f"Civitai Artist Discovery could not start.\n\nSee:\n{DATA_ROOT / 'error.log'}", "Civitai Artist Discovery", 0x10)
+            ctypes.windll.user32.MessageBoxW(None, f"Civitai Discovery 3.0 Beta could not start.\n\nSee:\n{DATA_ROOT / 'error.log'}", "Civitai Discovery 3.0 Beta", 0x10)
+            raise SystemExit(1)
         else:
             raise

@@ -1,4 +1,5 @@
 """Deterministic browser-media lifecycle tests use the production module in Node."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from pathlib import Path
 import subprocess
@@ -11,7 +12,7 @@ subprocess.run(["node", str(root / "tests" / "fixtures" / "video_lifecycle.mjs")
 sys.path.insert(0, str(root))
 from discovery.diagnostics import log_browser_events
 
-with tempfile.TemporaryDirectory(prefix="video-log-") as temporary:
+with tempfile.TemporaryDirectory(prefix="cad3-video-log-") as temporary:
     log_browser_events(Path(temporary), [{"event": event, "imageId": 42,
         "reason": "playback-stalled", "surface": "gallery",
         "url": "https://image.civitai.com/test.mp4?token=private#secret",

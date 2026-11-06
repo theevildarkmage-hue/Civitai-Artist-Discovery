@@ -1,5 +1,7 @@
 """Evening must visibly restart its phases after Morning finishes."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import json
 import os
@@ -96,7 +98,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-full-day-progress-", ignore_cle
             page.route("**/api/history/cancel", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"cancelled":true}'))
 
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            page.locator("#discovery:not(.hidden)").wait_for()
+            page.locator('#tabGallery').click()
             page.wait_for_selector("#buildSetup:not(.hidden)")
             page.locator("#startLoading").click()
             page.locator("#loadingTitle", has_text="Evening").wait_for(timeout=10000)

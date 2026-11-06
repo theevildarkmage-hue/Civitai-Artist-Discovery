@@ -6,6 +6,8 @@ overflow could never engage, and the last tags, the prompt and the links were si
 unreachable. Nothing about it looked broken, which is what made it worth pinning.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -25,7 +27,7 @@ assert 'artwork.removeAttribute("src")' in app_source
 assert 'dialog.classList.add("detail-loading")' in app_source
 assert "token !== detailRequestToken" in app_source
 PORT = 8897
-SHOTS = ROOT / "reports" / "detail-dialog"
+SHOTS = test_safety.REPORTS / "detail-dialog"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 # More tags than any dialog could show at once, which is the whole point.
@@ -87,6 +89,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-detail-", ignore_cleanup_errors
                     content_type="application/json", body='{"creators":{}}'))
                 page.route("**/api/reaction-status**", lambda route: route.fulfill(status=200,
                     content_type="application/json", body='{"images":{}}'))
+                page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
                 page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
                 page.wait_for_selector(".creator-card", timeout=30000)
                 page.click(".creator-card .info-button")

@@ -1,5 +1,7 @@
 """Browsing-level preferences migrate safely and preserve independent selections."""
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 from pathlib import Path
 import sys
@@ -23,9 +25,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
         assert value.get('mediaType') in ('all', 'image', 'video'), value
         return {key: item for key, item in value.items() if key not in ('captureSeed', 'mediaType')}
 
-    gallery_defaults = {"hideHighVolumeCreators": False, "highVolumeThreshold": 100,
+    gallery_defaults = {"detailVideoSound": True, "hideHighVolumeCreators": True, "highVolumeThreshold": 50,
                         "emergingReactionMode": "balanced", "emergingReactionLimit": 0,
-                        "autoCapture": False, "autoCaptureHours": 12,
+                        "autoCapture": True, "autoCaptureHours": 12,
                         "autoCaptureMinute": None, "allowLanAccess": False,
                         "captureCoverage": "X"}
 
@@ -33,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
                                "dimSeenCards": True, "checkForUpdates": True,
                                **gallery_defaults}
 
-    path.write_text(json.dumps({"contentRating": "X"}), encoding="utf-8")
+    path.write_text(json.dumps({"contentRating": "X", "autoCapture": True, "captureCoverage": "X"}), encoding="utf-8")
     assert view(settings.load()) == {"contentRating": "X", "browsingLevels": [1, 2, 4, 8, 16],
                                "dimSeenCards": True, "checkForUpdates": True,
                                **gallery_defaults}
@@ -49,30 +51,39 @@ with tempfile.TemporaryDirectory(prefix="civitai-level-settings-") as temporary:
     saved = settings.update(check_for_updates_value=False)
     assert view(saved) == {"contentRating": "X", "browsingLevels": [4, 16],
                      "dimSeenCards": False, "checkForUpdates": False, **gallery_defaults}
+    assert settings.update(detail_video_sound_value=False)["detailVideoSound"] is False
+    assert settings.load()["detailVideoSound"] is False
+    try:
+        settings.update(detail_video_sound_value="yes")
+        raise AssertionError("detailVideoSound must reject non-booleans")
+    except ValueError:
+        pass
+    settings.update(detail_video_sound_value=True)
     assert settings.update(high_volume_threshold_value=150)["highVolumeThreshold"] == 150
     saved = settings.update(hide_high_volume_creators_value=True,
                             high_volume_threshold_value=200,
                             emerging_reaction_mode_value="strict",
                             emerging_reaction_limit_value=500)
-    gallery_saved = {"hideHighVolumeCreators": True, "highVolumeThreshold": 200,
+    gallery_saved = {"detailVideoSound": True, "hideHighVolumeCreators": True, "highVolumeThreshold": 200,
                      "emergingReactionMode": "strict", "emergingReactionLimit": 500,
-                     "autoCapture": False, "autoCaptureHours": 12,
+                     "autoCapture": True, "autoCaptureHours": 12,
                      "autoCaptureMinute": None, "allowLanAccess": False,
                      "captureCoverage": "X"}
     saved = settings.update(content_rating_value="Soft")
     assert view(saved) == {"contentRating": "Soft", "browsingLevels": [1, 2],
                      "dimSeenCards": False, "checkForUpdates": False, **gallery_saved}
 
-    # Automatic collection has its own coverage. A first run collects widely so archives
-    # are complete from the start, but an install that predates the setting keeps
-    # collecting exactly what it always has: an update does not get to start downloading
-    # explicit artwork onto someone's disk on their behalf.
+    # Existing sparse profiles inherit their capture ceiling; explicit coverage survives.
     upgraded = path.with_name("upgraded.json")
     upgraded.write_text(json.dumps({"contentRating": "Soft", "autoCapture": True}), encoding="utf-8")
     assert AppSettings(upgraded).load()["captureCoverage"] == "Soft"
     upgraded.write_text(json.dumps({"contentRating": "Mature"}), encoding="utf-8")
     assert AppSettings(upgraded).load()["captureCoverage"] == "Mature"
-    assert AppSettings(path.with_name("never-run.json")).load()["captureCoverage"] == "X"
+    assert AppSettings(path.with_name("never-run.json")).load()["captureCoverage"] == "Soft"
+    upgraded.write_text(json.dumps({"autoCapture": False,"captureCoverage":"Soft", "hideHighVolumeCreators":False,"highVolumeThreshold":200,"checkForUpdates":False}),encoding="utf-8")
+    preserved=AppSettings(upgraded).load()
+    assert preserved['autoCapture'] is False and preserved['captureCoverage']=='Soft'
+    assert preserved['hideHighVolumeCreators'] is False and preserved['highVolumeThreshold']==200 and preserved['checkForUpdates'] is False
     # Once chosen it is independent: changing what is viewed never changes what is saved.
     chosen = AppSettings(path.with_name("chosen.json"))
     chosen.update(capture_coverage_value="X", content_rating_value="Soft")

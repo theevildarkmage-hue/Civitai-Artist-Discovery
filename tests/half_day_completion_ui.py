@@ -1,5 +1,7 @@
 """A completed half stays viewable and offers an explicit path to finish the day."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import json
 import os
@@ -64,6 +66,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-half-completion-", ignore_clean
                 content_type="application/json",
                 body='{"lowSeconds":300,"highSeconds":420,"measured":true}'))
 
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.wait_for_selector("#completeDayPrompt:not(.hidden)")
             assert "Morning is ready" in page.locator("#completeDayPrompt").inner_text()

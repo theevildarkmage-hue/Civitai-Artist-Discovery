@@ -1,4 +1,5 @@
 """A rejected OAuth token is refreshed once without hiding persistent failures."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from pathlib import Path
 import sys

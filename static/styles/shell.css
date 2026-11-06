@@ -1,4 +1,17 @@
 body { background: var(--bg); }
+.source-launch-notice {
+  margin: 12px 20px; padding: 16px 20px; border: 1px solid #478b85;
+  border-left: 4px solid #73d6c8; border-radius: var(--radius-md);
+  background: #1d302f; color: var(--text); line-height: 1.5;
+}
+.source-launch-notice strong { display: block; color: #a5eee3; font-size: 17px; }
+.source-launch-notice p { margin: 7px 0 0; }
+.source-launch-notice > code { display: block; margin-top: 10px; padding: 10px 12px; border-radius: 6px; background: #141f20; }
+.source-launch-notice code { white-space: normal; overflow-wrap: anywhere; font-size: 13px; }
+.source-launch-alternative { color: #c3cece; font-size: 13px; }
+.source-launch-development { border-color: #8e7642; border-left-color: #e9bd6d; background: #302b21; }
+.source-launch-development strong { color: #f4d89f; }
+@media (max-width: 700px) { .source-launch-notice { margin: 10px 12px; padding: 14px; } }
 :where(button, a, input, select, summary):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
@@ -8,6 +21,8 @@ body { background: var(--bg); }
 .skip-link:focus { top: 8px; }
 body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background: var(--bg); backdrop-filter: none; }
 .app-brand { min-width: 0; }
+.app-brand .app-title-row { flex-wrap: wrap; row-gap: 4px; }
+.app-logo { width: 32px; height: 32px; flex: none; align-self: center; object-fit: contain; }
 .app-brand h1 { font-size: 19px; }
 .app-brand .eyebrow, .app-brand .tagline { display: none; }
 .account-toolbar { min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -36,8 +51,8 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
    rating is the exception: choosing one that the stored archive does not cover is what
    raises this screen, so hiding the control here strands the reader on the one screen
    where they cannot undo the choice that brought them to it. */
-.segment-toolbar.build-mode > :not(.calendar-toggle):not(.active-filters):not(#contentMenu) { display: none !important; }
-.segment-toolbar.build-mode .active-filters > :not(#contentFilter):not(#contentMenu):not(.preferences-button) { display: none !important; }
+.segment-toolbar.build-mode > :not(.calendar-toggle):not(#filterToggle):not(.active-filters):not(#contentMenu) { display: none !important; }
+.segment-toolbar.build-mode .active-filters > :not(#contentMenu):not(.preferences-button) { display: none !important; }
 .command-bar .sweep-note.personalization-note { position: absolute; top: calc(100% + 8px); right: 20px; width: min(760px, calc(100vw - 40px)); flex: none; }
 .filter-menu { border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-popover); }
 main { padding: 18px 20px 60px; }
@@ -45,6 +60,7 @@ main { padding: 18px 20px 60px; }
 @media (max-width: 700px) {
   body > .app-header { align-items: center; flex-wrap: wrap; padding: 10px 12px; gap: 8px; }
   .app-brand h1 { font-size: 17px; }
+  .app-logo { width: 24px; height: 24px; }
   .account-toolbar { width: 100%; flex-direction: row; align-items: center; justify-content: flex-start; }
   .account-toolbar #accountStatus { flex: 1 1 100%; }
   .account-toolbar #closeApp { margin-left: auto; }

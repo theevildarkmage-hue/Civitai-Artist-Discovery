@@ -1,4 +1,6 @@
 """Cached preview decisions preserve safety and read a whole page in one connection."""
+
+import test_safety  # Fail closed before any test network request.
 import os
 from pathlib import Path
 import statistics

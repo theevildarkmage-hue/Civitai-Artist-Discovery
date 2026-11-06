@@ -6,14 +6,23 @@ server.py so the two cannot drift.
 """
 
 import re
+import argparse
+import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "build" / "version_info.txt"
-
-source = (ROOT / "server.py").read_text(encoding="utf-8")
-version = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', source, re.M).group(1)
-name = re.search(r'^APP_NAME\s*=\s*"([^"]+)"', source, re.M).group(1)
+sys.path.insert(0,str(ROOT))
+from discovery.build_config import validate,CONFIG
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--configuration',type=Path)
+parser.add_argument('--output',type=Path,default=ROOT/'build/version_info.txt')
+args=parser.parse_args()
+OUT=args.output
+config=validate(json.loads(args.configuration.read_text(encoding='utf-8'))) if args.configuration else CONFIG
+version=config['version']
+application='CivitaiDiscoveryBeta' if config['channel']=='beta' else 'CivitaiArtistDiscovery'
+name='Civitai Discovery 3.0'+(' Beta' if config['channel']=='beta' else '')
 
 # Windows wants four integers; the pre-release suffix lives in the string fields.
 numeric = [int(part) for part in re.findall(r"\d+", version)[:3]] + [0]
@@ -33,9 +42,9 @@ OUT.write_text(f"""VSVersionInfo(
         StringStruct('CompanyName', 'theevildarkmage126'),
         StringStruct('FileDescription', 'Browse Civitai artists one day at a time'),
         StringStruct('FileVersion', '{version}'),
-        StringStruct('InternalName', 'CivitaiArtistDiscovery'),
+        StringStruct('InternalName', '{application}'),
         StringStruct('LegalCopyright', 'Copyright (c) 2026 theevildarkmage126. MIT licensed.'),
-        StringStruct('OriginalFilename', 'CivitaiArtistDiscovery.exe'),
+        StringStruct('OriginalFilename', '{application}.exe'),
         StringStruct('ProductName', '{name}'),
         StringStruct('ProductVersion', '{version}')])
     ]),

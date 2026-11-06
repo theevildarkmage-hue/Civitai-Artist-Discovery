@@ -1,4 +1,6 @@
 """Calendar coverage combines full and partial archive blocks without hydrating cards."""
+
+import test_safety  # Fail closed before any test network request.
 import os
 from pathlib import Path
 import sys
