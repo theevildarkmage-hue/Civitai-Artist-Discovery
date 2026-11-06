@@ -75,10 +75,13 @@ class Boundary:
 class Isolation(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='cad3-oauth-isolation-');self.root=Path(self.temp.name);self.stack=ExitStack()
-        for name,value in [('APP_DATA',self.root),('TOKEN_PATH',self.root/'oauth_tokens.dpapi'),('LEGACY_TOKEN_PATH',self.root/'oauth_tokens.dpapi'),('_ROTATED_PENDING',None)]:self.stack.enter_context(patch.object(oauth,name,value))
+        for name,value in [('APP_DATA',self.root),('TOKEN_PATH',self.root/'oauth_tokens.dpapi'),('LEGACY_TOKEN_PATH',self.root/'oauth_tokens.dpapi'),('KEYRING_ACCOUNT',hashlib.sha256(str(self.root).encode()).hexdigest()),('_ROTATED_PENDING',None)]:self.stack.enter_context(patch.object(oauth,name,value))
         self.stack.enter_context(patch.object(oauth,'client_id',return_value=oauth.BUILTIN_CLIENT_ID))
         self.stack.enter_context(patch.object(urllib.request,'_opener',None))
-    def tearDown(self):self.stack.close();self.temp.cleanup()
+    def tearDown(self):
+        try:
+            if oauth._uses_secret_service():oauth._delete_linux()
+        finally:self.stack.close();self.temp.cleanup()
     def intercept(self,boundary):
         def intercepted(handler,request):return boundary.open(handler,request)
         self.stack.enter_context(patch.object(urllib.request.HTTPSHandler,'https_open',intercepted))
@@ -98,7 +101,12 @@ class Isolation(unittest.TestCase):
         boundary=Boundary();self.intercept(boundary);self.login()
         self.assertEqual(oauth.reconnect_community(timeout=5)['id'],7)
         stored=oauth._load();self.assertNotIn('id_token',stored)
-        encrypted=oauth.TOKEN_PATH.read_bytes();self.assertTrue(all(v.encode() not in encrypted for v in [*CANARIES.values(),ASSERTION]))
+        if oauth._uses_secret_service():
+            self.assertFalse(oauth.TOKEN_PATH.exists())
+            serialized=oauth._linux_keyring().get_password(oauth.KEYRING_SERVICE,oauth.KEYRING_ACCOUNT)
+            self.assertEqual(json.loads(serialized),stored);self.assertNotIn(ASSERTION,serialized)
+        else:
+            encrypted=oauth.TOKEN_PATH.read_bytes();self.assertTrue(all(v.encode() not in encrypted for v in [*CANARIES.values(),ASSERTION]))
         backend=community.SupabaseCommunityBackend(cloud_identity.ENDPOINT,identity_token_provider=oauth.get_community_session)
         for op in ['status','gallery','verify','recommend','withdraw','report']:
             backend.request(op,CANARIES['access'],{'artwork':123} if op not in ('status','gallery') else {})
@@ -110,6 +118,7 @@ class Isolation(unittest.TestCase):
         stored=oauth._load();stored['expires_at']=0;oauth._save(stored);self.assertEqual(oauth.get_access_token(),CANARIES['access'])
         stored=oauth._load();stored['discovery_session']['expires_at']=0;oauth._save(stored);self.assertEqual(oauth.get_community_session(),SESSION)
         oauth.disconnect();self.assertFalse(oauth.TOKEN_PATH.exists())
+        if oauth._uses_secret_service():self.assertIsNone(oauth._linux_keyring().get_password(oauth.KEYRING_SERVICE,oauth.KEYRING_ACCOUNT))
         self.safe(boundary,'login_callback_storage_registry_operations_renewal_logout')
         exchanges=[e for e in boundary.events if e['body'].startswith('{') and json.loads(e['body']).get('operation')=='identityExchange']
         self.assertEqual(len(exchanges),2);self.assertEqual(json.loads(exchanges[0]['body'])['identityAssertion'],ASSERTION)

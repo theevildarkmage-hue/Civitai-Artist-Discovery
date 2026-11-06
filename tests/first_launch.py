@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import socket
 import sys
 import tempfile
 import time
@@ -20,6 +21,9 @@ PORT = 8893
 
 
 def serve(temporary):
+    global PORT
+    with socket.socket() as reserve:
+        reserve.bind(('127.0.0.1',0));PORT=reserve.getsockname()[1]
     env = {**os.environ, "CIVITAI_HISTORY_DATA_DIR": temporary}
     process = subprocess.Popen([sys.executable, str(ROOT / "server.py"), "--port", str(PORT),
                                 "--no-browser"], cwd=ROOT, env=env)
