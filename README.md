@@ -1,13 +1,17 @@
 # Civitai Artist Discovery
 
-## Production stable 3.0.0 candidate — unpublished
+## Production stable 3.0.0
 
-The stable Windows candidate is built for the separate Production environment.
-Normal Civitai sign-in will automatically enroll verified users when public
-Community is activated; no invitation, second login or separate registration is
-required. Public enrollment and ordinary quotas are tested on disposable native
-infrastructure. Production Community and Registry remain disabled during private
-owner acceptance; no stable release or public activation has occurred.
+The published stable Windows release connects to Production Community. Normal
+Civitai sign-in automatically enrolls verified users; no invitation or separate
+registration is required. The separate activity Registry remains disabled.
+
+**Linux/source users:** use `python server.py --stable` after installing runtime
+dependencies, or `uv run --with-requirements requirements.txt server.py --stable`.
+This explicitly selects stable 3.0.0, the reviewed Production services, and a
+separate local profile. Plain `python server.py` remains the beta/Development
+source entry point, including a local Community ledger by default. Checking out a
+stable tag alone does not select Production. See [Linux stable source setup](docs/3.0-linux-stable-source.md).
 
 [Release notes](docs/3.0-stable-release-notes.md) ·
 [Changelog](docs/3.0-changelog.md) · [Privacy](docs/3.0-privacy.md) ·
@@ -16,8 +20,6 @@ owner acceptance; no stable release or public activation has occurred.
 Privacy/data deletion: [theevildarkmage@gmail.com](mailto:theevildarkmage@gmail.com),
 confirmed by the owner for public listing. Security reports continue through
 [GitHub private vulnerability reporting](SECURITY.md).
-Only a separate explicit owner instruction containing **"Publish"** permits
-activation/publication. Stable 2.2.1 and published beta users remain unchanged.
 
 ## Windows beta 3.0.0-beta.13
 
@@ -208,9 +210,10 @@ Playwright and Chromium are required only for the browser test suite. PyInstalle
 Pillow are required only for packaging. On Windows, the runtime requirements file does
 not install any package. On Linux, it installs `keyring` and its Secret Service support.
 
-No configuration file is required. On first launch the app creates `data/` beside the
-executable or source checkout and asks you to connect to Civitai. Extract packaged builds
-to a user-writable folder before launching them.
+No configuration file is required. Packaged builds create `data/` beside the executable.
+Stable source runs create `data-production-3.0/`; ordinary Development source runs
+use `data-dev-3.0/` or an explicitly selected development profile. Existing data is
+not automatically moved. Extract packaged builds to a user-writable folder.
 
 ## Launching
 
@@ -232,8 +235,12 @@ Experimental Linux source launch:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-python server.py
+python server.py --stable
 ```
+
+An unlocked desktop Secret Service keyring is required for Linux sign-in. This is
+experimental Linux support; the Windows package remains the routinely tested
+distribution. See the [Linux setup and troubleshooting guide](docs/3.0-linux-stable-source.md).
 
 The executable is a local Python/SQLite server; the browser tab is its interface rather
 than a standalone webpage. The server listens only on the local computer and opens the

@@ -7,7 +7,8 @@ from .build_config import ENDPOINT as BETA_ENDPOINT
 
 
 def production():
-    return bool(getattr(sys,'frozen',False)) or os.environ.get('CAD_DEVELOPMENT')!='1'
+    from .build_config import ENVIRONMENT
+    return bool(getattr(sys,'frozen',False)) or ENVIRONMENT == 'production' or os.environ.get('CAD_DEVELOPMENT')!='1'
 
 
 def configuration(data):

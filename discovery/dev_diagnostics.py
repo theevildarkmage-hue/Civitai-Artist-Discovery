@@ -13,7 +13,8 @@ from .diagnostics import redact_sensitive
 
 
 def enabled():
-    return os.environ.get('CAD_DEVELOPMENT')=='1' and not getattr(sys,'frozen',False)
+    from .build_config import ENVIRONMENT
+    return os.environ.get('CAD_DEVELOPMENT')=='1' and not getattr(sys,'frozen',False) and ENVIRONMENT != 'production'
 
 
 def git_commit(root):
