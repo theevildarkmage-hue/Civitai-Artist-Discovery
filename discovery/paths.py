@@ -31,6 +31,10 @@ def data_root() -> Path:
         return Path(override)
     if getattr(sys,'frozen',False):
         return application_root() / 'data'
+    from .build_config import ENVIRONMENT
+    if ENVIRONMENT == 'production':
+        # Never reuse the Development selection or its identity/device credentials.
+        return application_root() / 'data-production-3.0'
     selection=application_root()/'.data-directory-3.0.json'
     if selection.exists():
         value=json.loads(selection.read_text(encoding='utf-8'))['directory']

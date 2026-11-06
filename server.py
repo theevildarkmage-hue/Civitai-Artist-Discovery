@@ -53,7 +53,7 @@ ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC = ROOT / "static"
 APP_NAME = "Civitai Discovery 3.0 Beta"
 APP_VERSION = "3.0.0-beta.14"
-from discovery.build_config import APP_NAME, VERSION as BUILD_VERSION
+from discovery.build_config import APP_NAME, VERSION as BUILD_VERSION, CHANNEL, ENVIRONMENT
 APP_VERSION = BUILD_VERSION
 from discovery.dev_diagnostics import enabled as development_diagnostics_enabled, git_commit
 DEVELOPMENT_COMMIT = git_commit(ROOT) if development_diagnostics_enabled() else 'unavailable'
@@ -1381,7 +1381,8 @@ class Handler(BaseHTTPRequestHandler):
                     archives = bool(db.execute("SELECT 1 FROM days WHERE complete=1 LIMIT 1").fetchone())
             except Exception:
                 archives = False
-            self.json_response({"timezoneSource": "America/Chicago", "archiveCalendar": "America/Chicago", "latestCompleteDay": previous_local_day(), "storage": "Isolated Discovery 3.0 development directory",
+            self.json_response({"timezoneSource": "America/Chicago", "archiveCalendar": "America/Chicago", "latestCompleteDay": previous_local_day(), "storage": f"Isolated Discovery 3.0 {ENVIRONMENT} directory",
+                "channel": CHANNEL, "environment": ENVIRONMENT,
                 "hasArchives": archives, "version": APP_VERSION, "developmentDiagnostics": development_diagnostics_enabled()})
             return
         if parsed.path == "/api/settings":
@@ -2389,6 +2390,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    if not getattr(sys, 'frozen', False):
+        parser.add_argument('--stable', action='store_true',
+                            help='Use the stable Production service and a separate local profile')
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=8907)
     parser.add_argument("--no-browser", action="store_true")

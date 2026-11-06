@@ -7,6 +7,16 @@ from pathlib import Path
 DEVELOPMENT_PROJECT = 'aibelmhucizupzvvhdvf'
 DEFAULT = {'schemaVersion': 1, 'channel': 'beta', 'version': '3.0.0-beta.14',
            'environment': 'development', 'projectRef': DEVELOPMENT_PROJECT, 'preview': False}
+STABLE_SOURCE = {'schemaVersion': 1, 'channel': 'stable', 'version': '3.0.0',
+                 'environment': 'production', 'projectRef': 'masrxykkbqngtbeeqpbq', 'preview': False}
+
+
+def stable_source_requested():
+    """Explicit source entry point; never accept arbitrary endpoints/configuration."""
+    arguments = sys.argv[1:]
+    if '--' in arguments:
+        arguments = arguments[:arguments.index('--')]
+    return not getattr(sys, 'frozen', False) and '--stable' in arguments
 
 
 def validate(value):
@@ -39,7 +49,8 @@ def load():
             raise RuntimeError('Packaged build configuration missing or invalid')
         return validate(json.loads(path.read_text(encoding='utf-8')))
     # Source execution cannot be repointed by an environment variable or profile file.
-    return validate(DEFAULT)
+    # --stable selects only this reviewed public release, before any clients import.
+    return validate(STABLE_SOURCE if stable_source_requested() else DEFAULT)
 
 
 CONFIG = load()
