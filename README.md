@@ -13,6 +13,13 @@ separate local profile. Plain `python server.py` remains the beta/Development
 source entry point, including a local Community ledger by default. Checking out a
 stable tag alone does not select Production. See [Linux stable source setup](docs/3.0-linux-stable-source.md).
 
+For this source fix, update to current `main` (or current `development/3.0`), then
+launch with `--stable`. The original `v3.0.0` tag is immutable and does not contain
+the fix. Updated source launches show a notice explaining the selected Community
+mode and, when needed, the command for switching to public Community. This applies
+to Windows source users as well as Linux; the published Windows ZIP already has
+the correct Production configuration.
+
 [Release notes](docs/3.0-stable-release-notes.md) ·
 [Changelog](docs/3.0-changelog.md) · [Privacy](docs/3.0-privacy.md) ·
 [Install/upgrade/rollback](docs/3.0-stable-installation.md) ·

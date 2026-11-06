@@ -12,6 +12,18 @@ def probe(code,stable=True,environment=None):
     return json.loads(result.stdout)
 
 class StableSource(unittest.TestCase):
+    def test_source_notices_explain_selection_and_exclude_packages(self):
+        from discovery.source_notice import render
+        self.assertEqual(render(frozen=True,environment='production'),'')
+        self.assertEqual(render(frozen=True,environment='development'),'')
+        development=render(frozen=False,environment='development')
+        self.assertIn('Public Community needs the stable launch',development)
+        self.assertIn('server.py --stable',development)
+        self.assertIn('Your existing data will be kept',development)
+        stable=render(frozen=False,environment='production')
+        self.assertIn('Public Community is selected',stable)
+        self.assertNotIn('needs the stable launch',stable)
+
     def test_production_clients_share_fixed_endpoint_despite_environment(self):
         result=probe('''import json
 from discovery import build_config as b,cloud_identity,registry,community_beta,community,community_security,dev_diagnostics
@@ -95,11 +107,51 @@ with tempfile.TemporaryDirectory() as folder:
                         page.goto(base,wait_until='domcontentloaded')
                         page.locator('#appVersion').filter(has_text='v3.0.0').wait_for()
                         page.locator('#welcomeConnect').wait_for(state='visible')
+                        self.assertEqual(page.locator('#sourceLaunchTitle').inner_text(),'Public Community is selected')
+                        page.locator('#sourceLaunchNotice').screenshot(path=str(test_safety.REPORTS/'source-stable-message.png'))
+                        page.screenshot(path=str(test_safety.REPORTS/'source-stable-screen.png'),full_page=True)
+                        for width in (390,1440):
+                            page.set_viewport_size({'width':width,'height':1000})
+                            self.assertTrue(page.locator('#sourceLaunchNotice').is_visible())
+                            self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'),width)
                         self.assertEqual(page.locator('#appVersion').inner_text(),'v3.0.0')
                         self.assertNotIn('Beta',page.locator('h1').inner_text())
                         self.assertEqual(errors,[])
                     finally:browser.close()
             finally:
                 process.terminate();process.wait(timeout=10)
+
+    def test_development_message_real_browser(self):
+        with tempfile.TemporaryDirectory(prefix='cad3-source-message-') as folder:
+            with socket.socket() as reserve:reserve.bind(('127.0.0.1',0));port=reserve.getsockname()[1]
+            env={**os.environ,'CIVITAI_HISTORY_DATA_DIR':folder}
+            for key in ('CAD_COMMUNITY_MODE','CAD_COMMUNITY_URL','CAD_COMMUNITY_TESTING','CAD_DEVELOPMENT'):env.pop(key,None)
+            with (Path(folder)/'server-output.txt').open('w') as log:
+                process=subprocess.Popen([sys.executable,str(ROOT/'server.py'),'--port',str(port),'--no-browser'],cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT)
+            try:
+                base=f'http://127.0.0.1:{port}';deadline=time.monotonic()+30
+                while True:
+                    try:
+                        with urllib.request.urlopen(base+'/api/history/config',timeout=1) as response:config=json.load(response)
+                        break
+                    except OSError:
+                        if process.poll() is not None or time.monotonic()>deadline:self.fail('Isolated source server did not start')
+                        time.sleep(.1)
+                self.assertEqual(config['environment'],'development')
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as playwright:
+                    browser=playwright.chromium.launch(headless=True)
+                    try:
+                        page=browser.new_page(viewport={'width':1440,'height':1000})
+                        page.goto(base,wait_until='domcontentloaded')
+                        page.locator('#welcomeConnect').wait_for(state='visible')
+                        self.assertEqual(page.locator('#sourceLaunchTitle').inner_text(),'Public Community needs the stable launch')
+                        self.assertIn('server.py --stable',page.locator('#sourceLaunchNotice').inner_text())
+                        page.locator('#sourceLaunchNotice').screenshot(path=str(test_safety.REPORTS/'source-development-message.png'))
+                        page.screenshot(path=str(test_safety.REPORTS/'source-development-screen.png'),full_page=True)
+                        page.set_viewport_size({'width':390,'height':844})
+                        self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'),390)
+                    finally:browser.close()
+            finally:process.terminate();process.wait(timeout=10)
 
 if __name__=='__main__':unittest.main()
