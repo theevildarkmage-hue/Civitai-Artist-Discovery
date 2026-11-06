@@ -1,5 +1,7 @@
 """The Time Machine tab explains itself, and shows priming progress in creators."""
 
+import test_safety  # Fail closed before any test network request.
+
 import os
 from pathlib import Path
 import subprocess
@@ -27,7 +29,7 @@ def artist(name, image_id, day, *, seen, known, complete):
                                "browsingLevel": 1, "stats": {}},
             "seenCount": seen, "knownCount": known, "complete": complete}
 PORT = 8901
-SHOTS = ROOT / "reports" / "time-machine"
+SHOTS = test_safety.REPORTS / "time-machine"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=True) as temporary:

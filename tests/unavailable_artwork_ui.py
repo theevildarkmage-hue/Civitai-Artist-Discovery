@@ -1,4 +1,5 @@
 """Controlled missing and transient media across real gallery adapters and browsers."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -23,6 +24,9 @@ def artwork(i):
     item['thumbnailUrl'] = f'https://image.civitai.com/unavailable/preview/{i}.jpeg'
     if i == 1003:
         item.pop('thumbnailUrl')  # Older archives need only an original URL.
+    if i == 2:
+        item['availabilitySources']=[item['thumbnailUrl'],item['url']]
+        item['url']=item['thumbnailUrl']='/cached-unavailable/2.jpeg'
     return item
 
 

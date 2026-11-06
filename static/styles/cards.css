@@ -53,8 +53,8 @@
 @media (prefers-reduced-motion: reduce) { .card-nav-spinner { animation: none; } }
 .creator-card .carousel-arrow.previous { left: 8px; }
 .creator-card .carousel-arrow.next { right: 8px; }
-.creator-card .image-progress { height: 6px; gap: 3px; padding: 0 5px 2px; }
-.creator-card .image-progress button { height: 3px; border-radius: 2px; background: #ffffff5c; }
+.creator-card .image-progress { height: 12px; gap: 3px; padding: 3px 5px; background: #08090bb3; }
+.creator-card .image-progress button { height: 6px; border-radius: 3px; background: #ffffff80; }
 .creator-card .image-progress button.active { background: #fff; }
 .creator-card.tm-card { gap: 0; }
 .creator-card .tm-progress { padding: 6px 10px 10px; font-size: 11px; }

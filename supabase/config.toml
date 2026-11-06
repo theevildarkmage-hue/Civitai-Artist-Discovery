@@ -1,0 +1,5 @@
+[functions.community-v1]
+# Discovery sessions are opaque application credentials, not Supabase JWTs.
+# The candidate independently verifies nonce-bound Civitai identity assertions
+# and resolves hashed Discovery sessions through restricted database routines.
+verify_jwt = false

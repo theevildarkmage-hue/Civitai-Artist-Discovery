@@ -1,5 +1,7 @@
 """Recent posts distinguish strong creative signals from generic tags."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import tempfile

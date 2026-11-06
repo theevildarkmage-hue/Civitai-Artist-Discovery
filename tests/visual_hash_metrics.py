@@ -1,5 +1,7 @@
 """Civitai listing hashes are retained and produce request-free duplicate metrics."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 import tempfile

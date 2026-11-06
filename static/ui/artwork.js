@@ -113,7 +113,8 @@ export function showArtwork(image, previewUrl, originalUrl, item = {}) {
     }
     async function terminal() {
       image.classList.remove('image-pending'); image.classList.add('image-error');
-      if (await classify(key, [preview, originalUrl], valid)) { if (valid()) missing(); return; }
+      const sources = Array.isArray(item.availabilitySources) ? item.availabilitySources : [preview, originalUrl];
+      if (await classify(key, sources, valid)) { if (valid()) missing(); return; }
       if (!valid()) return;
       if (!retried) { timer = setTimeout(() => attempt(true), 1500); return; }
       // Ambiguous failures keep the artist; only an explicit click starts another budget.

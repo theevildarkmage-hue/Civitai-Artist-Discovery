@@ -1,4 +1,5 @@
 """Real pointer/keyboard regressions for Content, Filters, and carousel ownership."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from datetime import datetime, timedelta
 import json
@@ -38,7 +39,7 @@ def step(page, card, key):
     return card.get_attribute('data-id')
 
 
-with tempfile.TemporaryDirectory(prefix='content-hover-', ignore_cleanup_errors=True) as temporary:
+with tempfile.TemporaryDirectory(prefix='cad3-content-hover-', ignore_cleanup_errors=True) as temporary:
     os.environ['CIVITAI_HISTORY_DATA_DIR'] = temporary
     from discovery.history import HistoryArchive
     from discovery.settings import AppSettings
@@ -116,89 +117,36 @@ with tempfile.TemporaryDirectory(prefix='content-hover-', ignore_cleanup_errors=
                         r.continue_()
 
                 page.route('**/*', route)
+                page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
                 page.goto(base, wait_until='domcontentloaded')
-                page.wait_for_selector('#gallery .creator-card')
+                try:page.wait_for_selector('#gallery .creator-card')
+                except Exception:
+                    raise AssertionError({'browser':name,'pageErrors':errors,
+                        'status':get(base,f'/api/history/status?date={DAY}&segment=all'),
+                        'serverError':(Path(temporary)/'error.log').read_text(encoding='utf-8') if (Path(temporary)/'error.log').exists() else None,
+                        'page':page.locator('main').inner_text()[:1500]})
                 wait_ready(page)
-                content, filters = page.locator('#contentFilter'), page.locator('#filterToggle')
-                compact, full = page.locator('#contentPanel'), page.locator('#filterPanel')
+                filters, full = page.locator('#filterToggle'), page.locator('#filterPanel')
+                assert page.locator('#contentFilter,#contentPanel').count()==0
                 assert get(base, '/api/settings')['browsingLevels'] == [1, 2, 4]
-                count_before = len(model_reads)
-                for _ in range(2):
-                    content.click()
-                    assert compact.is_visible() and not full.is_visible()
-                    assert compact.locator('[data-level]').count() == 5
-                    assert compact.locator('[aria-pressed="true"]').count() == 3
-                    assert compact.locator('select,input,#modelMenu').count() == 0
-                    assert content.get_attribute('aria-expanded') == 'true'
-                    content.click()
-                    assert not compact.is_visible()
-                    assert content.get_attribute('aria-expanded') == 'false'
-                assert len(model_reads) == count_before, 'Content opening fetched model metadata'
-                content.click()
-                page.mouse.click(10, 90)
-                assert not compact.is_visible()
-                content.focus()
-                page.keyboard.press('ArrowDown')
-                assert compact.locator('[data-level="1"]').evaluate('(el)=>el===document.activeElement')
-                page.keyboard.press('Escape')
-                assert not compact.is_visible() and content.evaluate('(el)=>el===document.activeElement')
-                page.keyboard.press('Enter')
-                assert compact.is_visible()
-                page.keyboard.press('Enter')
-                assert not compact.is_visible()
-                content.press('ArrowDown')
-                page.keyboard.press('Space')
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && !galleryFilterState().levels.includes(1)")
-                page.keyboard.press('Escape')
-                content.click()
-                compact.locator('[data-level="1"]').click()
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && galleryFilterState().levels.length===3")
-                page.keyboard.press('Escape')
-
-                content.click()
-                compact.locator('[data-level="4"]').click()
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && galleryFilterState().levels.length===2")
-                assert get(base, '/api/settings')['browsingLevels'] == [1, 2]
-                page.wait_for_function("() => document.querySelectorAll('#gallery .creator-card').length===2")
-                assert page.locator('[data-username="gamma"]').count() == 0
-                filters.click()
-                assert full.is_visible() and not compact.is_visible()
-                assert full.locator('[data-level="4"]').get_attribute('aria-pressed') == 'false'
-                full.locator('[data-level="4"]').click()
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && galleryFilterState().levels.length===3")
-                content.click()
-                assert compact.is_visible() and not full.is_visible()
-                assert compact.locator('[data-level="4"]').get_attribute('aria-pressed') == 'true'
-                page.locator('#calendarToggle').click()
-                assert not compact.is_visible()
-                page.wait_for_selector('#calendarPanel:not(.hidden)')
-                content.focus()
-                page.keyboard.press('ArrowDown')
-                assert compact.is_visible() and page.locator('#calendarPanel').is_hidden()
-                page.locator('#galleryPreferences').click()
-                page.wait_for_selector('#preferencesMenu:not(.hidden)')
-                assert not compact.is_visible()
-                content.click()
-                assert page.locator('#preferencesMenu').is_hidden()
-                page.keyboard.press('Escape')
-                filters.click()
-                filters.click()
-                assert not full.is_visible()
-                filters.focus()
-                page.keyboard.press('ArrowDown')
+                filters.focus();filters.press('ArrowDown')
                 assert full.is_visible()
+                assert full.locator('[data-level]').count()==5
+                assert full.locator('[aria-pressed="true"]').count()==3
                 page.keyboard.press('Escape')
-                assert filters.evaluate('(el)=>el===document.activeElement')
-
-                for width, height in [(800, 900), (390, 844), (1450, 1000)]:
-                    page.set_viewport_size({'width': width, 'height': height})
-                    content.click()
-                    page.wait_for_timeout(50)
-                    bounds = compact.bounding_box()
-                    assert bounds['x'] >= 11 and bounds['x']+bounds['width'] <= width-11, bounds
-                    assert bounds['y'] >= 11 and bounds['y']+bounds['height'] <= height-11, bounds
+                assert not full.is_visible() and filters.evaluate('(el)=>el===document.activeElement')
+                filters.click();full.locator('[data-level="4"]').click()
+                page.wait_for_function("()=>document.querySelector('#contentMenu').getAttribute('aria-busy')!=='true' && galleryFilterState().levels.length===2")
+                assert get(base,'/api/settings')['browsingLevels']==[1,2]
+                full.locator('[data-level="4"]').click()
+                page.wait_for_function("()=>document.querySelector('#contentMenu').getAttribute('aria-busy')!=='true' && galleryFilterState().levels.length===3")
+                page.keyboard.press('Escape')
+                for width,height in [(800,900),(390,844),(1450,1000)]:
+                    page.set_viewport_size({'width':width,'height':height});filters.click();page.wait_for_timeout(50)
+                    bounds=full.bounding_box()
+                    assert bounds['x']>=11 and bounds['x']+bounds['width']<=width-11,bounds
+                    assert bounds['y']>=11 and bounds['y']+bounds['height']<=height-11,bounds
                     page.keyboard.press('Escape')
-
                 filters.click()
                 full.locator('#mediaType').select_option('video')
                 page.wait_for_function("() => document.querySelectorAll('#gallery .creator-card').length===2 && galleryFilterState().media==='video'")
@@ -213,7 +161,7 @@ with tempfile.TemporaryDirectory(prefix='content-hover-', ignore_cleanup_errors=
                 assert single.get_attribute('data-id') == '11'
                 filters.click()
                 full.locator('.filter-reset').click()
-                page.wait_for_function("() => !document.querySelector('#contentFilter').disabled && galleryFilterState().media==='all' && galleryFilterState().models.length===0 && galleryFilterState().levels.length===2")
+                page.wait_for_function("() => document.querySelector('#contentMenu').getAttribute('aria-busy')!=='true' && galleryFilterState().media==='all' && galleryFilterState().models.length===0 && galleryFilterState().levels.length===2")
                 assert get(base, '/api/settings')['browsingLevels'] == [1, 2]
                 assert get(base, '/api/settings')['mediaType'] == 'all'
                 page.keyboard.press('Escape')

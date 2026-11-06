@@ -1,10 +1,13 @@
 """Signing in is the way in: there is no browsing without an account."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
 import subprocess
+import socket
 import sys
 import tempfile
 import time
@@ -18,6 +21,9 @@ PORT = 8893
 
 
 def serve(temporary):
+    global PORT
+    with socket.socket() as reserve:
+        reserve.bind(('127.0.0.1',0));PORT=reserve.getsockname()[1]
     env = {**os.environ, "CIVITAI_HISTORY_DATA_DIR": temporary}
     process = subprocess.Popen([sys.executable, str(ROOT / "server.py"), "--port", str(PORT),
                                 "--no-browser"], cwd=ROOT, env=env)
@@ -68,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-first-launch-", ignore_cleanup_
             assert not page.is_disabled("#welcomeConnect"), "bundled application did not enable sign-in"
             assert page.is_hidden("#ownAppToggle"), "onboarding offered OAuth configuration"
             assert page.is_hidden("#ownAppPanel") and page.is_hidden("#ownAppInput")
-            page.screenshot(path=str(ROOT / "reports" / "discovery-dashboard" / "first-launch.png"))
+            page.screenshot(path=str(test_safety.REPORTS / "discovery-dashboard" / "first-launch.png"))
             assert not errors, errors
             page.close()
             browser.close()

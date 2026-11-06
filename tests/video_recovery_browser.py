@@ -3,6 +3,7 @@
 The tiny generated test pattern contains no user artwork. No app databases, credentials,
 or external requests are involved. Lifecycle timings are accelerated only in this fixture.
 """
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from collections import Counter
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer

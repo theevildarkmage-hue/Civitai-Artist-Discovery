@@ -5,6 +5,8 @@ Civitai's own artwork puts back exactly what the user asked not to see, so the s
 are imported and enforced on every view rather than treated as advisory.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os

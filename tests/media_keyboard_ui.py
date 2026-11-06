@@ -1,4 +1,5 @@
 """Media preferences/chips/reset and card-focused keys work through the real API."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from datetime import datetime, timedelta
 import json
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 with tempfile.TemporaryDirectory(
-    prefix="media-keyboard-", ignore_cleanup_errors=True
+    prefix="cad3-media-keyboard-", ignore_cleanup_errors=True
 ) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     from discovery.history import HistoryArchive
@@ -46,6 +47,10 @@ with tempfile.TemporaryDirectory(
         ]
     ]
     archive._upsert_normalized(rows, forced_date=day)
+    from discovery.taste import TasteStore
+    with TasteStore(Path(temporary)/'discovery').connect() as db:
+        db.executemany('INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)',
+                       [(row['id'],'2026-11-03T00:00:00Z') for row in rows])
     with archive.connect() as db:
         db.execute("INSERT INTO days(day,complete) VALUES(?,1)", (day,))
     archive.build_artist_index(day)
@@ -100,6 +105,7 @@ with tempfile.TemporaryDirectory(
                     content_type="application/json", body='{"hasData":true}'
                 ),
             )
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(base, wait_until="domcontentloaded")
             page.locator(".creator-card").first.wait_for()
             page.locator("#filterToggle").click()

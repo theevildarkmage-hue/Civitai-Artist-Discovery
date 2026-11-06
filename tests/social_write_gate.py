@@ -6,6 +6,8 @@ and it has to actually be enforced. An alpha tester previously managed to follow
 a connection that should not have allowed it, so the refusal is tested, not assumed.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 import importlib
 import json
 import os

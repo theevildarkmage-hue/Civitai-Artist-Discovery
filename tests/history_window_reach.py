@@ -1,5 +1,7 @@
 """An out-of-reach date fails before collecting, and says how far back Civitai reaches."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys

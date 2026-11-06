@@ -1,4 +1,5 @@
 """Status confirmation is bounded, HEAD-only, conservative, and CDN-restricted."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from pathlib import Path
 import sys
@@ -57,6 +58,17 @@ for invalid in ['http://image.civitai.com/a.jpeg', 'https://localhost/a.jpeg',
     except ValueError:
         pass
 assert NoRedirect().redirect_request(None, None, 302, '', {}, URL) is None
+
+# Compose availability classification with 3.0's protected local preview cache.
+import server
+item={'id':42,'type':'image','url':URL,'thumbnailUrl':URL.replace('original=true','width=512')}
+with patch.object(server,'auth_status',side_effect=RuntimeError('No cached session')):
+    assert server.personal_preview(item)==item  # Missing auth is not a 500 on cached reads.
+with patch.object(server,'auth_status',return_value={'id':123}):
+    cached=server.personal_preview(item)
+    assert cached['thumbnailUrl']=='/api/history/thumbnail/42'
+    assert cached['availabilitySources']==[item['thumbnailUrl'],item['url']]
+    assert item['url']==URL  # Never mutate authoritative archive metadata.
 checker.recent.extend([__import__('time').monotonic()] * 64)
 with patch('urllib.request.build_opener') as opener:
     assert checker.check([URL])['unavailable'] is False

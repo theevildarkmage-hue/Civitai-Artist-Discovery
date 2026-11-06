@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -20,7 +22,7 @@ import server
 from discovery.history import HistoryArchive
 
 
-with tempfile.TemporaryDirectory(prefix="creator-metadata-unit-", ignore_cleanup_errors=True) as temporary:
+with tempfile.TemporaryDirectory(prefix="cad3-creator-metadata-unit-", ignore_cleanup_errors=True) as temporary:
     root = Path(temporary)
     real_taste = server.TASTE
     server.CREATOR_PROFILES = root / "creator_profiles.json"
@@ -102,7 +104,7 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-unit-", ignore_cleanup
 
 
 PORT = 8881
-with tempfile.TemporaryDirectory(prefix="creator-metadata-browser-", ignore_cleanup_errors=True) as temporary:
+with tempfile.TemporaryDirectory(prefix="cad3-creator-metadata-browser-", ignore_cleanup_errors=True) as temporary:
     root = Path(temporary)
     yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
     history = HistoryArchive(root / "history")
@@ -150,6 +152,7 @@ with tempfile.TemporaryDirectory(prefix="creator-metadata-browser-", ignore_clea
                               body='{"added":true,"collectionName":"Favorites"}')))
             page.route("**/api/discovery/summary", lambda route: route.fulfill(status=200,
                 content_type="application/json", body='{"hasData":true}'))
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
             page.wait_for_selector(".creator-card")
             card = page.locator(".creator-card").first

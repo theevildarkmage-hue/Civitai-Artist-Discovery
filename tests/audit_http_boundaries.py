@@ -1,4 +1,5 @@
 """Actual isolated server: Host/Origin, MIME, body limits and static confinement."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 import http.client
 import json
@@ -11,7 +12,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-with tempfile.TemporaryDirectory(prefix='audit-http-', ignore_cleanup_errors=True) as temporary:
+with tempfile.TemporaryDirectory(prefix='cad3-audit-http-', ignore_cleanup_errors=True) as temporary:
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     process = subprocess.Popen([sys.executable, str(ROOT / 'server.py'), '--port', str(port), '--no-browser'],
@@ -37,6 +38,13 @@ with tempfile.TemporaryDirectory(prefix='audit-http-', ignore_cleanup_errors=Tru
         else:
             raise AssertionError('Server not ready')
         assert request('GET', '/api/settings', headers={'Host': 'attacker.invalid'})[0] == 403
+        for site in ('cross-site', 'same-site'):
+            for path in ('/', '/api/artists?refresh=true', '/api/discovery/hidden?refresh=1'):
+                assert request('GET', path, headers={'Sec-Fetch-Site': site})[0] == 403
+            assert request('POST', '/api/settings', '{}',
+                           {'Sec-Fetch-Site': site, 'Content-Type': 'application/json'})[0] == 403
+        assert request('GET', '/api/settings', headers={'Sec-Fetch-Site': 'same-origin'})[0] == 200
+        assert request('GET', '/api/artists?refresh=true')[0] == 404
         for path in ['/../server.py', '/%2e%2e/data/settings.json', '/%2e%2e%5cserver.py']:
             assert request('GET', path)[0] in (403, 404), path
         for origin in ['http://attacker.invalid', 'null', 'http://127.0.0.1:1',

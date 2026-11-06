@@ -14,7 +14,7 @@ export function resetVideoRecoveryBudget() { sharedBudget.clear(); nextRecoveryA
 // One small lifecycle shared by the existing card and native detail adapters. Each
 // attempt owns its element/listeners; replacing it cannot deliver old events to a new player.
 export function createMediaLifecycle({ createVideo, mount, eligible, render, diagnose = () => {},
-  card = false, policy = VIDEO_POLICY, clock = realClock, budget = sharedBudget,
+  card = false, muted = true, policy = VIDEO_POLICY, clock = realClock, budget = sharedBudget,
   reserve = reserveRecovery, online = () => navigator.onLine !== false }) {
   let item = null, scope = null, generation = 0, revision = 0, wanted = false;
   let state = 'idle', message = '', retryable = false, disposed = false, snapshot = null;
@@ -131,6 +131,8 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
     }).catch(error => {
       if (!valid(s) || r !== revision || !wanted || error?.name === 'AbortError') return;
       if (!eligible()) { cancel('ineligible'); return; }
+      // A browser may refuse audible playback; fall back to muted instead of stopping.
+      if (error?.name === 'NotAllowedError' && !v.muted) { v.muted = true; s.playRequested = false; requestPlay(s); return; }
       if (error?.name === 'NotAllowedError') { retire(); emit('awaiting-gesture', 'Press Play to start the video.'); }
       else if (error?.name === 'NotSupportedError') fail('Video unavailable or unsupported. Try opening it on Civitai.');
       else recover('play-request-failed');
@@ -145,7 +147,7 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
       restoring: !!snapshot?.time, seekRequested: false, playRequested: false };
     scope = s;
     v.loop = true; v.playsInline = true; v.preload = 'auto';
-    v.muted = card ? true : (snapshot?.muted ?? true);
+    v.muted = card ? true : (snapshot?.muted ?? muted);
     v.volume = snapshot?.volume ?? 1; v.playbackRate = snapshot?.rate ?? 1;
     if (item.poster) v.poster = item.poster;
     const listen = (name, fn) => v.addEventListener(name, () => {
@@ -211,15 +213,54 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
 
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const cards = new Set();
+const artworkOwners = new WeakMap();
+let visibility = null, viewportTop = 0;
 let suspended = false, detail = null;
 function visibleElement(el) {
   if (!el?.isConnected || el.closest('.hidden') || document.hidden) return false;
   const box = el.getBoundingClientRect();
   return box.height > 0 && box.bottom > 0 && box.top < innerHeight;
 }
-const visibility = new IntersectionObserver(entries => {
-  for (const entry of entries) entry.target.setVideoVisible?.(entry.intersectionRatio >= VIDEO_POLICY.visibleShare);
-}, { threshold: [0, VIDEO_POLICY.visibleShare] });
+function artworkViewportTop() {
+  return Math.max(0, document.querySelector?.('.view-tabs')?.getBoundingClientRect().bottom || 0);
+}
+function artworkVisibleShare(stage) {
+  if (!stage.isConnected || stage.closest('.hidden, [hidden]') || document.hidden) return 0;
+  const box = stage.getBoundingClientRect();
+  if (box.width <= 0 || box.height <= 0) return 0;
+  const width = Math.max(0, Math.min(innerWidth, box.right) - Math.max(0, box.left));
+  const height = Math.max(0, Math.min(innerHeight, box.bottom) - Math.max(artworkViewportTop(), box.top));
+  return width * height / (box.width * box.height);
+}
+function observeArtwork() {
+  visibility?.disconnect();
+  viewportTop = artworkViewportTop();
+  const observer = new IntersectionObserver(entries => {
+    if (observer !== visibility) return;
+    for (const entry of entries) artworkOwners.get(entry.target)?.setVideoVisible?.(entry.intersectionRatio >= VIDEO_POLICY.visibleShare);
+  }, { threshold: [0, VIDEO_POLICY.visibleShare], rootMargin: `-${viewportTop}px 0px 0px 0px` });
+  visibility = observer;
+  for (const el of cards) {
+    const stage = el.querySelector('.image-stage');
+    observer.observe(stage);
+    el.setVideoVisible(artworkVisibleShare(stage) >= VIDEO_POLICY.visibleShare);
+  }
+}
+let artworkObservationFrame = 0;
+function scheduleArtworkObservation() {
+  if (artworkObservationFrame) return;
+  // The shell measures the masthead in its own resize callback. Read the final
+  // sticky offset next frame, after every observer has updated layout variables.
+  artworkObservationFrame = requestAnimationFrame(() => {
+    artworkObservationFrame = 0;
+    observeArtwork();
+  });
+}
+window.addEventListener('resize', scheduleArtworkObservation);
+if (typeof ResizeObserver !== 'undefined') {
+  const chromeResize = new ResizeObserver(scheduleArtworkObservation);
+  for (const el of document.querySelectorAll('.view-tabs, body > header')) chromeResize.observe(el);
+}
 export function refreshVideoEligibility() {
   for (const el of [...cards]) el.resumeVideo?.();
   detail?.refresh();
@@ -249,11 +290,12 @@ export function attachCardVideo(el, main) {
   let item = null, visible = false, manual = false, pausedVisit = false, settleTimer = 0, released = false;
   const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'video-toggle'; toggle.hidden = true;
   const stage = el.querySelector('.image-stage'); stage.append(toggle);
+  const artworkEligible = () => artworkVisibleShare(stage) >= (manual ? Number.EPSILON : VIDEO_POLICY.visibleShare);
   const status = feedback(stage, 'card-video-status');
   const controller = createMediaLifecycle({ card: true,
     createVideo: () => { const v = document.createElement('video'); v.className = 'card-video'; v.hidden = true; v.setAttribute('aria-hidden', 'true'); return v; },
     mount: v => main.after(v),
-    eligible: () => !released && !!item?.videoUrl && !suspended && visibleElement(el) &&
+    eligible: () => !released && !!item?.videoUrl && !suspended && artworkEligible() &&
       !!el.dataset.imagesActive && el.getAttribute('aria-busy') !== 'true' &&
       (manual || (visible && !pausedVisit && !reducedMotion.matches)),
     diagnose: diagnostic('gallery', () => item),
@@ -279,20 +321,24 @@ export function attachCardVideo(el, main) {
     if (released) return;
     if (!el.isConnected) { if (el.dataset.videoAttached) el.releaseVideo(); return; }
     el.dataset.videoAttached = '1';
-    if (!visibleElement(el) || suspended || el.getAttribute('aria-busy') === 'true' || !el.dataset.imagesActive ||
+    if (!artworkEligible() || suspended || el.getAttribute('aria-busy') === 'true' || !el.dataset.imagesActive ||
         (!manual && (!visible || pausedVisit || reducedMotion.matches))) { if (controller.video || controller.state === 'recovering') controller.cancel('ineligible'); return; }
     controller.start();
   };
   el.setVideoVisible = value => {
+    if (value && (visible || settleTimer)) return;
     clearTimeout(settleTimer);
-    if (value) { settleTimer = setTimeout(() => { visible = true; update(); }, VIDEO_POLICY.settleMs); return; }
+    settleTimer = 0;
+    if (value) { settleTimer = setTimeout(() => { settleTimer = 0; visible = true; update(); }, VIDEO_POLICY.settleMs); return; }
     visible = false; manual = false; pausedVisit = false; controller.cancel('offscreen');
   };
   el.resumeVideo = update;
   el.stopVideo = () => controller.cancel('navigation');
   el.videoOnline = () => controller.online();
-  el.releaseVideo = () => { if (released) return; released = true; clearTimeout(settleTimer); controller.release(); visibility.unobserve(el); cards.delete(el); status.box.remove(); };
-  cards.add(el); visibility.observe(el);
+  el.releaseVideo = () => { if (released) return; released = true; clearTimeout(settleTimer); controller.release(); visibility.unobserve(stage); artworkOwners.delete(stage); cards.delete(el); status.box.remove(); };
+  cards.add(el); artworkOwners.set(stage, el);
+  if (!visibility || viewportTop !== artworkViewportTop()) observeArtwork();
+  else visibility.observe(stage);
   controller.setItem(null);
   return next => {
     const changed = item?.id !== next?.id || item?.videoUrl !== next?.videoUrl;
@@ -305,12 +351,12 @@ export function attachCardVideo(el, main) {
   };
 }
 
-export function showDetailVideo(artwork, url, imageId = '') {
+export function showDetailVideo(artwork, url, imageId = '', { muted = true } = {}) {
   clearDetailVideo();
   if (!url) return;
   const owner = artwork.closest('dialog');
   const status = feedback(owner, 'detail-video-status');
-  const controller = createMediaLifecycle({
+  const controller = createMediaLifecycle({ muted,
     createVideo: () => { const v = document.createElement('video'); v.id = 'detailVideo'; v.controls = true; return v; },
     mount: v => artwork.after(v),
     eligible: () => !!owner?.open && visibleElement(owner),
@@ -319,6 +365,9 @@ export function showDetailVideo(artwork, url, imageId = '') {
       status.update(info);
       artwork.hidden = !!info.video;
       owner.dataset.videoState = info.state;
+      // The poster's "Loading image" overlay waits for an image event that a slow or
+      // abandoned poster never sends. Playback, or its own error, supersedes it.
+      if (info.state === 'playing' || info.state === 'failed') owner.classList.remove('detail-loading');
     },
   });
   controller.setItem({ id: String(imageId || url), source: url,

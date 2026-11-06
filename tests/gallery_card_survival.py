@@ -1,4 +1,5 @@
 """Slow tag checks and unavailable images do not silently remove unfiltered cards."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from functools import partial
 from http.server import ThreadingHTTPServer

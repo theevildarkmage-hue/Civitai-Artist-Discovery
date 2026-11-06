@@ -3,6 +3,8 @@
 Reports browser timings, not live Civitai/CDN speed. Assertions cover bounded paging,
 content verification, filtered reloads and deep-scroll restoration.
 """
+
+import test_safety  # Fail closed before any test network request.
 from functools import partial
 from http.server import ThreadingHTTPServer
 import json
@@ -87,15 +89,15 @@ def run():
                     results.append({'scenario': 'model-SDXL', **trace})
                     assert page.evaluate("JSON.parse(sessionStorage.getItem('civitai-feed-state')).models") == ['SDXL']
                     page.locator('#filterToggle').click()
-                    page.locator('#contentFilter').click()
+                    page.locator('#filterToggle').click()
                     page.evaluate("window.loadingIgnoredImages = new WeakSet(document.querySelectorAll('.image-button img')); window.loadingTrace = {start: performance.now(), skeletonMs: null, imageMs: null}")
-                    page.locator('#contentPanel [data-level="2"]').click()
+                    page.locator('#contentMenu [data-level="2"]').click()
                     page.wait_for_function('window.loadingTrace.imageMs !== null')
-                    assert page.locator('#contentFilter').inner_text() == 'Content: PG'
+                    assert page.locator('#contentMenu').get_attribute('aria-label') == 'Content: PG'
                     trace = page.evaluate('window.loadingTrace')
                     trace.pop('start')
                     results.append({'scenario': 'content-PG', **trace})
-                    page.get_by_role('button', name='Close content ratings', exact=True).click()
+                    page.get_by_role('button', name='Close filters', exact=True).click()
                     page.mouse.wheel(0, 100000)
                     page.locator('.creator-card').nth(50).wait_for()
                     loaded = page.locator('.creator-card').count()
@@ -107,7 +109,7 @@ def run():
                             'saved': page.evaluate("sessionStorage.getItem('civitai-feed-state')"), 'errors': errors}) from error
                     assert page.locator('#dayView').input_value() == 'foryou'
                     assert page.locator('#modelFilter').inner_text() == 'Model: SDXL'
-                    assert page.locator('#contentFilter').inner_text() == 'Content: PG'
+                    assert page.locator('#contentMenu').get_attribute('aria-label') == 'Content: PG'
                     page.wait_for_function('scrollY > 0', timeout=5000)
                     results.append({'scenario': 'filtered-scroll-restore', 'loadedBefore': loaded,
                                     'loadedAfter': page.locator('.creator-card').count()})
@@ -116,7 +118,7 @@ def run():
     finally:
         server.shutdown()
         server.server_close()
-    output = ROOT / 'reports' / 'v2' / 'loading-scenarios.json'
+    output = test_safety.REPORTS / 'v2' / 'loading-scenarios.json'
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(results, indent=2), encoding='utf-8')
     print(json.dumps(results))

@@ -1,5 +1,7 @@
 """Updater versioning, package safety, portable preservation, and rollback."""
 
+import test_safety  # Fail closed before any test network request.
+
 import hashlib
 import json
 from pathlib import Path

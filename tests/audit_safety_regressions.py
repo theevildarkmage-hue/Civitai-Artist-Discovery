@@ -1,4 +1,5 @@
 """Maintenance audit: preference transactions, credential redirects, updater paths."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json

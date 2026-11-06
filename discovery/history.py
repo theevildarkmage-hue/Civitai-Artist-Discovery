@@ -22,11 +22,12 @@ from typing import Callable
 from .civitai import API_LANE, API_URL, USER_AGENT, AdaptivePacer as AdaptivePacer, normalize, utcnow
 from .recovery import SuspiciousCaptureError, volume_issue, volume_rows
 from .retry import retry_after_seconds
-from .diagnostics import redact_sensitive
+from .pagination import PageProgress
+from .diagnostics import redact_sensitive, append_log
 from .models import matches_models, normalize_base_model
 from .thumbnails import ThumbnailHints
 from .search import (SEARCH_CLIENT_KEY, SEARCH_PAGE_SIZE, SEARCH_SLICE_RESULT_LIMIT,
-                     SEARCH_URL, normalize_hit, search_body)
+                     SEARCH_URL, SearchRedirect, validate_search_url, normalize_hit, search_body)
 from .site import (DEFAULT_CONTENT_RATING, RATING_RANK,
                    browsing_levels, content_rating, image_url, levels_for_rating,
                    rating_for_levels)
@@ -147,6 +148,9 @@ def conservative_eta_range(seconds: float | None) -> tuple[int, int] | None:
 
 
 class CentralTime(tzinfo):
+    def __str__(self):
+        return "America/Chicago"
+
     def _transition(self, year: int, month: int, occurrence: int) -> datetime:
         first = datetime(year, month, 1)
         first_sunday = 1 + (6 - first.weekday()) % 7
@@ -156,7 +160,10 @@ class CentralTime(tzinfo):
         if value is None:
             return timedelta(0)
         naive = value.replace(tzinfo=None)
-        return timedelta(hours=1) if self._transition(value.year, 3, 2) <= naive < self._transition(value.year, 11, 1) else timedelta(0)
+        end = self._transition(value.year, 11, 1)
+        if end-timedelta(hours=1) <= naive < end and value.fold:
+            return timedelta(0)
+        return timedelta(hours=1) if self._transition(value.year, 3, 2) <= naive < end else timedelta(0)
 
     def utcoffset(self, value: datetime | None) -> timedelta:
         return timedelta(hours=-6) + self.dst(value)
@@ -171,14 +178,14 @@ class CentralTime(tzinfo):
         start_utc = start_local + timedelta(hours=6)
         end_utc = end_local + timedelta(hours=5)
         offset = timedelta(hours=-5 if start_utc <= naive_utc < end_utc else -6)
-        return (naive_utc + offset).replace(tzinfo=self)
+        return (naive_utc + offset).replace(tzinfo=self, fold=int(end_utc <= naive_utc < end_utc+timedelta(hours=1)))
 
 
 LOCAL_ZONE = CentralTime()
 
 
-def previous_local_day() -> str:
-    return (datetime.now().date() - timedelta(days=1)).isoformat()
+def previous_local_day(now=None) -> str:
+    return (((now.astimezone(LOCAL_ZONE) if now is not None else datetime.now(LOCAL_ZONE))).date() - timedelta(days=1)).isoformat()
 
 
 def parse_day(value: str) -> date:
@@ -247,12 +254,10 @@ def preview_url(url: str, width: int = 768) -> str:
     return _cdn_transform(url, f"width={width}")
 
 
-# Measured against image.civitai.com in Sep 2026. A plain ``width=`` transform on a video
-# returns another MP4 (8.5 MB at 768px) that an <img> cannot show; ``anim=false`` returns
-# a ~0.2 MB JPEG still at any width. ``transcode…optimized`` is the playback file: ~3 MB
-# at 450px for a card, ~8 MB at 768px for the details view, against ~30 MB originals.
+# A video still needs both anim=false and transcode=true. Without transcoding,
+# some CDN sources redirect to the original MP4, which an <img> cannot decode.
 def video_still_url(url: str, width: int = 768) -> str:
-    return _cdn_transform(url, f"anim=false,width={width}")
+    return _cdn_transform(url, f"anim=false,transcode=true,width={width}")
 
 
 def video_playback_url(url: str, width: int = 450) -> str:
@@ -363,12 +368,6 @@ class HistoryArchive:
                     older_cursor TEXT, top_cursor TEXT, pages INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT, PRIMARY KEY(block_key,browsing_mask)
                 );
-                CREATE TABLE IF NOT EXISTS capture_recovery (
-                    block_key TEXT PRIMARY KEY, reason TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    restart_required INTEGER NOT NULL DEFAULT 0,
-                    next_retry_at REAL NOT NULL
-                );
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(days)")}
             for name in ("timezone", "start_utc", "end_utc", "top_cursor", "content_rating",
@@ -412,7 +411,29 @@ class HistoryArchive:
                 db.execute("DELETE FROM day_artist_cache_state")
                 db.execute("UPDATE days SET artist_levels=NULL")
                 db.execute(f"PRAGMA user_version={POPULAR_INDEX_VERSION}")
+        self._ensure_capture_recovery_schema()
         self._audit_legacy_block_coverage()
+
+    def _ensure_capture_recovery_schema(self) -> None:
+        """Add the retry ledger atomically; never repair or replace archive records.
+
+        Keep the existing archive user_version (artist-index version) independent.
+        An incompatible pre-existing table is an error, not permission to rewrite it.
+        """
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('''CREATE TABLE IF NOT EXISTS capture_recovery (
+                block_key TEXT PRIMARY KEY, reason TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                restart_required INTEGER NOT NULL DEFAULT 0,
+                next_retry_at REAL NOT NULL)''')
+            actual = [(row['name'], row['type'].upper(), row['notnull'], row['pk'])
+                      for row in db.execute('PRAGMA table_info(capture_recovery)')]
+            expected = [('block_key','TEXT',0,1), ('reason','TEXT',1,0),
+                        ('attempts','INTEGER',1,0), ('restart_required','INTEGER',1,0),
+                        ('next_retry_at','REAL',1,0)]
+            if actual != expected:
+                raise RuntimeError('Incompatible capture_recovery schema; existing data was retained')
 
     def _audit_legacy_block_coverage(self) -> None:
         """Reopen legacy half-days whose saved timestamps do not cover the block.
@@ -466,7 +487,7 @@ class HistoryArchive:
                 self.build_artist_index(path.stem)
         marker.write_text(utcnow(), encoding="utf-8")
 
-    def _upsert_normalized(self, items: list[dict], forced_date: str | None = None) -> list[int]:
+    def _upsert_normalized(self, items: list[dict], forced_date: str | None = None, *, archive=True) -> list[int]:
         rows = []
         for item in items:
             if not item.get("id") or not item.get("createdAt") or not item.get("url"):
@@ -482,25 +503,62 @@ class HistoryArchive:
         with self.connect() as db:
             # Name every column: archives written by older versions carry columns this
             # schema no longer declares, and a positional insert breaks against them.
-            db.executemany("""INSERT INTO images(
-                    id, local_date, post_id, username, username_key, created_at,
-                    url, width, height, type, nsfw_level, browsing_level, base_model,
-                    model_version_ids, stats, prompt, negative_prompt, resources, details_loaded,
-                    visual_hash)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET local_date=excluded.local_date,post_id=excluded.post_id,
-                username=excluded.username,username_key=excluded.username_key,created_at=excluded.created_at,
-                url=excluded.url,width=excluded.width,height=excluded.height,type=excluded.type,
-                nsfw_level=excluded.nsfw_level,browsing_level=excluded.browsing_level,
-                base_model=excluded.base_model,model_version_ids=excluded.model_version_ids,
-                stats=excluded.stats,prompt=CASE WHEN excluded.prompt!='' THEN excluded.prompt ELSE images.prompt END,
-                negative_prompt=CASE WHEN excluded.negative_prompt!='' THEN excluded.negative_prompt ELSE images.negative_prompt END,
-                resources=CASE WHEN excluded.resources!='[]' THEN excluded.resources ELSE images.resources END,
-                details_loaded=MAX(images.details_loaded,excluded.details_loaded),
-                visual_hash=COALESCE(excluded.visual_hash,images.visual_hash)""", rows)
-            db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)",
-                [(row[1], row[0]) for row in rows])
+            if not archive:
+                db.executemany("""INSERT INTO images(
+                        id, local_date, post_id, username, username_key, created_at,
+                        url, width, height, type, nsfw_level, browsing_level, base_model,
+                        model_version_ids, stats, prompt, negative_prompt, resources, details_loaded,
+                        visual_hash)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(id) DO NOTHING""", rows)
+            else:
+                db.executemany("""INSERT INTO images(
+                        id, local_date, post_id, username, username_key, created_at,
+                        url, width, height, type, nsfw_level, browsing_level, base_model,
+                        model_version_ids, stats, prompt, negative_prompt, resources, details_loaded,
+                        visual_hash)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET local_date=excluded.local_date,post_id=excluded.post_id,
+                    username=excluded.username,username_key=excluded.username_key,created_at=excluded.created_at,
+                    url=excluded.url,width=excluded.width,height=excluded.height,type=excluded.type,
+                    nsfw_level=excluded.nsfw_level,browsing_level=excluded.browsing_level,
+                    base_model=excluded.base_model,model_version_ids=excluded.model_version_ids,
+                    stats=excluded.stats,prompt=CASE WHEN excluded.prompt!='' THEN excluded.prompt ELSE images.prompt END,
+                    negative_prompt=CASE WHEN excluded.negative_prompt!='' THEN excluded.negative_prompt ELSE images.negative_prompt END,
+                    resources=CASE WHEN excluded.resources!='[]' THEN excluded.resources ELSE images.resources END,
+                    details_loaded=MAX(images.details_loaded,excluded.details_loaded),
+                    visual_hash=COALESCE(excluded.visual_hash,images.visual_hash)""", rows)
+            if archive:
+                db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)",
+                    [(row[1], row[0]) for row in rows])
         return [row[0] for row in rows]
+
+    def gallery_images(self,image_ids,client=None):
+        """Shared ID-to-Gallery adapter. Cache metadata, never create archive days."""
+        ids=list(dict.fromkeys(int(i) for i in image_ids))
+        if not ids or len(ids)>50:raise ValueError('Provide 1 to 50 image IDs')
+        cached={}
+        with self.connect() as db:
+            for i in ids:
+                row=db.execute('select * from images where id=?',(i,)).fetchone()
+                if row:cached[i]=self._row_item(row)
+        missing=[i for i in ids if i not in cached]
+        if missing and client:
+            # Same authenticated batch transport/normalization used by Daily sweeps.
+            results=client.batch_query_optional('image.get',[{'id':i} for i in missing])
+            from .search import normalize_hit
+            for i,raw in zip(missing,results):
+                if not isinstance(raw,dict) or raw.get('id')!=i:continue
+                value=normalize_hit(raw)
+                if value['username']=='Unknown' or not value.get('createdAt'):continue
+                from urllib.parse import urlsplit
+                u=urlsplit(value['url'])
+                if u.scheme!='https' or u.hostname!='image.civitai.com' or u.port or u.username or u.password:continue
+                if value['browsingLevel'] not in (1,2,4,8,16):continue
+                self._upsert_normalized([value],archive=False)
+                with self.connect() as db:
+                    cached[i]=self._row_item(db.execute('select * from images where id=?',(i,)).fetchone())
+        return [cached[i] for i in ids if i in cached]
 
     def _row_item(self, row: sqlite3.Row, details: bool = False) -> dict:
         video = row["type"] == "video"
@@ -622,8 +680,8 @@ class HistoryArchive:
         selected = browsing_levels(levels)
         rating = rating_for_levels(selected)
         with self.lock:
-            if any(job.get("state") == "loading" for job in self.jobs.values()):
-                raise ValueError("Stop the current history build before changing content ratings")
+            # Collectors use the coverage persisted for their block at start, not
+            # these viewing preferences. Background capture must not lock filters.
             self.content_rating = rating
             self.visible_levels = selected
 
@@ -672,8 +730,17 @@ class HistoryArchive:
 
     def start(self, value: str, start_utc: str, end_utc: str, timezone_name: str,
               segment: str = "all", requested_content_rating: str | None = None) -> dict:
+        # Status inspection and reservation are one operation. A second caller
+        # must see loading before it can replace this block's cancellation event.
+        with self.lock:
+            return self._start_locked(value, start_utc, end_utc, timezone_name,
+                                      segment, requested_content_rating)
+
+    def _start_locked(self, value: str, start_utc: str, end_utc: str, timezone_name: str,
+                      segment: str, requested_content_rating: str | None) -> dict:
         key = self.archive_key(value, segment)
         start, end = parse_bounds(value, start_utc, end_utc)
+        self._assert_same_bounds(key,start,end)
         requested_rating = content_rating(requested_content_rating or self.content_rating)
         current = self.status(key, requested_rating)
         if current["complete"] or current["state"] == "loading":
@@ -778,8 +845,20 @@ class HistoryArchive:
                 "measured": True, "fixedBenchmark": True}
 
     def rebuild(self, value: str, start_utc: str, end_utc: str, timezone_name: str, segment: str = "all") -> dict:
+        with self.lock:
+            return self._rebuild_locked(value,start_utc,end_utc,timezone_name,segment)
+
+    def _assert_same_bounds(self,key,start,end):
+        with self.connect() as db:
+            existing=db.execute('SELECT start_utc,end_utc FROM days WHERE day=?',(key,)).fetchone()
+        if existing and existing['start_utc'] and existing['end_utc']:
+            if (parse_timestamp(existing['start_utc']),parse_timestamp(existing['end_utc']))!=(start,end):
+                raise ValueError('This saved archive uses different time boundaries. It was preserved; do not resume or rebuild it under a new calendar.')
+
+    def _rebuild_locked(self, value: str, start_utc: str, end_utc: str, timezone_name: str, segment: str = "all") -> dict:
         key = self.archive_key(value, segment)
         start, end = parse_bounds(value, start_utc, end_utc)
+        self._assert_same_bounds(key,start,end)
         current = self.status(key)
         if not current["archiveComplete"]:
             raise ValueError("Build this day before rebuilding it")
@@ -945,13 +1024,13 @@ class HistoryArchive:
         """
         request = urllib.request.Request(f"{API_URL}?{urllib.parse.urlencode(params)}",
             headers={"Accept": "application/json", "Accept-Encoding": "gzip", "User-Agent": USER_AGENT})
-        with self.api_lock:
-            attempt = 0
-            last_failure = None
-            while True:
-                if cancel_event and cancel_event.is_set():
-                    raise CollectionCancelled()
-                try:
+        attempt = 0
+        last_failure = None
+        while True:
+            if cancel_event and cancel_event.is_set():
+                raise CollectionCancelled()
+            try:
+                with self.api_lock:
                     paced = self._wait_api_lane(minimum_interval)
                     if on_timing and paced:
                         on_timing("pace", paced)
@@ -971,50 +1050,52 @@ class HistoryArchive:
                     payload = json.loads(raw)
                     self.thumbnail_hints.capture(payload, params.get("browsingLevel"))
                     return payload, len(raw)
-                except urllib.error.HTTPError as error:
-                    if on_timing:
-                        on_timing("response", time.monotonic() - started)
-                    try:
-                        error_body = error.read(API_FAILURE_BODY_BYTES + 1)
-                    except Exception:
-                        error_body = b""
-                    last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
-                    self._record_api_failure(params, "http", status=error.code,
-                        reason=error.reason, headers=error.headers, body=error_body)
-                    if error.code != 429 and error.code < 500:
-                        raise
-                    reason = "rate_limited" if error.code == 429 else "service_retry"
-                    self.api_pacer.failure(reason)
-                    retry = error.headers.get("Retry-After")
-                    backoff_attempt = attempt % RATE_LIMIT_RETRIES
-                    if error.code == 429:
-                        try: wait = max(60.0, float(retry)) if retry else min(600.0, 60.0 * (2**backoff_attempt))
-                        except ValueError: wait = min(600.0, 60.0 * (2**backoff_attempt))
-                    else: wait = min(60.0, 2.0**backoff_attempt)
-                    requested_wait = retry_after_seconds(retry)
-                    delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
-                except (TimeoutError, urllib.error.URLError) as error:
-                    if on_timing:
-                        on_timing("response", time.monotonic() - started)
-                    self.api_pacer.failure("network_retry")
-                    reason = "network_retry"
-                    last_failure = f"{type(error).__name__}: {error}"
-                    self._record_api_failure(params, "network", reason=error)
-                    wait = min(60, 2**(attempt % RATE_LIMIT_RETRIES))
-                    delay = wait + random.uniform(0, 1)
-                attempts = request_attempts or (CHECKPOINTED_RETRY_ATTEMPTS
-                            if cancel_event and reason != "rate_limited"
-                            else RATE_LIMIT_RETRIES)
-                attempt += 1
-                if attempt >= attempts:
-                    raise RetryBudgetExhausted(reason, attempts, last_failure)
-                if on_delay:
-                    on_delay(reason, delay, attempt, attempts)
-                if cancel_event:
-                    if cancel_event.wait(delay):
-                        raise CollectionCancelled()
-                else:
-                    time.sleep(delay)
+            except urllib.error.HTTPError as error:
+                if on_timing:
+                    on_timing("response", time.monotonic() - started)
+                try:
+                    error_body = error.read(API_FAILURE_BODY_BYTES + 1)
+                except Exception:
+                    error_body = b""
+                last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
+                self._record_api_failure(params, "http", status=error.code,
+                    reason=error.reason, headers=error.headers, body=error_body)
+                if error.code != 429 and error.code < 500:
+                    raise
+                reason = "rate_limited" if error.code == 429 else "service_retry"
+                self.api_pacer.failure(reason)
+                retry = error.headers.get("Retry-After")
+                backoff_attempt = attempt % RATE_LIMIT_RETRIES
+                requested_wait = retry_after_seconds(retry)
+                if requested_wait is not None and requested_wait > 600:
+                    raise RetryBudgetExhausted(reason, attempt + 1, 'Upstream requested a wait beyond the safe retry window')
+                if error.code == 429:
+                    wait = max(60.0, requested_wait) if requested_wait is not None else min(600.0, 60.0 * (2**backoff_attempt))
+                else: wait = min(60.0, 2.0**backoff_attempt)
+                delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
+                if reason == "rate_limited":self.api_lane.defer(delay)
+            except (TimeoutError, urllib.error.URLError) as error:
+                if on_timing:
+                    on_timing("response", time.monotonic() - started)
+                self.api_pacer.failure("network_retry")
+                reason = "network_retry"
+                last_failure = f"{type(error).__name__}: {error}"
+                self._record_api_failure(params, "network", reason=error)
+                wait = min(60, 2**(attempt % RATE_LIMIT_RETRIES))
+                delay = wait + random.uniform(0, 1)
+            attempts = request_attempts or (CHECKPOINTED_RETRY_ATTEMPTS
+                        if cancel_event and reason != "rate_limited"
+                        else RATE_LIMIT_RETRIES)
+            attempt += 1
+            if attempt >= attempts:
+                raise RetryBudgetExhausted(reason, attempts, last_failure)
+            if on_delay:
+                on_delay(reason, delay, attempt, attempts)
+            if cancel_event:
+                if cancel_event.wait(delay):
+                    raise CollectionCancelled()
+            else:
+                time.sleep(delay)
 
     def _search_request(self, body: dict,
                         on_delay: Callable[[str, float, int, int], None] | None = None,
@@ -1022,27 +1103,32 @@ class HistoryArchive:
                         on_timing: Callable[[str, float], None] | None = None,
                         on_transfer: Callable[[int, int], None] | None = None) -> tuple[dict, int]:
         """POST one bounded query to the search-only endpoint used by Civitai's UI."""
+        try:
+            validate_search_url(SEARCH_URL, initial=True)
+        except ValueError:
+            raise SearchBackendUnavailable('Search requires an approved Civitai HTTPS destination.') from None
         encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
         request = urllib.request.Request(SEARCH_URL, data=encoded, method="POST", headers={
             "Accept": "application/json", "Accept-Encoding": "gzip",
-            "Authorization": f"Bearer {SEARCH_CLIENT_KEY}",
             "Content-Type": "application/json", "User-Agent": USER_AGENT,
         })
+        request.add_unredirected_header('Authorization', f'Bearer {SEARCH_CLIENT_KEY}')
+        opener = urllib.request.build_opener(SearchRedirect)
         diagnostic = {**body, "backend": "browser-search"}
-        with self.api_lock:
-            attempt = 0
-            last_failure = None
-            while True:
-                if cancel_event and cancel_event.is_set():
-                    raise CollectionCancelled()
-                started = time.monotonic()
-                try:
+        attempt = 0
+        last_failure = None
+        while True:
+            if cancel_event and cancel_event.is_set():
+                raise CollectionCancelled()
+            started = time.monotonic()
+            try:
+                with self.api_lock:
                     paced = self._wait_api_lane(.25)
                     if on_timing and paced:
                         on_timing("pace", paced)
                     self.api_lane.last_request = time.monotonic()
                     started = time.monotonic()
-                    with urllib.request.urlopen(request, timeout=60) as response:
+                    with opener.open(request, timeout=60) as response:
                         raw = response.read()
                         wire_size = len(raw)
                         if response.headers.get("Content-Encoding") == "gzip":
@@ -1057,53 +1143,53 @@ class HistoryArchive:
                     if not isinstance(payload, dict):
                         raise SearchBackendUnavailable("Civitai search returned an invalid response")
                     return payload, len(raw)
-                except urllib.error.HTTPError as error:
-                    if on_timing:
-                        on_timing("response", time.monotonic() - started)
-                    try:
-                        error_body = error.read(API_FAILURE_BODY_BYTES + 1)
-                    except Exception:
-                        error_body = b""
-                    last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
-                    self._record_api_failure(diagnostic, "search_http", status=error.code,
-                        reason=error.reason, headers=error.headers, body=error_body)
-                    if error.code in {400, 401, 403, 404}:
-                        raise SearchBackendUnavailable(
-                            f"Civitai browser search rejected the app (HTTP {error.code})") from error
-                    if error.code != 429 and error.code < 500:
-                        raise
-                    reason = "rate_limited" if error.code == 429 else "service_retry"
-                    self.api_pacer.failure(reason)
-                    retry = error.headers.get("Retry-After")
-                    backoff_attempt = attempt % RATE_LIMIT_RETRIES
-                    if error.code == 429:
-                        try:
-                            wait = max(30.0, float(retry)) if retry else min(300.0, 30.0 * 2**backoff_attempt)
-                        except ValueError:
-                            wait = min(300.0, 30.0 * 2**backoff_attempt)
-                    else:
-                        wait = min(60.0, 2.0**backoff_attempt)
-                    requested_wait = retry_after_seconds(retry)
-                    delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
-                except (TimeoutError, urllib.error.URLError) as error:
-                    if on_timing:
-                        on_timing("response", time.monotonic() - started)
-                    self.api_pacer.failure("network_retry")
-                    reason = "network_retry"
-                    last_failure = f"{type(error).__name__}: {error}"
-                    self._record_api_failure(diagnostic, "search_network", reason=error)
-                    delay = min(60, 2**(attempt % RATE_LIMIT_RETRIES)) + random.uniform(0, 1)
-                attempt += 1
-                attempts = CHECKPOINTED_RETRY_ATTEMPTS if cancel_event else RATE_LIMIT_RETRIES
-                if attempt >= attempts:
-                    raise RetryBudgetExhausted(reason, attempts, last_failure)
-                if on_delay:
-                    on_delay(reason, delay, attempt, attempts)
-                if cancel_event:
-                    if cancel_event.wait(delay):
-                        raise CollectionCancelled()
+            except urllib.error.HTTPError as error:
+                if on_timing:
+                    on_timing("response", time.monotonic() - started)
+                try:
+                    error_body = error.read(API_FAILURE_BODY_BYTES + 1)
+                except Exception:
+                    error_body = b""
+                last_failure = f"HTTP {error.code} {error.reason or ''}".strip()
+                self._record_api_failure(diagnostic, "search_http", status=error.code,
+                    reason=error.reason, headers=error.headers, body=error_body)
+                if error.code in {400, 401, 403, 404}:
+                    raise SearchBackendUnavailable(
+                        f"Civitai browser search rejected the app (HTTP {error.code})") from error
+                if error.code != 429 and error.code < 500:
+                    raise
+                reason = "rate_limited" if error.code == 429 else "service_retry"
+                self.api_pacer.failure(reason)
+                retry = error.headers.get("Retry-After")
+                backoff_attempt = attempt % RATE_LIMIT_RETRIES
+                requested_wait = retry_after_seconds(retry)
+                if requested_wait is not None and requested_wait > 600:
+                    raise RetryBudgetExhausted(reason, attempt + 1, 'Upstream requested a wait beyond the safe retry window')
+                if error.code == 429:
+                    wait = max(30.0, requested_wait) if requested_wait is not None else min(300.0, 30.0 * 2**backoff_attempt)
                 else:
-                    time.sleep(delay)
+                    wait = min(60.0, 2.0**backoff_attempt)
+                delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
+                if reason == "rate_limited":self.api_lane.defer(delay)
+            except (TimeoutError, urllib.error.URLError) as error:
+                if on_timing:
+                    on_timing("response", time.monotonic() - started)
+                self.api_pacer.failure("network_retry")
+                reason = "network_retry"
+                last_failure = f"{type(error).__name__}: {error}"
+                self._record_api_failure(diagnostic, "search_network", reason=error)
+                delay = min(60, 2**(attempt % RATE_LIMIT_RETRIES)) + random.uniform(0, 1)
+            attempt += 1
+            attempts = CHECKPOINTED_RETRY_ATTEMPTS if cancel_event else RATE_LIMIT_RETRIES
+            if attempt >= attempts:
+                raise RetryBudgetExhausted(reason, attempts, last_failure)
+            if on_delay:
+                on_delay(reason, delay, attempt, attempts)
+            if cancel_event:
+                if cancel_event.wait(delay):
+                    raise CollectionCancelled()
+            else:
+                time.sleep(delay)
 
     @staticmethod
     def _search_checkpoint(start: datetime, end: datetime, offset: int, expected: int) -> str:
@@ -1123,7 +1209,7 @@ class HistoryArchive:
 
     def _collect(self, key: str, value: str, start: datetime, end: datetime,
                  rebuilding: bool = False) -> None:
-        """Use exact date-range search by default; retain the old feed for recovery."""
+        """Use the public v1 feed by default; search is an explicit diagnostic option."""
         # Instance-level request replacement is the collector's established test and
         # diagnostic injection seam; keep those deterministic legacy simulations local.
         injected_legacy_request = "_request" in self.__dict__ and "_search_request" not in self.__dict__
@@ -1389,12 +1475,7 @@ class HistoryArchive:
             with self.connect() as db:
                 db.execute("UPDATE days SET complete=0,elapsed_seconds=?,updated_at=? WHERE day=?",
                     (prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
-            try:
-                with (self.root.parent / "error.log").open("a", encoding="utf-8") as output:
-                    output.write(f"\n[{utcnow()}] Daily search collection: {type(error).__name__}\n"
-                                 f"{traceback.format_exc()}")
-            except OSError:
-                pass
+            append_log(self.root.parent, f"\n[{utcnow()}] Daily search collection: {type(error).__name__}\n{traceback.format_exc()}")
             outage = isinstance(error, RetryBudgetExhausted)
             suspicious = isinstance(error, SuspiciousCaptureError)
             configuration = isinstance(error, SearchBackendUnavailable)
@@ -1662,9 +1743,11 @@ class HistoryArchive:
                     if cancel_event.is_set():
                         return
 
+                progress = PageProgress(cursor)
                 while True:
                     if cancel_event.is_set():
                         return
+                    progress.before_request()
                     params = {"limit": PAGE_SIZE, "sort": "Newest", "period": "AllTime",
                               "browsingLevel": mask, "withMeta": "false"}
                     if cursor:
@@ -1689,6 +1772,7 @@ class HistoryArchive:
                     request_seconds = time.monotonic() - request_started
                     rows = payload.get("items", [])
                     next_cursor = (payload.get("metadata") or {}).get("nextCursor")
+                    progress.observe(next_cursor, bool(rows))
                     timestamps = [parse_timestamp(row["createdAt"]) for row in rows
                                   if row.get("createdAt")]
                     oldest = min(timestamps) if timestamps else None
@@ -1798,12 +1882,7 @@ class HistoryArchive:
             with self.connect() as db:
                 db.execute("UPDATE days SET complete=0,elapsed_seconds=?,updated_at=? WHERE day=?",
                     (prior_elapsed + time.monotonic() - scan_started, utcnow(), key))
-            try:
-                with (self.root.parent / "error.log").open("a", encoding="utf-8") as output:
-                    output.write(f"\n[{utcnow()}] Daily history collection: {type(error).__name__}\n"
-                                 f"{traceback.format_exc()}")
-            except OSError:
-                pass
+            append_log(self.root.parent, f"\n[{utcnow()}] Daily history collection: {type(error).__name__}\n{traceback.format_exc()}")
             outage = isinstance(error, RetryBudgetExhausted)
             suspicious = isinstance(error, SuspiciousCaptureError)
             window = isinstance(error, HistoryWindowUnavailable)
@@ -2298,6 +2377,12 @@ class HistoryArchive:
     def has_image(self, image_id: int) -> bool:
         with self.connect() as db:
             return db.execute("SELECT 1 FROM images WHERE id=?", (image_id,)).fetchone() is not None
+
+    def cached_base_model(self, image_id: int) -> str:
+        """Optional card enrichment only; never fetch generation details."""
+        with self.connect() as db:
+            row=db.execute('SELECT base_model FROM images WHERE id=?',(image_id,)).fetchone()
+        return normalize_base_model(row[0] if row else None)
 
     def update_stats(self, image_id: int, stats: dict) -> None:
         with self.connect() as db: db.execute("UPDATE images SET stats=? WHERE id=?", (json.dumps(stats), image_id))

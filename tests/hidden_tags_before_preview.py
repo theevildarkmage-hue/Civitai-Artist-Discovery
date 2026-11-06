@@ -1,5 +1,7 @@
 """Hidden tags gate previews, and a late discovery removes one image without a feed reset."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -105,6 +107,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-hidden-preview-", ignore_cleanu
             page.on("request", lambda request: artist_requests.append(request.url)
                     if "/api/history/artists" in request.url else None)
 
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','gallery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="domcontentloaded")
             page.wait_for_selector(".creator-card[data-id='9701']", timeout=30000)
             page.wait_for_timeout(300)

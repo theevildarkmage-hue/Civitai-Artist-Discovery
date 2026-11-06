@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Civitai Artist Discovery. The 2.x line prioritizes stable,
+Thanks for helping improve Civitai Artist Discovery. The 3.0 line prioritizes stable,
 backward-compatible bug fixes, so small, focused changes are easiest to review and least
 likely to disrupt working behavior.
 
@@ -20,7 +20,8 @@ likely to disrupt working behavior.
 5. Run the existing script-based test suite:
 
    ```powershell
-   py -B scripts/run_tests.py
+   .\.venv-3.0\Scripts\python.exe scripts/run_tests.py
+   node --experimental-transform-types tests/community_edge.mjs
    ```
 
 Please describe what you tested and call out any behavior you could not verify. By

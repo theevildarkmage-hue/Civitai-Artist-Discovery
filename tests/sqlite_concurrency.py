@@ -1,5 +1,7 @@
 """Exercise the archive with concurrent request-style reads and writes."""
 
+import test_safety  # Fail closed before any test network request.
+
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys

@@ -1,5 +1,7 @@
 """The discovery tab renders real numbers, stays responsive, and shows no artwork."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -15,7 +17,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 PORT = 8887
-SHOTS = ROOT / "reports" / "discovery-dashboard"
+SHOTS = test_safety.REPORTS / "discovery-dashboard"
 
 with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_errors=True) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
@@ -36,6 +38,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
 
     # Seed the discovery store through its normal write path.
     store = TasteStore(Path(temporary) / "discovery")
+    # The synthetic Gallery image has known-empty tags; do not bypass admission.
+    with store.connect() as db:
+        db.execute('INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(9001,?)',
+                   ('2026-11-03T00:00:00Z',))
     taste.auth_status = lambda: {"id": 4242, "connected": True}
     taste.MIN_PAUSE = taste.MAX_PAUSE = 0.0
     creators = [("TestArtistAlpha", 11, 40, True), ("TestArtistBravo", 12, 25, True),
@@ -107,11 +113,15 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 900})
-            errors = []
+            page.route('**/app.ico',lambda route:route.fulfill(content_type='image/svg+xml',
+                body='<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>'))
+            errors = [];failed_responses=[]
             page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
             page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on("response", lambda response: failed_responses.append((response.status,response.url)) if response.status>=400 else None)
             # Signed in, but Civitai withheld write access: the dashboard must render its
             # analysis in full and still offer no way to write.
+            page.route("**/api/community/config", lambda route: route.fulfill(content_type="application/json", body='{"development":false}'))
             page.route("**/api/auth-status", lambda route: route.fulfill(status=200,
                 content_type="application/json",
                 body='{"connected":true,"socialWrite":false,"scopeGrantsWrite":false,'
@@ -127,6 +137,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             auth_calls = []
             page.on("request", lambda request: auth_calls.append(request.url)
                     if "/api/auth-status" in request.url else None)
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
 
             before = len(auth_calls)
@@ -229,6 +240,11 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             writer_errors = []
             writer.on("console", lambda m: writer_errors.append(m.text) if m.type == "error" else None)
             writer.on("pageerror", lambda error: writer_errors.append(str(error)))
+            # Source checkouts generate the ICO during packaging; it is unrelated
+            # to dashboard/auth errors and must not make this source fixture flaky.
+            writer.route('**/app.ico',lambda route:route.fulfill(content_type='image/svg+xml',
+                body='<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>'))
+            writer.route("**/api/community/config", lambda route: route.fulfill(content_type="application/json", body='{"development":false}'))
             writer.route("**/api/auth-status", lambda route: route.fulfill(status=200,
                 content_type="application/json",
                 body='{"connected":true,"username":"Tester","socialWrite":true}'))
@@ -240,6 +256,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
                               body=json.dumps({"userId": sent[-1]["userId"], "following": True,
                                                "changed": True}))
             writer.route("**/api/follow", follow_route)
+            writer.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             writer.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             writer.click("#tabDiscovery")
             writer.wait_for_selector("#notFollowed .follow-button:not([disabled])")
@@ -291,6 +308,14 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             onscreen = page.evaluate("""() => [...document.querySelectorAll('.creator-card')]
                 .filter(c => c.getBoundingClientRect().top < window.innerHeight)
                 .every(c => c.querySelector('.image-button img').src)""")
+            # IntersectionObserver attaches src after layout; card insertion and
+            # screenshot completion are not evidence that its callback has run.
+            page.wait_for_function("""() => [...document.querySelectorAll('.creator-card')]
+                .filter(c => c.getBoundingClientRect().top < window.innerHeight)
+                .every(c => c.querySelector('.image-button img').src)""")
+            onscreen = page.evaluate("""() => [...document.querySelectorAll('.creator-card')]
+                .filter(c => c.getBoundingClientRect().top < window.innerHeight)
+                .every(c => c.querySelector('.image-button img').src)""")
             assert onscreen, "a visible card has no artwork attached"
 
             # Switching views repeatedly must not duplicate cards or empty the gallery: a
@@ -312,7 +337,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-discovery-ui-", ignore_cleanup_
             assert page.is_visible("#syncDiscovery")
             page.screenshot(path=str(SHOTS / "discovery-empty.png"))
 
-            assert not errors, errors
+            assert not errors, (errors,failed_responses)
             browser.close()
     finally:
         process.terminate()

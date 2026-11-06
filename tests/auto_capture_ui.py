@@ -1,5 +1,7 @@
 """Compact collection controls show their state and persist without explanatory clutter."""
 
+import test_safety  # Fail closed before any test network request.
+
 import os
 from pathlib import Path
 import subprocess
@@ -12,7 +14,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 PORT = 8899
-SHOTS = ROOT / "reports" / "auto-capture"
+SHOTS = test_safety.REPORTS / "auto-capture"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
@@ -46,7 +48,21 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
             block = page.locator(".capture-preference")
             text = block.inner_text()
             assert "Save recent days" in text, text
-            assert page.locator("#captureEnabled").is_checked() is False, "must be off until asked for"
+            assert page.locator("#captureEnabled").is_checked() is True, "owner-approved default must be on"
+            assert page.locator("#prefDimSeen").is_checked()
+            assert page.locator("#highVolumeSlider").input_value()=="1"
+            assert page.locator("#cardSizeSlider").input_value()=="2"
+            assert page.locator("#updateChecks").is_checked()
+            assert page.locator("#captureCoverage").input_value()=="X"
+            assert page.locator("#captureInterval").input_value()=="12"
+            assert not page.locator("#allowLanAccess").is_checked()
+            page.locator("#allowLanAccess").check()
+            page.locator("#lanRestartDialog").wait_for(state="visible")
+            page.locator("#lanRestartCancel").click()
+            assert not page.locator("#allowLanAccess").is_checked()
+            assert page.locator("#lanLinks").count()==0
+            page.locator("#captureEnabled").uncheck()
+            page.locator("#captureNextRun", has_text="Off").wait_for()
             assert page.locator("#captureNextRun").inner_text() == "Off"
 
             page.locator("#captureEnabled").check()
@@ -82,6 +98,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
             page.locator("#galleryPreferences").click()
             page.wait_for_selector("#captureEnabled", state="visible")
             assert page.locator("#captureEnabled").is_checked() is False
+            page.set_viewport_size({"width":390,"height":844})
+            assert page.evaluate("()=>document.documentElement.scrollWidth<=innerWidth"), "Settings overflow on mobile"
+            page.screenshot(path=str(SHOTS / "mobile-settings.png"))
             page.close()
             browser.close()
     finally:
@@ -89,5 +108,5 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
         process.wait(timeout=20)
 
 print({"statesShown": ["off", "enabled", "chosen time", "back to automatic"],
-       "compactStatus": True, "offByDefault": True, "persists": True,
+       "compactStatus": True, "onByDefault": True, "persists": True,
        "screenshots": str(SHOTS)})

@@ -1,4 +1,5 @@
 """Browser removals and artwork failures reach the local log without URL secrets."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 import json
 import os
@@ -19,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 from discovery import diagnostics
 
 
-with tempfile.TemporaryDirectory(prefix='browser-diagnostics-', ignore_cleanup_errors=True) as temporary:
+with tempfile.TemporaryDirectory(prefix='cad3-browser-diagnostics-', ignore_cleanup_errors=True) as temporary:
     root = Path(temporary)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))

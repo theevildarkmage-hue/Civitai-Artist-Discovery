@@ -14,9 +14,22 @@ function Test-DiscoveryProcess($Process, [string]$Root) {
 
 function Restart-DiscoverySource([string]$Root, [int]$Port = 0, [switch]$NoBrowser) {
   $Root = [System.IO.Path]::GetFullPath($Root)
-  $dataRoot = if ($env:CIVITAI_HISTORY_DATA_DIR) { $env:CIVITAI_HISTORY_DATA_DIR } else { Join-Path $Root 'data' }
+  $pin = Join-Path $Root '.data-directory-3.0.json'
+  $dataRoot = if ($env:CIVITAI_HISTORY_DATA_DIR) { $env:CIVITAI_HISTORY_DATA_DIR } elseif (Test-Path -LiteralPath $pin) {
+    Join-Path $Root ((Get-Content -LiteralPath $pin -Raw | ConvertFrom-Json).directory)
+  } else { Join-Path $Root 'data-dev-3.0' }
+  $dataRoot = [System.IO.Path]::GetFullPath($dataRoot)
+  if (-not $dataRoot.StartsWith($Root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw '3.0 restart data must remain inside this checkout.'
+  }
   $instanceFile = Join-Path $dataRoot 'running-instance.json'
-  $python = (Get-Command python -ErrorAction Stop).Source
+  $localPython = Join-Path $Root '.venv-3.0\Scripts\python.exe'
+  $python = if (Test-Path -LiteralPath $localPython) { $localPython } else { (Get-Command python -ErrorAction Stop).Source }
+  if ($python -eq $localPython) {
+    $privateSite = Join-Path $Root '.venv-3.0\Lib\site-packages'
+    $env:PYTHONPATH = (@($privateSite, $env:PYTHONPATH) | Where-Object { $_ }) -join [IO.Path]::PathSeparator
+    $python = (& $localPython -c 'import sys; print(sys._base_executable)').Trim()
+  }
   $bindAddress = $null
   if (Test-Path -LiteralPath $instanceFile) {
     $instance = Get-Content -LiteralPath $instanceFile -Raw | ConvertFrom-Json

@@ -1,5 +1,7 @@
 """The Windows tray exposes Open and Exit without becoming a Linux dependency."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import sys
 
@@ -45,7 +47,7 @@ if tray.os.name == "nt":
         icon = tray.start_windows_tray("http://127.0.0.1:1234", Path("app.ico"),
                                        lambda: exited.append(True), backend=Backend,
                                        image_open=lambda path: ("image", path))
-        assert icon.started and icon.title == "Civitai Artist Discovery"
+        assert icon.started and icon.title == "Civitai Discovery 3.0 Beta"
         assert icon.menu[0].default and icon.menu[0].text.startswith("Open")
         icon.menu[0].action(icon, icon.menu[0])
         assert opened == [("http://127.0.0.1:1234", 1)], opened

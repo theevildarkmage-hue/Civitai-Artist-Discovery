@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,8 @@ VERSION_PATTERN = re.compile(
     r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
     r"(?:-(?P<pre>[0-9A-Za-z.-]+))?$"
 )
+BETA_VERSION = re.compile(r'3\.\d+\.\d+-beta\.[1-9]\d*')
+APPLICATIONS = {'beta': 'CivitaiDiscoveryBeta', 'stable': 'CivitaiArtistDiscovery'}
 
 
 def _now() -> str:
@@ -54,7 +57,10 @@ def _read_json(path: Path, default=_MISSING):
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
+    with temporary.open('w', encoding='utf-8') as output:
+        output.write(json.dumps(value, indent=2, ensure_ascii=False))
+        output.flush()
+        os.fsync(output.fileno())
     temporary.replace(path)
 
 
@@ -96,6 +102,49 @@ def _safe_download_url(value: str) -> str:
     return parsed.geturl()
 
 
+def _release_channel(version: str) -> str | None:
+    """Identity-required release channels; retain pre-3.0 updater compatibility."""
+    if BETA_VERSION.fullmatch(version):
+        return 'beta'
+    match = VERSION_PATTERN.fullmatch(version)
+    if match and not version.startswith('v') and not match.group('pre') and int(match.group('major')) >= 3:
+        return 'stable'
+    return None
+
+
+def _allowed_channel(version: str, current_version: str) -> bool:
+    if BETA_VERSION.fullmatch(current_version):
+        return _release_channel(version) in APPLICATIONS
+    return is_prerelease(current_version) or not is_prerelease(version)
+
+
+def _valid_cached_release(release: object, current_version: str) -> bool:
+    if not isinstance(release, dict) or not is_newer(release.get('version'), current_version):
+        return False
+    version = release['version']
+    if not isinstance(version, str) or version.startswith('v'):
+        return False
+    if not _allowed_channel(version, current_version):
+        return False
+    channel = _release_channel(version)
+    if channel:
+        application = APPLICATIONS[channel]
+        if (release.get('channel') != channel or release.get('applicationId') != application
+                or release.get('tag') != 'v' + version
+                or release.get('prerelease') is not (channel == 'beta')
+                or not re.fullmatch(r'[0-9a-f]{40}', str(release.get('sourceCommit')))
+                or release.get('assetName') != f'{application}-{version}.zip'
+                or not re.fullmatch(r'[0-9a-f]{64}', str(release.get('sha256')))):
+            return False
+        try:
+            expected_path = f'/{REPOSITORY}/releases/download/v{version}/{application}-{version}.zip'
+            if urllib.parse.urlsplit(_safe_download_url(release.get('assetUrl'))).path != expected_path:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
 def select_release(releases: object, current_version: str) -> dict | None:
     """Choose the newest published release containing this app's verified ZIP."""
     choices = []
@@ -104,13 +153,21 @@ def select_release(releases: object, current_version: str) -> dict | None:
         if not isinstance(release, dict) or release.get("draft"):
             continue
         tag = str(release.get("tag_name") or "").removeprefix("v")
+        channel = _release_channel(tag)
+        if not _allowed_channel(tag, current_version):
+            continue
+        if channel and (release.get('tag_name') != 'v' + tag
+                or release.get('prerelease') is not (channel == 'beta')
+                or not re.fullmatch(r'[0-9a-f]{40}', str(release.get('target_commitish')))):
+            continue
         # Stable installs stay on the stable channel. Prerelease installs may see both
         # prereleases and the eventual stable build so beta users can graduate normally.
         if not current_is_prerelease and (release.get("prerelease") or is_prerelease(tag)):
             continue
         if not is_newer(tag, current_version):
             continue
-        expected = f"CivitaiArtistDiscovery-{tag}.zip"
+        application = APPLICATIONS[channel] if channel else 'CivitaiArtistDiscovery'
+        expected = f'{application}-{tag}.zip'
         assets = [asset for asset in release.get("assets") or []
                   if isinstance(asset, dict) and asset.get("state") == "uploaded"]
         archive = next((asset for asset in assets if asset.get("name") == expected), None)
@@ -120,7 +177,7 @@ def select_release(releases: object, current_version: str) -> dict | None:
         if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
             # Updating executable code without a digest is never an acceptable fallback.
             continue
-        choices.append((version_key(tag), {
+        candidate = {
             "version": tag,
             "tag": str(release.get("tag_name") or f"v{tag}"),
             "name": str(release.get("name") or f"Civitai Artist Discovery {tag}"),
@@ -132,7 +189,10 @@ def select_release(releases: object, current_version: str) -> dict | None:
             "assetSize": int(archive.get("size") or 0),
             "sha256": digest.split(":", 1)[1].lower(),
             "prerelease": bool(release.get("prerelease")),
-        }))
+            **({'channel':channel,'sourceCommit':release['target_commitish'],'applicationId':application} if channel else {}),
+        }
+        if _valid_cached_release(candidate, current_version):
+            choices.append((version_key(tag), candidate))
     return max(choices, key=lambda item: item[0])[1] if choices else None
 
 
@@ -146,6 +206,26 @@ def _open_json(url: str, timeout: int = 15):
         if int(response.headers.get("Content-Length") or 0) > 5 * 1024 * 1024:
             raise RuntimeError("GitHub returned an unexpectedly large update response")
         return json.loads(response.read(5 * 1024 * 1024 + 1))
+
+
+def verify_beta_ref(release: dict) -> None:
+    """Verify immutable release identity (including stable graduation).
+
+    The historical name remains for callers and beta tooling compatibility.
+    """
+    if release.get('channel') not in APPLICATIONS:return
+    tag=release.get('tag','');commit=release.get('sourceCommit','')
+    if tag != 'v' + str(release.get('version')) or _release_channel(tag.removeprefix('v')) != release['channel'] or not re.fullmatch(r'[0-9a-f]{40}',commit):
+        raise RuntimeError('Invalid release tag or source commit')
+    value=_open_json(f'https://api.github.com/repos/{REPOSITORY}/git/ref/tags/{tag}')
+    obj=value.get('object',{})
+    for _ in range(4):
+        if obj.get('type')=='commit':break
+        if obj.get('type')!='tag' or not re.fullmatch(r'[0-9a-f]{40}',str(obj.get('sha'))):
+            raise RuntimeError('Unexpected release tag reference')
+        obj=_open_json(f'https://api.github.com/repos/{REPOSITORY}/git/tags/'+obj['sha']).get('object',{})
+    if obj.get('type')!='commit' or obj.get('sha')!=commit:
+        raise RuntimeError('Release tag does not match its approved commit')
 
 
 def _download(url: str, target: Path, expected_size: int, progress) -> str:
@@ -197,7 +277,7 @@ def _extract_verified(archive: Path, destination: Path, executable_name: str) ->
                 raise RuntimeError("The update package contains an unsupported symbolic link")
         package.extractall(destination)
     executables = [path for path in destination.rglob(executable_name)
-                   if path.is_file() and path.parent.name == "CivitaiArtistDiscovery"]
+                   if path.is_file() and path.parent.name in ("CivitaiArtistDiscovery","CivitaiDiscoveryBeta")]
     if len(executables) != 1:
         raise RuntimeError("The update package does not contain the expected application")
     return executables[0].parent
@@ -229,6 +309,19 @@ def _wait_for_process(pid: int, timeout: float = 90) -> None:
     raise TimeoutError("The running application did not close in time")
 
 
+def _replace_with_retry(source: Path, target: Path, timeout: float = 8) -> None:
+    """Allow briefly retained Windows runtime locks to clear before rollback."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if os.name != 'nt' or time.monotonic() >= deadline:
+                raise
+            time.sleep(.2)
+
+
 def _copy_entry(source: Path, target: Path) -> None:
     if source.is_dir():
         shutil.copytree(source, target)
@@ -244,6 +337,64 @@ def _remove_entry(path: Path) -> None:
         path.unlink()
 
 
+def _restore_apply_journal(journal: dict, path: Path, install: Path, backup: Path) -> list[str]:
+    """Undo interrupted replacement using only validated, journaled package names."""
+    errors = []
+    for entry in reversed(journal['entries']):
+        if entry.get('phase') == 'restored':
+            continue
+        name = entry['name']
+        target, original = install / name, backup / name
+        try:
+            phase = entry.get('phase')
+            if original.exists():
+                entry['phase'] = 'restoring'
+                _write_json(path, journal)
+                _remove_entry(target)
+                _replace_with_retry(original, target)
+            elif not entry['hadOriginal']:
+                entry['phase'] = 'restoring'
+                _write_json(path, journal)
+                _remove_entry(target)
+            elif not target.exists() or phase not in ('intent', 'restoring'):
+                raise RuntimeError('The interrupted update backup is missing')
+            entry['phase'] = 'restored'
+            _write_json(path, journal)
+        except (OSError, RuntimeError):
+            errors.append(name)
+    if not errors:
+        path.unlink(missing_ok=True)
+    return errors
+
+
+def _running_port(data_root: Path, parent_pid: int) -> int | None:
+    """Retain an owned parent's port without trusting a URL as a launch argument."""
+    try:
+        record = _read_json(data_root / 'running-instance.json', None)
+    except UnicodeError:
+        return None
+    if (parent_pid <= 0 or not isinstance(record, dict)
+            or type(record.get('pid')) is not int or record['pid'] != parent_pid
+            or not isinstance(record.get('url'), str)):
+        return None
+    try:
+        url = urllib.parse.urlsplit(record['url'])
+        if (url.scheme != 'http' or url.username is not None or url.password is not None
+                or url.path not in ('', '/') or url.query or url.fragment):
+            return None
+        host = url.hostname
+        if host != 'localhost':
+            address = ipaddress.ip_address(host or '')
+            if not (address.is_loopback or address.is_private) or address.is_unspecified or address.is_multicast:
+                return None
+        port = url.port
+        if port is None or not 1 <= port <= 65535 or port in (8906, 33101, 33201):
+            return None
+        return port
+    except ValueError:
+        return None
+
+
 def apply_staged_update(config_path: Path, *, launch: bool = True,
                         wait_for_process=_wait_for_process) -> dict:
     """Apply one staged package. This function is independently regression-tested."""
@@ -253,6 +404,7 @@ def apply_staged_update(config_path: Path, *, launch: bool = True,
     staged_root = Path(config["stagedRoot"]).resolve()
     data_root = Path(config["dataRoot"]).resolve()
     executable_name = str(config["executableName"])
+    previous_executable = config.get('previousExecutableName')
     result_path = Path(config["resultPath"]).resolve()
     backup_root = Path(config["backupRoot"]).resolve()
     launch = launch and config.get("relaunch", True) is not False
@@ -275,43 +427,80 @@ def apply_staged_update(config_path: Path, *, launch: bool = True,
         raise RuntimeError("The update receipt is outside the portable update folder")
     if Path(executable_name).name != executable_name or not executable_name.lower().endswith('.exe'):
         raise RuntimeError("The update executable name is invalid")
+    if previous_executable is not None and (previous_executable != APPLICATIONS['beta'] + '.exe'
+            or executable_name != APPLICATIONS['stable'] + '.exe'):
+        raise RuntimeError('The update application transition is invalid')
     staged_executable = staged_root / executable_name
     if not staged_executable.is_file():
         raise RuntimeError("The staged executable is missing")
-    wait_for_process(int(config.get("parentPid") or 0))
-    targets = [entry for entry in staged_root.iterdir()
-               if entry.name.casefold() != "data"]
+    parent_pid = int(config.get("parentPid") or 0)
+    # The server removes its record during shutdown. Read before waiting, including
+    # for old clients whose helper configuration predates this port preservation.
+    relaunch_port = _running_port(data_root, parent_pid)
+    wait_for_process(parent_pid)
+    targets = sorted((entry for entry in staged_root.iterdir()
+               if entry.name.casefold() != "data"),key=lambda entry:entry.name)
     if not targets:
         raise RuntimeError("The staged package is empty")
+    if previous_executable and (staged_root / previous_executable).exists():
+        raise RuntimeError('A stable update must not include the obsolete beta executable')
+    journal_path = data_root / 'update' / 'apply-journal.json'
+    binding = {key: config.get(key) for key in ('installRoot', 'stagedRoot', 'backupRoot',
+               'resultPath', 'executableName', 'previousExecutableName', 'version')}
+    allowed_names = {entry.name for entry in targets} | ({previous_executable} if previous_executable else set())
+    if journal_path.exists():
+        journal = _read_json(journal_path, None)
+        if (not isinstance(journal, dict) or journal.get('format') != 1
+                or journal.get('binding') != binding or not isinstance(journal.get('entries'), list)
+                or any(not isinstance(entry, dict) or entry.get('name') not in allowed_names
+                       or type(entry.get('hadOriginal')) is not bool
+                       or entry.get('phase') not in ('intent', 'installed', 'restoring', 'restored')
+                       for entry in journal['entries'])
+                or len({entry['name'] for entry in journal['entries']}) != len(journal['entries'])):
+            raise RuntimeError('The interrupted update journal is invalid; preserve its backup')
+        errors = _restore_apply_journal(journal, journal_path, install_root, backup_root)
+        if errors:
+            raise RuntimeError('The interrupted update needs recovery; preserve its backup')
     if backup_root.exists():
         shutil.rmtree(backup_root)
     backup_root.mkdir(parents=True)
-    changed = []
+    journal = {'format': 1, 'binding': binding, 'entries': []}
+    _write_json(journal_path, journal)
     try:
-        for source in targets:
+        # Retire the old beta executable inside the same backup/rollback operation.
+        # Existing shortcuts cannot silently start that obsolete binary after graduation.
+        operations = ([(install_root / previous_executable, False)] if previous_executable else [])
+        operations += [(source, True) for source in targets]
+        for source, copying in operations:
             target = install_root / source.name
             backup = backup_root / source.name
+            entry = {'name': source.name, 'hadOriginal': target.exists(), 'phase': 'intent'}
+            journal['entries'].append(entry)
+            _write_json(journal_path, journal)
             if target.exists():
-                _copy_entry(target, backup)
-            _remove_entry(target)
-            changed.append(source.name)
-            _copy_entry(source, target)
+                # Same-volume rename either preserves the whole old entry or
+                # fails. Recursive deletion could remove half a locked runtime
+                # before raising, leaving it absent from the rollback journal.
+                _replace_with_retry(target, backup)
+            if copying:
+                _copy_entry(source, target)
+            entry['phase'] = 'installed'
+            _write_json(journal_path, journal)
         result = {"state": "installed", "version": config.get("version"),
                   "installedAt": _now(), "rolledBack": False}
         _write_json(result_path, result)
+        journal_path.unlink()
     except Exception as error:
-        for name in reversed(changed):
-            target = install_root / name
-            _remove_entry(target)
-            backup = backup_root / name
-            if backup.exists():
-                _copy_entry(backup, target)
+        recovery_errors = _restore_apply_journal(journal, journal_path, install_root, backup_root)
         result = {"state": "failed", "version": config.get("version"),
-                  "failedAt": _now(), "rolledBack": True, "error": str(error)[:500]}
+                  "failedAt": _now(), "rolledBack": not recovery_errors, "error": str(error)[:500],
+                  "recoveryRequired":recovery_errors}
         _write_json(result_path, result)
         raise
     if launch:
         command = [str(install_root / executable_name), "--updated-from", str(config.get("version") or "")]
+        if relaunch_port is not None:
+            command.extend(['--port', str(relaunch_port)])
         flags = 0
         if os.name == "nt":
             flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -337,8 +526,7 @@ class UpdateManager:
     def _load_cache(self) -> None:
         cached = _read_json(self.cache_path)
         release = cached.get("release") if isinstance(cached, dict) else None
-        self.release = release if isinstance(release, dict) \
-            and is_newer(release.get("version"), self.current_version) else None
+        self.release = release if _valid_cached_release(release, self.current_version) else None
 
     def _cache_fresh(self) -> bool:
         value = _read_json(self.cache_path).get("checkedAt")
@@ -370,6 +558,7 @@ class UpdateManager:
     def _check_worker(self) -> None:
         try:
             release = select_release(_open_json(RELEASES_URL), self.current_version)
+            if release:verify_beta_ref(release)
             _write_json(self.cache_path, {"checkedAt": _now(), "release": release})
             with self.lock:
                 self.release = release
@@ -383,6 +572,8 @@ class UpdateManager:
     def start_download(self) -> dict:
         if not self.supported:
             raise RuntimeError("Automatic installation is available in packaged builds")
+        if (self.root / 'apply-journal.json').exists():
+            raise RuntimeError('An interrupted update needs its staged helper; preserve the update backup')
         with self.lock:
             if not self.release:
                 raise RuntimeError("No newer update is available")
@@ -396,6 +587,16 @@ class UpdateManager:
         return self.status()
 
     def _download_worker(self, release: dict) -> None:
+        if (self.root / 'apply-journal.json').exists():
+            with self.lock:
+                self.job = {"phase": "error", "downloaded": 0, "total": 0,
+                            "error": "An interrupted update needs its staged helper; preserve the update backup"}
+            return
+        if not _valid_cached_release(release, self.current_version):
+            with self.lock:
+                self.job = {"phase": "error", "downloaded": 0, "total": 0,
+                            "error": "Could not prepare the update: invalid release identity"}
+            return
         version = release["version"]
         part = self.root / f"{release['assetName']}.part"
         archive = self.root / release["assetName"]
@@ -404,13 +605,21 @@ class UpdateManager:
             def progress(received, total):
                 with self.lock:
                     self.job.update({"downloaded": received, "total": total})
+            verify_beta_ref(release)
             digest = _download(release["assetUrl"], part, release["assetSize"], progress)
             if digest != release["sha256"]:
                 raise RuntimeError("The downloaded update failed SHA-256 verification")
             part.replace(archive)
             with self.lock:
                 self.job["phase"] = "preparing"
-            staged_root = _extract_verified(archive, extract, self.executable.name)
+            executable_name = release.get('applicationId', self.executable.stem) + '.exe'
+            staged_root = _extract_verified(archive, extract, executable_name)
+            if release.get('channel') in APPLICATIONS:
+                identity=_read_json(staged_root/'release-identity.json')
+                expected={'applicationId':release['applicationId'],'channel':release['channel'],'version':version,
+                          'tag':release['tag'],'sourceCommit':release['sourceCommit']}
+                if staged_root.name != release['applicationId'] or any(identity.get(k)!=v for k,v in expected.items()) or identity.get('sourceDirty') is not False or identity.get('preview') is not False:
+                    raise RuntimeError('The package identity does not match the approved release')
             with self.lock:
                 self.job = {"phase": "ready", "downloaded": release["assetSize"],
                             "total": release["assetSize"], "error": None,
@@ -430,18 +639,25 @@ class UpdateManager:
             if not self.release or self.job.get("phase") != "ready":
                 raise RuntimeError("Download and verify the update first")
             release, staged_root = dict(self.release), Path(self.job["stagedRoot"]).resolve()
-        helper_executable = staged_root / self.executable.name
+        if not _valid_cached_release(release, self.current_version):
+            raise RuntimeError('The release identity is no longer valid')
+        executable_name = release.get('applicationId', self.executable.stem) + '.exe'
+        helper_executable = staged_root / executable_name
         if not helper_executable.is_file():
             raise RuntimeError("The staged update helper is missing")
         config = {
             "version": release["version"], "parentPid": os.getpid(),
             "installRoot": str(self.install_root), "stagedRoot": str(staged_root),
             "dataRoot": str(self.root.parent.resolve()),
-            "executableName": self.executable.name,
+            "executableName": executable_name,
             "backupRoot": str((self.root / "backup" / self.current_version).resolve()),
             "resultPath": str(self.result_path.resolve()),
             "relaunch": True,
         }
+        if executable_name != self.executable.name:
+            if self.executable.name != APPLICATIONS['beta'] + '.exe' or executable_name != APPLICATIONS['stable'] + '.exe':
+                raise RuntimeError('Unsupported update application transition')
+            config['previousExecutableName'] = self.executable.name
         config_path = self.root / "apply.json"
         _write_json(config_path, config)
         return [str(helper_executable), "--apply-update", str(config_path)]
@@ -459,6 +675,8 @@ class UpdateManager:
         Waiting also gives the staged helper time to exit before Windows releases every
         file in the extracted application folder.
         """
+        if (self.root / 'apply-journal.json').exists():
+            return
         result = _read_json(self.result_path, None)
         if not isinstance(result, dict) or result.get("state") != "installed" \
                 or result.get("version") != self.current_version:
@@ -468,6 +686,8 @@ class UpdateManager:
             time.sleep(max(0, delay))
             for attempt in range(5):
                 try:
+                    if (self.root / 'apply-journal.json').exists():
+                        return
                     for directory in (self.root / "staged", self.root / "backup"):
                         if directory.exists():
                             shutil.rmtree(directory)

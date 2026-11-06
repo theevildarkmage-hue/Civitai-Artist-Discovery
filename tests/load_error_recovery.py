@@ -9,6 +9,8 @@ no visible way to try again short of reloading the page.
 
 from __future__ import annotations
 
+import test_safety  # Fail closed before any test network request.
+
 import json
 import os
 from pathlib import Path
@@ -23,7 +25,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 PORT = 8903
-SHOTS = ROOT / "reports" / "load-error"
+SHOTS = test_safety.REPORTS / "load-error"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 
@@ -76,7 +78,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-load-error-", ignore_cleanup_er
             page.route("**/api/history/start", start_route)
             page.route("**/api/history/status**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body=current["status"]))
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            page.locator("#discovery:not(.hidden)").wait_for()
+            page.locator('#tabGallery').click()
             page.wait_for_selector("#startLoading:not(.hidden)", timeout=20000)
 
             page.click("#startLoading")

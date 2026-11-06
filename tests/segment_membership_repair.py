@@ -1,4 +1,5 @@
 """Repair mislabeled full-day halves without deleting artwork or all-day galleries."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 import os
 from pathlib import Path
 import sys
@@ -6,7 +7,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-with tempfile.TemporaryDirectory(prefix="discovery-segment-repair-") as temporary:
+with tempfile.TemporaryDirectory(prefix="cad3-discovery-segment-repair-") as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     from discovery.history import HistoryArchive, bounds, parse_day
     from discovery.capture import segment_bounds

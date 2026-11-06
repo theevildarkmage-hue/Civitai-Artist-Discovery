@@ -29,6 +29,7 @@ KNOWN_BASE_MODELS = frozenset(
         "MiniMax H3",
         "Krea 2",
         "YuE2",
+        "YuE2-3B",
         "LTXV",
         "LTXV 2.3",
         "LTXV 2.5",

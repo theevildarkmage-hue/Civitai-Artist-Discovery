@@ -53,14 +53,8 @@ the exact portable ZIP, and assets without GitHub digest metadata are ignored.
 
 1. Set `APP_VERSION` in `server.py` to the intended semantic version and use the matching
    `v<version>` Git tag.
-2. Build with 64-bit Python 3.14.8 (or a newer 3.14 patch) and OpenSSL 3.5.9 or
-   later. Install the pinned development requirements into the isolated build
-   environment, and put its Python on PATH. The builder rejects older runtimes.
-   Use a fresh output directory, for example
-   `scripts/release.ps1 -OutputRoot reports/release-2.2.1`. This avoids replacing
-   existing builds or pruning their backups. It builds the Windows folder package and produces
-   `CivitaiArtistDiscovery-<version>.zip` plus a local SHA-256 text file in that
-   directory's `dist/` folder. Packaging refuses a runtime `data/` folder.
+2. Run `scripts/release.ps1`. It builds the Windows folder package and produces
+   `CivitaiArtistDiscovery-<version>.zip` plus a local SHA-256 text file.
 3. Upload that exact ZIP as an asset on the matching GitHub release. GitHub calculates
    the asset digest exposed by its release API.
 4. Publish the release. A draft is never offered to users.

@@ -5,6 +5,8 @@ taken whenever each collector fetched it. Reacting used to answer with whichever
 checked first, so a card built from the other one jumped to an older, lower count.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 import os
 from pathlib import Path
 import sys

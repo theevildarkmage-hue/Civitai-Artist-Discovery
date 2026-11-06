@@ -1,5 +1,7 @@
 """Card dates and action-menu persistence stay truthful and account-scoped."""
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
 import tempfile
 import sys

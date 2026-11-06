@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -24,7 +26,7 @@ assert conservative_eta_range(9) is None
 assert conservative_eta_range(120) == (60, 180)
 assert conservative_eta_range(600) == (420, 900)
 
-SCREENSHOTS = ROOT / "reports" / "loading-validation"
+SCREENSHOTS = test_safety.REPORTS / "loading-validation"
 SCREENSHOTS.mkdir(parents=True, exist_ok=True)
 PORT = 8879
 
@@ -66,7 +68,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                              else {"state": "not_started", "elapsedSeconds": None})
                     route.fulfill(status=200, content_type="application/json", body=response(value))
                 page.route("**/api/history/status**", responsive_status)
+                page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
                 page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+                page.locator("#discovery:not(.hidden)").wait_for()
+                page.locator('#tabGallery').click()
                 page.wait_for_selector("#startLoading:not(.hidden)")
                 assert starts["count"] == 0
                 assert page.locator("#stopLoading").is_hidden()
@@ -111,7 +116,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
                 content_type="application/json", body=response({"collectionBackend": "v1-feed", "listingsChecked": 9000})))
             legacy.route("**/api/history/status**", lambda route: route.fulfill(status=200,
                 content_type="application/json", body=response({"collectionBackend": "v1-feed", "listingsChecked": 9000})))
+            legacy.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             legacy.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            legacy.locator("#discovery:not(.hidden)").wait_for()
+            legacy.locator('#tabGallery').click()
             legacy.wait_for_selector("#startLoading:not(.hidden)")
             legacy.locator("#startLoading").click()
             legacy.wait_for_selector("#phaseFinding.active")
@@ -143,7 +151,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-loading-test-", ignore_cleanup_
 
             page.route("**/api/history/status**", status_route)
             page.route("**/api/history/cancel", cancel_route)
+            page.add_init_script("if(!sessionStorage.getItem('civitai-active-view'))sessionStorage.setItem('civitai-active-view','discovery')")
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            page.locator("#discovery:not(.hidden)").wait_for()
+            page.locator('#tabGallery').click()
             page.wait_for_selector("#startLoading:not(.hidden)")
             assert calls["startRequests"] == 0
             # Dates follow the clock: the app opens yesterday, so these must be relative.
