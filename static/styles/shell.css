@@ -1,4 +1,17 @@
 body { background: var(--bg); }
+.source-launch-notice {
+  margin: 12px 20px; padding: 16px 20px; border: 1px solid #478b85;
+  border-left: 4px solid #73d6c8; border-radius: var(--radius-md);
+  background: #1d302f; color: var(--text); line-height: 1.5;
+}
+.source-launch-notice strong { display: block; color: #a5eee3; font-size: 17px; }
+.source-launch-notice p { margin: 7px 0 0; }
+.source-launch-notice > code { display: block; margin-top: 10px; padding: 10px 12px; border-radius: 6px; background: #141f20; }
+.source-launch-notice code { white-space: normal; overflow-wrap: anywhere; font-size: 13px; }
+.source-launch-alternative { color: #c3cece; font-size: 13px; }
+.source-launch-development { border-color: #8e7642; border-left-color: #e9bd6d; background: #302b21; }
+.source-launch-development strong { color: #f4d89f; }
+@media (max-width: 700px) { .source-launch-notice { margin: 10px 12px; padding: 14px; } }
 :where(button, a, input, select, summary):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
