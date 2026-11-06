@@ -735,8 +735,10 @@ class CommunityClient:
 
 
 def build_community(data_root, profile_provider, token_provider):
+    from .build_config import ENVIRONMENT
+    hosted_release = getattr(sys,'frozen',False) or ENVIRONMENT == 'production'
     mode = os.environ.get("CAD_COMMUNITY_MODE", "local")
-    if getattr(sys,'frozen',False):
+    if hosted_release:
         if mode=='fixture':raise RuntimeError('Fixture community is excluded from production')
         from .community_beta import BETA_ENDPOINT
         mode='supabase' if BETA_ENDPOINT else 'offline'
@@ -759,7 +761,7 @@ def build_community(data_root, profile_provider, token_provider):
     if mode == "supabase":
         from .community_beta import BETA_ENDPOINT
         from .oauth import get_community_session
-        backend = SupabaseCommunityBackend(BETA_ENDPOINT if getattr(sys,'frozen',False) else os.environ.get("CAD_COMMUNITY_URL"),identity_token_provider=get_community_session)
+        backend = SupabaseCommunityBackend(BETA_ENDPOINT if hosted_release else os.environ.get("CAD_COMMUNITY_URL"),identity_token_provider=get_community_session)
     else:
         backend = LocalCommunityBackend(Path(data_root) / "community" / ("fixtures.sqlite3" if fixture else "local.sqlite3"), verifier)
         if fixture:
