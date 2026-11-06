@@ -1782,6 +1782,9 @@ class Handler(BaseHTTPRequestHandler):
             body = target.read_bytes()
             if target.name == 'index.html':
                 body = body.replace(b'Civitai Discovery 3.0 Beta', APP_NAME.encode('utf-8'))
+                from discovery.source_notice import render as render_source_notice
+                notice = render_source_notice(frozen=bool(getattr(sys, 'frozen', False)), environment=ENVIRONMENT)
+                body = body.replace(b'</header>', b'</header>' + notice.encode('utf-8'), 1)
         except OSError:
             self.send_error(503)
             return
