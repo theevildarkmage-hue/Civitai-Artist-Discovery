@@ -317,7 +317,7 @@ def connected_user_id() -> int | None:
         return None
 
 
-def attach_preview_tags(artists: list[dict]) -> list[dict]:
+def attach_preview_tags(artists: list[dict], *, source='history') -> list[dict]:
     """Ship already-known safety decisions with cards, avoiding a second browser read.
 
     Missing tags still go through the normal viewport verification endpoint. Attaching
@@ -326,20 +326,21 @@ def attach_preview_tags(artists: list[dict]) -> list[dict]:
     ids = [(artist.get("representative") or {}).get("id") for artist in artists]
     tags = TASTE.image_tags_many(value for value in ids if value is not None)
     for artist, image_id in zip(artists, ids):
-        if artist.get('representative'):artist['representative']=personal_preview(artist['representative'])
+        if artist.get('representative'):artist['representative']=personal_preview(artist['representative'], source=source)
         state = tags.get(image_id)
         if state and state["known"]:
             artist["representative"] = {**artist["representative"], "tagState": state}
     return artists
 
 
-def personal_preview(image):
+def personal_preview(image, *, source='history'):
     # Preserve anonymous/mock fixture transports; the authenticated desktop uses
     # a bounded local cache for actual Civitai image previews, including carousels.
     if (image.get('type')=='image' and urllib.parse.urlsplit(image.get('url','')).hostname=='image.civitai.com'
             and connected_user_id()):
-        return {**image,'url':f'/api/history/thumbnail/{image["id"]}',
-            'thumbnailUrl':f'/api/history/thumbnail/{image["id"]}',
+        if source not in ('history', 'timemachine'):raise ValueError('Unknown preview store')
+        return {**image,'url':f'/api/{source}/thumbnail/{image["id"]}',
+            'thumbnailUrl':f'/api/{source}/thumbnail/{image["id"]}',
             # CDN hints allow bounded probes if a cached preview fails. Display still
             # requires the existing rating, account and complete-tag checks.
             'availabilitySources':list(dict.fromkeys(filter(None,(image.get('thumbnailUrl'),image['url']))))}
@@ -1244,12 +1245,15 @@ class Handler(BaseHTTPRequestHandler):
             except PermissionError:self.send_error(403)
             except Exception as error:self.internal_error('Development diagnostics',error)
             return
-        if parsed.path.startswith('/api/history/thumbnail/'):
+        if parsed.path.startswith(('/api/history/thumbnail/', '/api/timemachine/thumbnail/')):
             try:
                 if not auth_status().get('id'):raise CommunityError('AUTH_REQUIRED',401)
                 from discovery.community import positive_id
                 image_id=positive_id(parsed.path.rsplit('/',1)[-1])
-                with HISTORY.connect() as db:row=db.execute('SELECT * FROM images WHERE id=?',(image_id,)).fetchone()
+                if parsed.path.startswith('/api/timemachine/'):
+                    row=TIME_MACHINE.preview_record(image_id)
+                else:
+                    with HISTORY.connect() as db:row=db.execute('SELECT * FROM images WHERE id=?',(image_id,)).fetchone()
                 if not row or row['type']!='image':raise CommunityError('INVALID_ARTWORK',404)
                 level=row['browsing_level'] or {'None':1,'Soft':2,'Mature':4,'X':8}.get(row['nsfw_level'])
                 hidden_names,hidden_images=hidden_preferences()
@@ -1462,7 +1466,7 @@ class Handler(BaseHTTPRequestHandler):
                 profiles, follows = creator_profiles(), signals["followed"]
                 self.json_response({
                     "cards": attach_preview_tags([decorate_history_artist(card, profiles, follows, signals)
-                              for card in TIME_MACHINE.cards()]),
+                              for card in TIME_MACHINE.cards()], source='timemachine'),
                     "status": TIME_MACHINE.status()})
             except Exception as error: self.internal_error("Time machine", error)
             return
@@ -1488,7 +1492,7 @@ class Handler(BaseHTTPRequestHandler):
                                                   "representativeIndex": 0, "representative": image},
                                                  profiles, follows, signals)
                          for image in history["images"]]
-                self.json_response({**history, "cards": attach_preview_tags(cards)})
+                self.json_response({**history, "cards": attach_preview_tags(cards, source='timemachine')})
             except KeyError as error: self.json_response({"error": str(error.args[0])}, 404)
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Time machine creator history", error)
@@ -2065,6 +2069,11 @@ class Handler(BaseHTTPRequestHandler):
                 # this settings page) reconnects on its own once the new process is up,
                 # instead of being stranded on a port that no longer answers.
                 restart_args = ["--port", str(RUNNING_PORT), "--no-browser", "--replacing"]
+                if not UPDATES.supported and ENVIRONMENT == 'production':
+                    # Source configuration is selected before imports. The child
+                    # must receive the same explicit stable selection; packages
+                    # continue using their embedded build configuration.
+                    restart_args.append('--stable')
                 command = ([str(UPDATES.executable), *restart_args] if UPDATES.supported
                            else [str(UPDATES.executable), '-B', str(Path(__file__).resolve()), *restart_args])
                 flags = 0
@@ -2311,7 +2320,14 @@ class Handler(BaseHTTPRequestHandler):
         if item is None and not in_history and self.community_artwork(image_id) is None:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
-        payload = client.query("image.get", {"id": image_id})
+        try:
+            payload = client.query("image.get", {"id": image_id})
+        except CivitaiHTTPError as error:
+            if error.status != 404:
+                raise
+            self.json_response({"error": "This image is unavailable to your Civitai account. No reaction was changed.",
+                                "code": "ARTWORK_UNAVAILABLE"}, 404)
+            return
         current = reaction_names(payload)
         # Civitai's own counts, read a moment ago, rather than whichever stored copy was
         # collected first: those differ, and reacting used to make the card jump to the
