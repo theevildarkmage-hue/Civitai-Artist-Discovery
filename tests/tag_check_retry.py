@@ -88,6 +88,9 @@ with tempfile.TemporaryDirectory(prefix="civitai-tag-retry-", ignore_cleanup_err
 
             page.route("**/api/history/tags", tags)
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            # This scenario starts with an established account. Initial applyAuth
+            # intentionally cancels queued reads from the prior account epoch.
+            page.locator('#accountStatus', has_text='Signed in as @tester').wait_for(timeout=10000)
             page.locator("#tabTimeMachine").click()
             page.wait_for_selector("#timeMachine:not(.hidden)")
             page.locator(".tm-card", has_text="Ana").wait_for(timeout=10000)
@@ -133,6 +136,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-tag-retry-", ignore_cleanup_err
                 route.fulfill(status=500, content_type="application/json",
                               body='{"error": "still down"}')))
             page.goto(f"http://127.0.0.1:{PORT}", wait_until="domcontentloaded")
+            page.locator('#accountStatus', has_text='Signed in as @tester').wait_for(timeout=10000)
             page.locator("#tabTimeMachine").click()
             page.wait_for_selector("#timeMachine:not(.hidden)")
             page.locator(".tm-card", has_text="Ana").wait_for(timeout=10000)
