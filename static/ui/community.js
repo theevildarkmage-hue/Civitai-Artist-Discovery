@@ -523,6 +523,15 @@ export function mountCommunity() {
       const result=await api('/api/community/verify',{method:'POST',body:JSON.stringify({artwork:value}),signal:controller.signal});
       if(version!==previewVersion || draft!==draftVersion || !dialog.open || controller.signal.aborted)return;
       const art=result.artwork;
+      if(result.previewHidden===true) {
+        if(!art || !Number.isSafeInteger(art.id) || !['image','video'].includes(art.type))throw new Error('The artwork could not be verified.');
+        // No card, poster, video, or detail link is created for hidden content.
+        reviewedArtwork={id:art.id,type:art.type};reviewedValue=value;quota(result.quota);
+        previewReady=true;
+        previewFeedback('This artwork is hidden by your rating settings. You can recommend it without displaying a preview.');
+        updateRecommendationButtons();
+        return;
+      }
       if(!art || !Number.isSafeInteger(art.id) || !['image','video'].includes(art.type) || !(art.thumbnailUrl || art.url))throw new Error('The artwork preview is unavailable.');
       reviewedArtwork=art;reviewedValue=value;quota(result.quota);
       renderRecommendationPreview(art,version);

@@ -1,3 +1,5 @@
+// Community eligibility accepts every supported rating; viewer filters remain local.
+const DEFAULT_ALLOWED_RATINGS='1,2,4,8,16';
 // Shared deployed factory; local candidate changes require a pinned hosted rollout.
 // No SDK dependency and no browser OAuth transport.
 export function createCommunityHandler({fetch:transport=globalThis.fetch, ipLimit=120,
@@ -146,7 +148,7 @@ async function artwork(image: number, token: string, publicReview=false): Promis
   // Shared eligibility uses independent anonymous public visibility/rating proof.
   // Authenticated detail remains required for numeric ownership and public flags.
   if(publicReview) {
-    const policy=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??'1,2').split(',').map(Number);
+    const policy=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??DEFAULT_ALLOWED_RATINGS).split(',').map(Number);
     if(!policy.length||policy.some(n=>![1,2,4,8,16].includes(n)))fail('UNAVAILABLE');
     if([1,2,4,8,16].includes(item.browsingLevel)&&!policy.includes(item.browsingLevel))fail('PUBLIC_RATING');
   }
@@ -169,7 +171,7 @@ async function artwork(image: number, token: string, publicReview=false): Promis
     if(!post.user?.username || post.user.username!==item.username)fail('UNVERIFIED_OWNER');
     const creator=id(post.user.id);
     if(!post.publishedAt || !Number.isFinite(Date.parse(post.publishedAt)) || Date.parse(post.publishedAt)>Date.now())fail('INVALID_ARTWORK');
-    const allowed=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??'1,2').split(',').map(Number);
+    const allowed=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??DEFAULT_ALLOWED_RATINGS).split(',').map(Number);
     if(!allowed.length || allowed.some(n=>![1,2,4,8,16].includes(n)))fail('UNAVAILABLE');
     if(![1,2,4,8,16].includes(item.browsingLevel))fail('INVALID_ARTWORK');
     if(!allowed.includes(item.browsingLevel))fail(publicReview?'PUBLIC_RATING':'CONTENT_FILTERED');
@@ -189,7 +191,7 @@ async function artwork(image: number, token: string, publicReview=false): Promis
   if(![1,2,4,8,16].includes(item.browsingLevel) || detail.nsfwLevel!==item.browsingLevel) fail('INVALID_ARTWORK');
   let media: URL; try {media=new URL(item.url);} catch {return fail('INVALID_ARTWORK');}
   if(media.protocol!=='https:' || media.hostname!=='image.civitai.com' || media.port || media.username || media.password) fail('INVALID_ARTWORK');
-  const allowed=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??'1,2').split(',').map(Number);
+  const allowed=(Deno.env.get('COMMUNITY_ALLOWED_RATINGS')??DEFAULT_ALLOWED_RATINGS).split(',').map(Number);
   if(!allowed.length || allowed.some(n=>![1,2,4,8,16].includes(n))) fail('UNAVAILABLE');
   if(!allowed.includes(item.browsingLevel)) fail('CONTENT_FILTERED');
   return creator!;
