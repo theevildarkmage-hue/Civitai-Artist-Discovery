@@ -1,6 +1,6 @@
 # Civitai Artist Discovery
 
-## Production stable 3.0.0
+## Production stable 3.0.1
 
 The published stable Windows release connects to Production Community. Normal
 Civitai sign-in automatically enrolls verified users; no invitation or separate
@@ -8,7 +8,7 @@ registration is required. The separate activity Registry remains disabled.
 
 **Linux/source users:** use `python server.py --stable` after installing runtime
 dependencies, or `uv run --with-requirements requirements.txt server.py --stable`.
-This explicitly selects stable 3.0.0, the reviewed Production services, and a
+This explicitly selects stable 3.0.1, the reviewed Production services, and a
 separate local profile. Plain `python server.py` remains the beta/Development
 source entry point, including a local Community ledger by default. Checking out a
 stable tag alone does not select Production. See [Linux stable source setup](docs/3.0-linux-stable-source.md).
