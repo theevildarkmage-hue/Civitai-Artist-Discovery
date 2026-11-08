@@ -1,4 +1,5 @@
 import { mountShell, groupPageControls } from './shell.js';
+import { mountSourceNotice } from './source-notice.js';
 import { enhancePopover } from './menu.js';
 import { api, finishControlChange } from './api.js';
 import { createSelectionQueue } from './selection-queue.js';
@@ -25,6 +26,7 @@ if (new URLSearchParams(location.search).get('uiPerf') === '1') {
 }
 
 mountShell();
+mountSourceNotice();
 window.reportClientEvent = reportClientEvent;
 // Temporary bridge for the classic page controller; new modules import directly.
 window.CivitaiUI = Object.freeze({ api, finishControlChange, createSelectionQueue, showArtwork, showVideoPoster, showGallerySkeleton, showPageError, createCreatorCard, createInfinitePager, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget });
