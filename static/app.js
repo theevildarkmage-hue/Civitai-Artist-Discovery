@@ -473,7 +473,9 @@ async function hydrateReactionStates(images) {
     if(epoch!==tagEpoch || !oauthConnected)return;
     Object.entries(data.images||{}).forEach(([id,state])=>{
       const image=batch.find(item=>String(item.id)===id);
-      if(!image)return;
+      // A user action or another read may have resolved this image while this
+      // request was in flight. Never overwrite that newer account state.
+      if(!image || imageReactionState.has(id))return;
       imageReactionState.set(id,{reactions:[...(state.reactions||[])],stats:{...(image.stats||{}),...(state.stats||{})}});
       notifyReactionState(id);
     });
