@@ -7,7 +7,7 @@ from pathlib import Path
 DEVELOPMENT_PROJECT = 'aibelmhucizupzvvhdvf'
 DEFAULT = {'schemaVersion': 1, 'channel': 'beta', 'version': '3.0.0-beta.14',
            'environment': 'development', 'projectRef': DEVELOPMENT_PROJECT, 'preview': False}
-STABLE_SOURCE = {'schemaVersion': 1, 'channel': 'stable', 'version': '3.0.0',
+STABLE_SOURCE = {'schemaVersion': 1, 'channel': 'stable', 'version': '3.0.1',
                  'environment': 'production', 'projectRef': 'masrxykkbqngtbeeqpbq', 'preview': False}
 
 
