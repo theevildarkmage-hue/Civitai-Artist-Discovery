@@ -30,6 +30,12 @@ def main():
     if provenance.get('sourceDirty') and not preview:p.error('Dirty build cannot be relabeled as final')
     embedded=package/'_internal/discovery/build-configuration.json'
     if not embedded.is_file() or embedded.read_bytes()!=(package/'build-configuration.json').read_bytes():p.error('Embedded configuration mismatch')
+    # Final artifact creation must recheck post-build static/resource edits too.
+    # Explicit previews remain non-publishable and are rejected by the updater.
+    if not preview:
+        inspection=subprocess.run([sys.executable,str(ROOT/'scripts/check-personal-identity.py'),'--package',str(package)],
+                                  cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        if inspection.returncode:p.error('Personal-identity publication audit rejected the package; values withheld')
     identity={'applicationId':application,'version':config['version'],'tag':'v'+config['version'],'channel':config['channel'],
               'sourceCommit':commit,'sourceDirty':dirty,'preview':preview}
     (package/'release-identity.json').write_text(json.dumps(identity,indent=2))

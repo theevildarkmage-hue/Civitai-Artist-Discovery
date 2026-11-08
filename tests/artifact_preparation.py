@@ -1,9 +1,10 @@
 """Shared beta/stable artifact identity, provenance and packaging rejection tests."""
 import test_safety
-import hashlib,json,subprocess,sys,tempfile,unittest,zipfile
+import hashlib,importlib.util,json,subprocess,sys,tempfile,unittest,zipfile
+from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0,str(test_safety.ROOT))
-from discovery.build_config import DEFAULT
+from discovery.build_config import DEFAULT,STABLE_SOURCE
 ROOT=test_safety.ROOT
 
 class Artifacts(unittest.TestCase):
@@ -41,4 +42,19 @@ class Artifacts(unittest.TestCase):
         for channel in ('beta','stable'):
             for damage in ('credential','credential-uppercase','sqlite-sidecar','environment-local','profile-directory','exe','configuration'):
                 with self.subTest(channel=channel,damage=damage):self.prepare(channel,damage)
+    def test_final_artifact_cannot_bypass_last_privacy_gate(self):
+        spec=importlib.util.spec_from_file_location('artifact_gate',ROOT/'scripts/prepare-artifacts.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory(prefix='cad3-final-artifact-gate-') as name:
+            root=Path(name);package=root/'CivitaiArtistDiscovery';embedded=package/'_internal/discovery';embedded.mkdir(parents=True)
+            config=dict(STABLE_SOURCE)
+            for path in [package/'build-configuration.json',embedded/'build-configuration.json']:path.write_text(json.dumps(config))
+            exe=package/'CivitaiArtistDiscovery.exe';exe.write_bytes(b'synthetic executable, boundary is independently inspected by packaged tests')
+            commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+            (package/'build-provenance.json').write_text(json.dumps({'sourceCommit':commit,'sourceDirty':False,'executableSha256':hashlib.sha256(exe.read_bytes()).hexdigest(),'buildConfiguration':config}))
+            with patch.object(sys,'argv',['prepare-artifacts','--package',str(package),'--output',str(root/'artifacts')]),patch.object(module.subprocess,'run',return_value=subprocess.CompletedProcess([],1)) as inspect:
+                with patch.object(module.subprocess,'check_output',side_effect=[commit,'']):
+                    with self.assertRaises(SystemExit):module.main()
+                self.assertIn('check-personal-identity.py',inspect.call_args.args[0][1])
+                self.assertFalse((root/'artifacts').exists())
 if __name__=='__main__':unittest.main()
