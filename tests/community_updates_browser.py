@@ -49,7 +49,8 @@ try:
    except Exception:
     print({'calls':calls,'errors':errors,'browser':page.evaluate('()=>({notice:document.querySelector("#communityUpdates").textContent,message:document.querySelector("#communityMessage").textContent,filters:galleryFilterState()})')},flush=True)
     raise
-   assert page.locator('#communityUpdates').inner_text()=='3 new recommendations \u2014 Refresh to Show'
+   assert ' '.join(page.locator('#communityUpdates').inner_text().split())=='3 new recommendations \u2014 Refresh to Show'
+   assert page.locator('#communityUpdates button').get_attribute('type')=='button'
    assert probe_refresh and all(value=='0' for value in probe_refresh),'background notice must not force metadata refresh'
    assert page.evaluate('()=>{const now=[...document.querySelectorAll("#communityGrid .community-card")];return now.length===window.__noticeCards.length&&now.every((el,i)=>el===window.__noticeCards[i])}')
    assert abs(page.evaluate('scrollY')-saved)<2
