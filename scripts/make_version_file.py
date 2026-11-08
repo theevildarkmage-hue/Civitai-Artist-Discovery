@@ -52,4 +52,4 @@ OUT.write_text(f"""VSVersionInfo(
   ]
 )
 """, encoding="utf-8")
-print(f"wrote {OUT} ({name} {version})")
+print(f"wrote {OUT.name} ({name} {version})")

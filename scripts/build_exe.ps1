@@ -11,6 +11,8 @@ if ($OneFile) { throw 'Portable releases use the folder build; -OneFile is no lo
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
+  python -B scripts/check-git-identity.py --all
+  if ($LASTEXITCODE -ne 0) { throw 'Personal-identity source audit rejected this build.' }
   python -c "import ssl, sys; crypto = tuple(int(n) for n in ssl.OPENSSL_VERSION.split()[1].split('.')); assert sys.version_info[:2] == (3, 14) and sys.version_info[:3] >= (3, 14, 8) and crypto >= (3, 5, 9), 'Windows releases require Python 3.14.8+ (3.14 series) with OpenSSL 3.5.9+'; print(sys.version.split()[0], ssl.OPENSSL_VERSION)"
   if ($LASTEXITCODE -ne 0) { throw 'Use the reviewed, patched Windows release interpreter.' }
   $buildPaths = @()
@@ -56,7 +58,7 @@ try {
   # pack the binary, and packed executables are a well-known heuristic trigger.
   python (Join-Path $root 'scripts/check-test-lab-exclusion.py')
   if ($LASTEXITCODE) { throw 'Development Test Lab must be excluded from release inputs' }
-  python -m PyInstaller --noconfirm --clean --onedir --windowed --noupx `
+  python -B scripts/run-redacted.py -- -m PyInstaller --noconfirm --clean --onedir --windowed --noupx --log-level ERROR `
     --exclude-module discovery.community_dev --exclude-module discovery.community_fixtures `
     --name $applicationId `
     --icon $icon `
@@ -96,7 +98,9 @@ try {
   Copy-Item -LiteralPath $configuration -Destination (Join-Path $package 'build-configuration.json')
   python -B scripts/stamp-beta-build.py finish --record $sourceRecord --package $package --configuration $configuration
   if ($LASTEXITCODE -ne 0) { throw 'Build provenance verification failed' }
-  Write-Host "Built: $package\$applicationId.exe"
+  python -B scripts/check-personal-identity.py --package $package
+  if ($LASTEXITCODE -ne 0) { throw 'Personal-identity package audit rejected this build.' }
+  Write-Host "Built verified package: $applicationId"
 } finally {
   Pop-Location
 }

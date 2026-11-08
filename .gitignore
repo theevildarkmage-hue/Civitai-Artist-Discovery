@@ -135,3 +135,10 @@ dev/community-test-lab/*
 
 # Read-only candidate artwork acceptance helper; contains no credentials.
 !scripts/verify-public-artwork.mjs
+
+# Git identity privacy enforcement.
+!.githooks/*
+!.github/
+!.github/workflows/
+!.github/workflows/git-identity.yml
+!.gitattributes

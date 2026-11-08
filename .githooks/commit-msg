@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+guard_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec python "$guard_root/scripts/check-git-identity.py" --effective --message "$1"

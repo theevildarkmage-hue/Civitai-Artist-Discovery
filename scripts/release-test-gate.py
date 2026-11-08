@@ -65,6 +65,11 @@ def main():
         (out/'entries.json').write_text(json.dumps(rows,indent=2))
         print(json.dumps(row),flush=True)
         return row
+    identity=run('git-identity',[sys.executable,str(ROOT/'scripts/check-git-identity.py'),'--all'],args.timeout)
+    if identity['state']!='passed':
+        result={'sourceCommit':commit,'sourceChecksPassed':False,'fullGatePassed':False,
+                'failed':['git-identity'],'reason':'Reachable identity audit failed; release refused.'}
+        (out/'summary.json').write_text(json.dumps(result,indent=2));print(json.dumps(result));raise SystemExit(1)
     # The existing runner owns each profile, port, process and browser artifact.
     run('python',[sys.executable,str(ROOT/'scripts/run_tests.py'),'--timeout',str(args.timeout),'--output',str(out/'python')],max(3600,args.timeout*200))
     python_summary=json.loads((out/'python/summary.json').read_text()) if (out/'python/summary.json').exists() else None
@@ -91,6 +96,8 @@ def main():
             row=run('frozen-isolation-'+channel,[sys.executable,str(ROOT/'tests/oauth_isolation_transport.py'),
                 '--frozen-exe',str(executable),'--output',str(out/('frozen-isolation-'+channel+'.json'))],args.timeout)
             if row['state']=='passed':packaged_channels.append(channel)
+            run('personal-identity-package-'+channel,[sys.executable,str(ROOT/'scripts/check-personal-identity.py'),
+                '--package',str(package),'--output',str(out/('personal-identity-'+channel+'.json'))],args.timeout)
         except (OSError,ValueError,KeyError):
             rows.append({'name':'frozen-isolation-package','state':'failed','reason':'Package provenance missing, invalid, duplicate or different source'})
     missing_channels=sorted({'stable','beta'}-set(packaged_channels))

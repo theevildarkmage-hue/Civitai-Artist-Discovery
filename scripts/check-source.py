@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 import re
 import subprocess
+from git_identity import forbidden_text
 
 ROOT=Path(__file__).resolve().parents[1]
 APPROVED_BINARY={'tests/fixtures/recovery.mp4'}
@@ -27,11 +28,13 @@ def audit(staged=False):
     names=list(filter(None,subprocess.check_output(command).decode().split('\0')))
     failures=[]
     for name in names:
+        if forbidden_text(name.encode()):failures.append('A tracked path contains a prohibited identity (value withheld)');continue
         if forbidden(name):failures.append(f'{name}: runtime/sensitive artifact path');continue
         if name in APPROVED_BINARY:continue
         if staged:value=subprocess.check_output(['git','-C',str(ROOT),'show',':'+name])
         elif (ROOT/name).is_file():value=(ROOT/name).read_bytes()
         else:continue
+        if forbidden_text(value):failures.append(f'{name}: prohibited identity text (value withheld)')
         for number,line in enumerate(value.decode('utf-8','replace').splitlines(),1):
             if any(re.search(pattern,line) for pattern in [*PATTERNS, PERSONAL_PATH_PATTERN]):
                 failures.append(f'{name}:{number}: sensitive content pattern (value withheld)')

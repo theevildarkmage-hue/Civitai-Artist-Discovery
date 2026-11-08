@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+guard_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+python "$guard_root/scripts/check-git-identity.py" --effective
+if [ -n "${1:-}" ]; then
+  tip=$(git rev-parse "${2:-HEAD}")
+  base=$(git rev-parse "$1")
+  exec python "$guard_root/scripts/check-git-identity.py" --tip "$tip" --before "$base"
+fi

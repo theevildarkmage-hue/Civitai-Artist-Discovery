@@ -106,8 +106,8 @@ if CANDIDATE == "preview":
             strip.paste(render(name, size), (x, (256 - size) // 2))
             x += size + 15
         strip.convert("RGB").save(out / f"icon-{name}.png")
-        print(f"preview: {out / f'icon-{name}.png'}")
+        print(f"preview: icon-{name}.png")
 else:
     frames = [render(CANDIDATE, size) for size in SIZES]
     frames[0].save(OUT, format="ICO", sizes=[(s, s) for s in SIZES])
-    print(f"wrote {OUT} ({OUT.stat().st_size:,} bytes, '{CANDIDATE}', sizes {SIZES})")
+    print(f"wrote {OUT.name} ({OUT.stat().st_size:,} bytes, '{CANDIDATE}', sizes {SIZES})")

@@ -1,2 +1,10 @@
 #!/bin/sh
-exec python scripts/check-source.py --staged
+set -eu
+guard_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+python "$guard_root/scripts/check-git-identity.py" --effective --staged
+root=$(git rev-parse --show-toplevel)
+if [ ! -f "$root/scripts/check-source.py" ]; then
+  echo "Source gate missing; commit refused." >&2
+  exit 1
+fi
+exec python "$root/scripts/check-source.py" --staged

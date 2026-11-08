@@ -9,6 +9,7 @@ import time
 import secrets
 from collections import OrderedDict
 from urllib.parse import urlsplit, urlunsplit
+from .privacy_patterns import redact_personal
 
 
 LOG_LOCK = threading.Lock()
@@ -39,6 +40,7 @@ def community_failure(root, operation, error):
 
 def redact_sensitive(message: str) -> str:
     """Best-effort defense against credentials echoed by upstream error pages."""
+    message = redact_personal(message)
     message = re.sub(r'(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+', r'\1 [redacted]', message)
     keys = r'access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|api[_-]?key|password'
     message = re.sub(r'''(?i)(\b(?:''' + keys + r''')\b["']?\s*[:=]\s*)(["'])(?:\\.|(?!\2)[^\r\n])*\2''',
