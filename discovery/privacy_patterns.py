@@ -18,11 +18,13 @@ NAME_HASHES = {}
 EMAIL_HASHES = {}
 HOME_ACCOUNT_HASHES = {}
 _KEY=None
-EXPECTED_POLICY_SHA256='e4d726ecc510e4feda426618f06de9cfeb90bb22206d6946e78c9384df928fe2'  # Whole private policy, not a name fingerprint.
+_PRIVATE_NEEDLES={}
+_POLICY_TABLES={}
+EXPECTED_POLICY_SHA256='d9ca24a932d0c6c22497d5324bfb444e5847c7996337a6371312b76f6a56b76d'  # Whole private policy, not a name fingerprint.
 
 def configure_policy(path=None):
     """Load private keyed policy; callers never receive or print its contents."""
-    global NAME_HASHES,EMAIL_HASHES,HOME_ACCOUNT_HASHES,_KEY
+    global NAME_HASHES,EMAIL_HASHES,HOME_ACCOUNT_HASHES,_KEY,_PRIVATE_NEEDLES,_POLICY_TABLES
     raw=Path(path).read_text(encoding='utf-8') if path else os.environ.get('DISCOVERY_IDENTITY_POLICY','')
     if not raw:
         location=os.environ.get('DISCOVERY_IDENTITY_POLICY_FILE','')
@@ -42,7 +44,14 @@ def configure_policy(path=None):
             table[int(size)]=frozenset(digests)
         if not table:raise ValueError('Empty private policy')
         parsed[name]=table
+    needles={}
+    for name in ('names','emails','homeAccounts'):
+        values=value.get('patterns',{}).get(name,[])
+        normalized_values=tuple(''.join(c for c in unicodedata.normalize('NFKC',v).casefold() if c.isalnum()) for v in values)
+        if any(hmac.new(key,v.encode(),hashlib.sha256).hexdigest() not in parsed[name].get(len(v),()) for v in normalized_values):raise ValueError('Inconsistent private policy')
+        needles[name]=normalized_values
     _KEY=key;NAME_HASHES=parsed['names'];EMAIL_HASHES=parsed['emails'];HOME_ACCOUNT_HASHES=parsed['homeAccounts']
+    _PRIVATE_NEEDLES=needles;_POLICY_TABLES=parsed
     return True
 
 def policy_ready():return _KEY is not None and all((NAME_HASHES,EMAIL_HASHES,HOME_ACCOUNT_HASHES))
@@ -56,7 +65,9 @@ except Exception:pass  # Runtime keeps generic redaction; security CLIs fail clo
 def normalized(value):
     return ''.join(c for c in unicodedata.normalize('NFKC',value).casefold() if c.isalnum())
 
-def _contains(value, fingerprints):
+def _contains(value, fingerprints, group):
+    if fingerprints==_POLICY_TABLES.get(group) and _PRIVATE_NEEDLES.get(group):
+        return any(needle in value for needle in _PRIVATE_NEEDLES[group])
     for size, digests in fingerprints.items():
         for index in range(len(value)-size+1):
             if digest(value[index:index+size]) in digests:
@@ -108,8 +119,8 @@ def categories(data):
             markers.update(d for table in (NAME_HASHES,EMAIL_HASHES,HOME_ACCOUNT_HASHES) for digests in table.values() for d in digests)
             if any(marker.casefold() in value.casefold() for marker in markers):result.add('private-policy-material')
         canon=normalized(value)
-        if _contains(canon,NAME_HASHES):result.add('protected-name')
-        if _contains(canon,EMAIL_HASHES):result.add('protected-email')
+        if _contains(canon,NAME_HASHES,'names'):result.add('protected-name')
+        if _contains(canon,EMAIL_HASHES,'emails'):result.add('protected-email')
         # URL route segments called /users/ are public API identifiers, not homes.
         for match in HOME.finditer(value):
             account=normalized(match[1])
