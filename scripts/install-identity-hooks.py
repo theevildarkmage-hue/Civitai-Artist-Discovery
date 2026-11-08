@@ -1,6 +1,7 @@
 """Install durable version-controlled identity hooks without altering working history."""
 import argparse,hashlib,json,os,shutil,subprocess,sys
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parent))
 from git_identity import OWNER_LOGIN,OWNER_EMAIL,require_private_policy
 ROOT=Path(__file__).resolve().parents[1]
 HOOKS=('pre-commit','prepare-commit-msg','commit-msg','pre-push','pre-merge-commit','pre-rebase','applypatch-msg','pre-applypatch','post-commit')

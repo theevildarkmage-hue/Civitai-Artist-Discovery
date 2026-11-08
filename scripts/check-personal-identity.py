@@ -2,6 +2,7 @@
 import argparse,json,marshal,sys,types
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0,str(Path(__file__).resolve().parent))
 from discovery.privacy_patterns import categories
 from git_identity import require_private_policy
 
