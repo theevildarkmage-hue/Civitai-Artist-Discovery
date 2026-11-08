@@ -380,6 +380,13 @@ class TimeMachine:
             return db.execute("SELECT 1 FROM creator_images WHERE image_id=? LIMIT 1",
                               (int(image_id),)).fetchone() is not None
 
+    def preview_record(self, image_id: int) -> dict | None:
+        """Read local preview admission metadata without resolving or advancing history."""
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM creator_images WHERE image_id=? LIMIT 1",
+                             (int(image_id),)).fetchone()
+        return {**dict(row), 'type': _row_type(row), 'nsfw_level': None} if row else None
+
     def stats(self, image_id: int) -> dict:
         with self.connect() as db:
             row = db.execute("SELECT stats FROM creator_images WHERE image_id=? LIMIT 1",
