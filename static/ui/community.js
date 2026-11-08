@@ -344,10 +344,23 @@ export function mountCommunity() {
         const result=await api(`/api/community/gallery?limit=50&refresh=0${next ? `&cursor=${encodeURIComponent(next)}` : ''}`,{signal:controller.signal});
         if(id!==generation || controller.signal.aborted || !authorized || !updatesAllowed || document.hidden || section.classList.contains('hidden'))return;
         if(result.cache?.state==='stale')return;
+        const eligible=new Map();
+        if(result.feedVersion===3) {
+          // The production feed contains signed IDs, not decorated artwork.
+          // Apply the same local admission/content controls as foreground cards
+          // before counting anything as available to this reader.
+          const candidates=result.items.filter(row=>!listedRecommendations.has(String(row.imageId)) && !recommendations.has(String(row.imageId)));
+          for(let offset=0;offset<candidates.length;offset+=12) {
+            const prepared=await window.DiscoveryGallery.resolveImages(candidates.slice(offset,offset+12).map(row=>row.imageId),{signal:controller.signal});
+            if(id!==generation || controller.signal.aborted || !authorized || !updatesAllowed || document.hidden || section.classList.contains('hidden'))return;
+            for(const art of prepared.images)if(matchesFilters(art))eligible.set(String(art.id),art);
+          }
+        }
         for(const row of result.items) {
           const key=String(row.imageId??row.artwork?.id), date=Date.parse(row.submittedAt);
           if(key===lastLoaded || (Number.isFinite(date) && date<oldestShown)) {stopped=true;break;}
           if(listedRecommendations.has(key) || recommendations.has(key) || !Number.isFinite(date) || row.artwork&&!matchesFilters(row.artwork))continue;
+          if(result.feedVersion===3 && !eligible.has(key))continue;
           found.add(key);
           if(newestShown!==null && date<=newestShown)restored=true;
         }
@@ -359,6 +372,12 @@ export function mountCommunity() {
       const count=found.size, capped=!!next && !stopped;
       const noun=`recommendation${count===1&&!capped?'':'s'}`;
       el('communityUpdates').textContent=count ? `${count}${capped?'+':''} ${restored ? noun+' available' : 'new '+noun} \u2014 Refresh to Show` : '';
+      if(count) {
+        const notice=el('communityUpdates'), text=notice.textContent;
+        const action=document.createElement('button');action.type='button';action.textContent='Refresh to Show';
+        action.onclick=refreshRecommendations;
+        notice.replaceChildren(text.slice(0,-'Refresh to Show'.length),action);
+      }
     } catch(error) {
       if(id!==generation || controller.signal.aborted)return;
       // A transient probe failure must not replace cards, scroll or foreground
@@ -625,4 +644,7 @@ export function mountCommunity() {
   window.addEventListener('content-controls-changing', invalidate);
   window.CivitaiCommunity = Object.freeze({load, recommend, activate, deactivate, filterModels, applyFilters});
   setInterval(()=>{if(policyControlled&&authorized&&!document.hidden&&!section.classList.contains('hidden'))activate();},60000);
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden && authorized && !section.classList.contains('hidden'))activate();
+  });
 }
