@@ -672,13 +672,20 @@ class CommunityClient:
                 live=self.verifier.live_verifier
                 actual=live.member(live.token_provider())
                 if art.creator_id == actual.id:raise CommunityError('SELF_RECOMMENDATION',403)
-            if not profile.allows(art):
+            exclusions=profile.exclusions(art)
+            # Submission eligibility is separate from the viewer's rating mask.
+            # Keep other content controls enforced and never return hidden media.
+            if any(reason!='ratingRestriction' for reason in exclusions):
                 raise CommunityError("CONTENT_FILTERED", 403)
             result = self.backend.request(operation, token, {"artwork": art.id,
                 **({'idempotencyKey':payload['idempotencyKey']} if 'idempotencyKey' in payload else {})})
             if hasattr(self,'artwork_cache'):self.artwork_cache.remember(art)
             if operation == "verify":
-                result["artwork"] = self.browser_artwork(art, thumbnail_proxy=False)
+                if 'ratingRestriction' in exclusions:
+                    result['previewHidden']=True
+                    result['artwork']={'id':art.id,'type':art.media_type}
+                else:
+                    result["artwork"] = self.browser_artwork(art, thumbnail_proxy=False)
             if operation=='recommend' and hasattr(self,'store'):
                 identity=self._identity(token)
                 key=f'{self.mode}:member:{identity}:status:first:24'

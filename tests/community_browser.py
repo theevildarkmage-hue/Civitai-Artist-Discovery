@@ -104,7 +104,10 @@ def run(mode):
                     assert request('/api/community/status')['quota']['used']==1
                     page.locator('#communityCancel').click()
                 preview('1003')
-                page.locator('#communityDialogMessage').filter(has_text='outside your current content controls').wait_for()
+                page.locator('#communityDialogMessage').filter(has_text='hidden by your rating settings').wait_for()
+                assert page.locator('#communitySubmit').is_enabled()
+                assert page.locator('#communityPreview img, #communityPreview video, #communityPreview a').count()==0
+                assert request('/api/community/status')['quota']['used']==1
                 page.locator('#communityCancel').click()
                 # Server commits but loses its reply: same key retries to success once.
                 request('/api/community/development/control',{'action':'loseConfirmationResponse'})

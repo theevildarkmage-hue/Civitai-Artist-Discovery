@@ -23,8 +23,8 @@ assert.equal((await call('gallery'))[0],503);
 for(const invalid of ['unknown','true','ENABLED']){state=invalid;assert.equal((await call('recommend',{artwork:123}))[1].code,'BETA_DISABLED');}
 state='read_only';assert.equal((await call('gallery'))[0],200);assert.equal((await call('recommend',{artwork:123}))[1].code,'READ_ONLY');
 assert.equal((await call('status'))[1].beta.submissions,false);assert.equal(commits,0);
-state='enabled';assert.equal((await call('recommend',{artwork:123}))[1].code,'CONTENT_FILTERED');assert.equal(commits,0);
+state='enabled';ratings='1,2';assert.equal((await call('recommend',{artwork:123}))[1].code,'CONTENT_FILTERED');assert.equal(commits,0);
 ratings='8';assert.equal((await call('recommend',{artwork:123}))[0],200);assert.equal(commits,1);
 state='read_only';assert.equal((await call('recommend',{artwork:123,submissions:true}))[0],400);assert.equal(commits,1);
 ratings='invalid';state='enabled';assert.equal((await call('recommend',{artwork:123}))[0],503);assert.equal(commits,1);
-console.log('PASS: missing/invalid kill switch fails closed; read-only browse; fresh server toggle; authoritative default ratings; forged policy denied');
+console.log('PASS: missing/invalid kill switch fails closed; read-only browse; fresh server toggle; authoritative configured ratings; forged policy denied');

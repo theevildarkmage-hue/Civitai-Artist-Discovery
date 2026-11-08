@@ -27,6 +27,20 @@ are treated exactly like hidden creators.
 
 ## What is enforced
 
+Community recommendations accept public images and videos at every supported rating
+(PG, PG-13, R, X and XXX). The viewer's rating selection controls what they see, rather
+than which rating they can recommend. When a pasted artwork is outside that selection,
+the recommendation dialog explains that its preview is hidden and permits explicit
+confirmation without loading its image, video or preview link. Recommending it does not
+change the viewer's settings or make it visible in their own Community gallery.
+
+Other content controls still apply to recommendations: hidden tags, hidden artworks,
+hidden or blocked creators, and incomplete required metadata can prevent submission.
+Public availability, verified ownership, self-recommendation checks and weekly quotas
+also continue to apply. This submission behavior requires the updated source/client;
+the published 3.0.0 Windows client still requires the artwork's rating to be enabled
+in its viewing settings.
+
 | Source | Enforcement | Completeness |
 | --- | --- | --- |
 | `hiddenUsers` | Excluded from every view and from the artist count | Exact |
