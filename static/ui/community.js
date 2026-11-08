@@ -224,6 +224,7 @@ export function mountCommunity() {
       addedArtists.push(artist); addedCards.push(card);
     }
     if(remember)window.dispatchEvent(new Event('community-model-catalog-changed'));
+    window.DiscoveryGallery.hydrateReactionStates(artworks).catch(()=>{});
     // IDs already came from verified artwork. Batch follow state without fetching
     // every creator's profile or holding up artwork rendering.
     for(let offset=0;offset<addedArtists.length;offset+=100) {
@@ -404,6 +405,9 @@ export function mountCommunity() {
       // projection then; ordinary tab switches still keep their pages and scroll.
       if (viewSession && status.viewSession && viewSession !== status.viewSession) return load();
       await checkNewRecommendations();
+      // Retry unknown reaction state after transient failures without clearing
+      // already known selections or toggling any provider reactions.
+      window.DiscoveryGallery.hydrateReactionStates([...recommendations.values()].map(row=>row.artwork)).catch(()=>{});
     } catch (error) { if (id === generation) accessError(error); }
   }
   function deactivate() {
