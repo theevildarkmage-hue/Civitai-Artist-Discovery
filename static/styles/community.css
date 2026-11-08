@@ -41,6 +41,8 @@
 /* Reserve notification space so a background check never shifts gallery cards. */
 .community-updates { margin:0; min-height:2.5em; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--muted); font-size:.9rem; overflow-wrap:anywhere; }
 .community-updates:empty { visibility:hidden; }
+.community-updates:not(:empty) { color:var(--text); background:var(--panel); outline:2px solid var(--accent); border-radius:8px; padding:0 10px; gap:.35em; font-weight:600; }
+.community-updates button { color:inherit; font:inherit; text-decoration:underline; border:0; padding:4px; background:transparent; }
 @media (max-width:1000px) {
   .community-heading { grid-template-columns:1fr; }
   .community-heading .community-tools { grid-row:2; }

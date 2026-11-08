@@ -462,8 +462,26 @@ const reactionInfo = { Like: ["👍", "likeCount"], Heart: ["❤️", "heartCoun
 function notifyReactionState(id) {
   document.querySelectorAll(`.creator-card[data-id="${CSS.escape(String(id))}"]`).forEach(card => card.dispatchEvent(new Event('reactionstate')));
 }
-async function hydrateReactionStates(images) { if (!oauthConnected) return; const unknown = [...new Map((images || []).filter(image => image?.id && !imageReactionState.has(String(image.id))).map(image => [String(image.id), image])).values()]; for (let offset = 0; offset < unknown.length; offset += 100) { const batch = unknown.slice(offset, offset + 100), query = new URLSearchParams(); batch.forEach(image => query.append("imageId", image.id)); const data = await api(`/api/reaction-status?${query}`); Object.entries(data.images || {}).forEach(([id, state]) => { const image = batch.find(item => String(item.id) === id); imageReactionState.set(id, { reactions: [...(state.reactions || [])], stats: { ...(image?.stats || {}), ...(state.stats || {}) } }); notifyReactionState(id); }); } }
-function reactionBar(image) { const state = imageReactionState.get(String(image.id)), s = state?.stats || image.stats || {}, selected = new Set(state?.reactions || []); return `<div class="reaction-bar">${Object.entries(reactionInfo).map(([name, [icon, key]]) => `<button class="${selected.has(name) ? "selected" : ""}" data-reaction="${name}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${icon} <b>${safeCount(s[key])}</b></button>`).join("")}<span class="total-reactions" title="Total reactions">Total ${safeCount(s.reactionCount)}</span></div>`; }
+async function hydrateReactionStates(images) {
+  if (!oauthConnected) return;
+  const epoch=tagEpoch;
+  const unknown=[...new Map((images||[]).filter(image=>image?.id && !imageReactionState.has(String(image.id))).map(image=>[String(image.id),image])).values()];
+  for(let offset=0;offset<unknown.length;offset+=100) {
+    const batch=unknown.slice(offset,offset+100), query=new URLSearchParams();
+    batch.forEach(image=>query.append('imageId',image.id));
+    const data=await api(`/api/reaction-status?${query}`);
+    if(epoch!==tagEpoch || !oauthConnected)return;
+    Object.entries(data.images||{}).forEach(([id,state])=>{
+      const image=batch.find(item=>String(item.id)===id);
+      // A user action or another read may have resolved this image while this
+      // request was in flight. Never overwrite that newer account state.
+      if(!image || imageReactionState.has(id))return;
+      imageReactionState.set(id,{reactions:[...(state.reactions||[])],stats:{...(image.stats||{}),...(state.stats||{})}});
+      notifyReactionState(id);
+    });
+  }
+}
+function reactionBar(image) { const state = imageReactionState.get(String(image.id)), s = state?.stats || image.stats || {}, selected = new Set(state?.reactions || []); return `<div class="reaction-bar" data-state-known="${!!state}" aria-label="${state ? 'Image reactions' : 'Your reaction selection has not loaded yet'}">${Object.entries(reactionInfo).map(([name, [icon, key]]) => `<button class="${selected.has(name) ? "selected" : ""}" data-reaction="${name}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${icon} <b>${safeCount(s[key])}</b></button>`).join("")}<span class="total-reactions" title="Total reactions">Total ${safeCount(s.reactionCount)}</span></div>`; }
 // Follower count is public information like the avatar, so it survives a disconnect.
 // An unreadable count shows nothing rather than claiming the creator has none.
 function applyCreatorFollowers(el, metadata) {
@@ -686,6 +704,7 @@ function card(a, source = {}) {
     api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, notifyReactionState, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore,
     date: selectedDate, segment: selectedSegment, models: modelQuery(),
     canWrite: () => socialWrite,
+    accountEpoch: () => tagEpoch,
     canManageContentControls: () => userWrite,
     canManageCollections: () => collectionsWrite,
     ...source,
@@ -852,6 +871,7 @@ async function loadArtistPage(request) {
 function applyAuth(auth) {
   const next=auth.connected?String(auth.id??''):null;
   if(next!==tagAccount){tagAccount=next;tagEpoch++;imageTagState.clear();
+    imageReactionState.clear();document.querySelectorAll(".creator-card").forEach(card=>card.dispatchEvent(new Event("reactionstate")));
     for(const waiters of pendingTagChecks.values())for(const {reject} of waiters)reject(new Error('Account changed'));
     pendingTagChecks.clear();}
   oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; userWrite = !!auth.userWrite; collectionsWrite = !!auth.collectionsWrite; window.dispatchEvent(new CustomEvent('discovery-auth-changed',{detail:auth})); const waiting = auth.oauthJob?.state === "loading";
