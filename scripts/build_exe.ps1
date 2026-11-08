@@ -17,7 +17,7 @@ try {
   $env:PYTHONHASHSEED = '0'
   $env:SOURCE_DATE_EPOCH = (git show -s --format=%ct HEAD)
   $applicationId = if ($Channel -eq 'beta') { 'CivitaiDiscoveryBeta' } else { 'CivitaiArtistDiscovery' }
-  if (-not $Version) { $Version = if ($Channel -eq 'stable') { '3.0.0' } else { '3.0.0-beta.14' } }
+  if (-not $Version) { $Version = if ($Channel -eq 'stable') { '3.0.1' } else { '3.0.0-beta.14' } }
   $generatedRoot = Join-Path $root 'build\package-inputs'
   $package = Join-Path $root ('dist\' + $applicationId)
   if ($OutputRoot) {
