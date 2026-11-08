@@ -53,6 +53,19 @@ try:
   card.locator('[data-reaction="Like"]').click()
   page.wait_for_function('()=>!document.querySelector("#reactionMirror [data-reaction=Like]").classList.contains("selected")')
   assert len(writes)==1 and writes[0]['active'] is False
+  # A slow hydration read must not overwrite a newer completed user action.
+  state['hold']=True
+  page.evaluate('''()=>{const image={id:1005,type:'image',stats:{},tagState:{known:true,tags:[]}};
+    const c=window.DiscoveryGallery.createCard({username:'RaceArtist',userId:9001,imageCount:1,representative:image},
+      {images:[image],seenObserver:{observe(){},unobserve(){}}});c.id='reactionRace';document.querySelector('main').append(c);
+    void window.DiscoveryGallery.hydrateReactionStates([image]);}''')
+  page.wait_for_timeout(50);assert held
+  page.locator('#reactionRace [data-reaction="Like"]').click()
+  page.wait_for_function('()=>document.querySelector("#reactionRace .reaction-bar").dataset.stateKnown==="true"')
+  state['hold']=False
+  for route,response in held:route.fulfill(json=response)
+  held.clear();page.wait_for_timeout(100)
+  assert page.locator('#reactionRace [data-reaction].selected').count()==0,'old read overwrote completed reaction'
   # Start an old-account request, switch account through the real auth poll, then
   # release its reply; it must never restore the previous account's selections.
   page.evaluate('window.DiscoveryGallery.hydrateReactionStates([{id:1003,stats:{}}])');page.wait_for_timeout(50)
@@ -70,7 +83,7 @@ try:
   assert page.locator('#reactionMirror [data-reaction].selected').count()==0
   page.evaluate('window.DiscoveryGallery.hydrateReactionStates([{id:1004,stats:{}}])');page.wait_for_timeout(100)
   assert reads.count('1004')>=2,'late previous-account reply must not populate the new account cache'
-  assert writes and len(writes)==1
+  assert writes and len(writes)==2
   browser.close()
  print('PASS: grouped hydration/retry, four reaction kinds, aggregate counts, shared update, account clearing and late replies; synthetic only')
 finally:h.stop()
