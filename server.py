@@ -2069,6 +2069,11 @@ class Handler(BaseHTTPRequestHandler):
                 # this settings page) reconnects on its own once the new process is up,
                 # instead of being stranded on a port that no longer answers.
                 restart_args = ["--port", str(RUNNING_PORT), "--no-browser", "--replacing"]
+                if not UPDATES.supported and ENVIRONMENT == 'production':
+                    # Source configuration is selected before imports. The child
+                    # must receive the same explicit stable selection; packages
+                    # continue using their embedded build configuration.
+                    restart_args.append('--stable')
                 command = ([str(UPDATES.executable), *restart_args] if UPDATES.supported
                            else [str(UPDATES.executable), '-B', str(Path(__file__).resolve()), *restart_args])
                 flags = 0
