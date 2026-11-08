@@ -11,7 +11,7 @@ try:
  h.start()
  with sync_playwright() as pw:
   browser=pw.chromium.launch(headless=True);page=browser.new_page(extra_http_headers=h.headers());page.clock.install()
-  state={'account':42,'fail':True,'hold':False,'ids':[1001]};reads=[];writes=[];held=[]
+  state={'account':42,'fail':True,'hold':False,'holdWrite':False,'ids':[1001]};reads=[];writes=[];held=[];heldWrites=[]
   page.route('**/api/auth-status',lambda r:r.fulfill(json={'connected':True,'id':state['account'],'username':'Fixture','socialWrite':True}))
   page.route('**/api/discovery/summary',lambda r:r.fulfill(json={'hasData':False}))
   page.route('**/api/creator-metadata?*',lambda r:r.fulfill(json={'creators':{}}))
@@ -29,7 +29,9 @@ try:
    route.fulfill(json=response)
   page.route('**/api/reaction-status?*',status)
   def mutate(route):
-   writes.append(route.request.post_data_json);route.fulfill(json={'reactions':[],'stats':{'likeCount':5,'reactionCount':10},'changed':True})
+   writes.append(route.request.post_data_json)
+   if state['holdWrite']:heldWrites.append(route);return
+   route.fulfill(json={'reactions':[],'stats':{'likeCount':5,'reactionCount':10},'changed':True})
   page.route('**/api/reaction',mutate)
   page.goto(h.base,wait_until='networkidle');page.locator('#tabCommunity').click()
   card=page.locator('#communityGrid .community-card');card.wait_for();page.wait_for_timeout(100)
@@ -72,7 +74,9 @@ try:
   state['hold']=True
   page.evaluate('void window.DiscoveryGallery.hydrateReactionStates([{id:1004,stats:{}}])');page.wait_for_timeout(50)
   assert held
-  state['account']=43;page.clock.fast_forward(300000)
+  state['holdWrite']=True
+  page.locator('#reactionRace [data-reaction=Like]').click();assert heldWrites
+  state['account']=43;page.evaluate('refreshAuth()')
   page.wait_for_function('()=>document.querySelector("#accountStatus").textContent.includes("Fixture")')
   page.wait_for_timeout(100)
   state['hold']=False
@@ -83,7 +87,11 @@ try:
   assert page.locator('#reactionMirror [data-reaction].selected').count()==0
   page.evaluate('window.DiscoveryGallery.hydrateReactionStates([{id:1004,stats:{}}])');page.wait_for_timeout(100)
   assert reads.count('1004')>=2,'late previous-account reply must not populate the new account cache'
-  assert writes and len(writes)==2
+  for route in heldWrites:route.fulfill(json={'reactions':['Like'],'stats':{},'changed':True})
+  page.wait_for_timeout(100)
+  selected=page.evaluate("""()=>{const image={id:1005,type:'image',stats:{},tagState:{known:true,tags:[]}};const c=window.DiscoveryGallery.createCard({username:'RaceArtist',imageCount:1,representative:image},{images:[image],seenObserver:{observe(){},unobserve(){}}});return c.querySelectorAll('[data-reaction].selected').length;}""")
+  assert selected==0,'old-account write response restored stale reaction state'
+  assert writes and len(writes)==3
   browser.close()
  print('PASS: grouped hydration/retry, four reaction kinds, aggregate counts, shared update, account clearing and late replies; synthetic only')
 finally:h.stop()

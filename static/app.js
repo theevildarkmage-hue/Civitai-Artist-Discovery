@@ -704,6 +704,7 @@ function card(a, source = {}) {
     api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, notifyReactionState, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore,
     date: selectedDate, segment: selectedSegment, models: modelQuery(),
     canWrite: () => socialWrite,
+    accountEpoch: () => tagEpoch,
     canManageContentControls: () => userWrite,
     canManageCollections: () => collectionsWrite,
     ...source,
