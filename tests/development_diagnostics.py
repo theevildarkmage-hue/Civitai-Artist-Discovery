@@ -64,6 +64,11 @@ class DevelopmentDiagnostics(unittest.TestCase):
             self.assertEqual(before,digest())
 
     def test_packaged_build_cannot_enable_diagnostics(self):
+        # A real packaged server loads its configuration before diagnostics.
+        # Load the genuine source configuration before simulating only the frozen
+        # flag; this source fixture has no embedded build-configuration.json.
+        from discovery import build_config
+        self.assertIn(build_config.ENVIRONMENT, ('development', 'production'))
         with patch.dict(os.environ,{'CAD_DEVELOPMENT':'1'}),patch.object(sys,'frozen',True,create=True):
             self.assertFalse(diagnostics.enabled())
 
