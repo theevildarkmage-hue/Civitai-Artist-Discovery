@@ -2311,7 +2311,14 @@ class Handler(BaseHTTPRequestHandler):
         if item is None and not in_history and self.community_artwork(image_id) is None:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
-        payload = client.query("image.get", {"id": image_id})
+        try:
+            payload = client.query("image.get", {"id": image_id})
+        except CivitaiHTTPError as error:
+            if error.status != 404:
+                raise
+            self.json_response({"error": "This image is unavailable to your Civitai account. No reaction was changed.",
+                                "code": "ARTWORK_UNAVAILABLE"}, 404)
+            return
         current = reaction_names(payload)
         # Civitai's own counts, read a moment ago, rather than whichever stored copy was
         # collected first: those differ, and reacting used to make the card jump to the
