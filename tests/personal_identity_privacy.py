@@ -1,6 +1,6 @@
 """Synthetic personal-identity variants, contextual matches and log boundary tests."""
 import test_safety
-import base64,hashlib,hmac,importlib.util,json,subprocess,sys,tempfile,unittest
+import base64,hashlib,hmac,importlib.util,io,json,subprocess,sys,tempfile,unittest,zipfile
 from pathlib import Path
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
@@ -64,5 +64,19 @@ class PersonalIdentityPrivacy(unittest.TestCase):
         for value in [P._KEY,('Alex '+SYNTHETIC_SURNAME).encode('utf-16-le')]:
             code=compile('DATA='+repr(value),'<synthetic-frozen-module>','exec')
             self.assertTrue(module.code_has_identity(code))
+    def test_nested_archive_and_compressed_image_metadata_are_inspected(self):
+        spec=importlib.util.spec_from_file_location('container_identity_gate',ROOT/'scripts/check-personal-identity.py')
+        module=importlib.util.module_from_spec(spec);sys.path.insert(0,str(ROOT/'scripts'));spec.loader.exec_module(module)
+        nested=io.BytesIO()
+        with zipfile.ZipFile(nested,'w',compression=zipfile.ZIP_DEFLATED) as archive:archive.writestr('metadata.txt','Alex '+SYNTHETIC_SURNAME)
+        outer=io.BytesIO()
+        with zipfile.ZipFile(outer,'w',compression=zipfile.ZIP_DEFLATED) as archive:archive.writestr('base_library.zip',nested.getvalue())
+        self.assertIn('protected-name',module.inspect_container(outer.getvalue(),'library.zip'))
+        from PIL import Image,PngImagePlugin
+        info=PngImagePlugin.PngInfo();info.add_itxt('Author','Alex '+SYNTHETIC_SURNAME,zip=True)
+        image=io.BytesIO();Image.new('RGB',(2,2)).save(image,format='PNG',pnginfo=info)
+        self.assertIn('protected-name',module.inspect_container(image.getvalue(),'cover.png'))
+        with self.assertRaises(ValueError):module.inspect_container(b'not-a-reviewed-container','backup.pack')
+        with self.assertRaises(ValueError):module.inspect_container(b'PK\x03\x04truncated','base_library.zip')
 
 if __name__=='__main__':unittest.main()

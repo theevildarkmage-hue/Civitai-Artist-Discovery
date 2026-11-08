@@ -19,6 +19,7 @@ class Rejected(RuntimeError):pass
 
 def blocked(email):
     if isinstance(email,bytes):email=email.decode('utf-8','replace')
+    if personal_categories(email):return True
     return hashlib.sha256(email.strip().casefold().encode()).hexdigest() in BLOCKED_EMAIL_DIGESTS
 
 def forbidden_text(data):

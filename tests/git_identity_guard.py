@@ -56,6 +56,11 @@ class IdentityGuard(unittest.TestCase):
   for field in ('AUTHOR','COMMITTER'):
    self.rejected(self.audit('--effective',env={f'GIT_{field}_EMAIL':SYNTHETIC},ok=False))
   self.audit('--effective')
+ def test_effective_email_uses_private_policy_without_legacy_fixture_hashes(self):
+  path=self.guard/'scripts/git_identity.py'
+  path.write_text(path.read_text()+'\nBLOCKED_EMAIL_DIGESTS=frozenset()\nBLOCKED_EMAIL_LENGTHS=frozenset()\n')
+  for field in ('AUTHOR','COMMITTER'):
+   self.rejected(self.audit('--effective',env={f'GIT_{field}_EMAIL':SYNTHETIC},ok=False))
  def test_owner_display_name_is_contextual_and_third_party_first_name_allowed(self):
   self.rejected(self.audit('--effective',env={'GIT_AUTHOR_NAME':'ShortOwner'},ok=False))
   self.audit('--effective',env={'GIT_AUTHOR_NAME':'Mark','GIT_AUTHOR_EMAIL':'unrelated@example.invalid'})
