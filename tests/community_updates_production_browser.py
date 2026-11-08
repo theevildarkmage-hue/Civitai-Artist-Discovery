@@ -41,6 +41,7 @@ try:
    raise
   assert {1002,1003,1004}.issubset(reads)
   assert page.evaluate('window.__first===document.querySelector("#communityGrid .community-card")')
+  page.locator('.community-heading').screenshot(path=str(test_safety.REPORTS/'production-new-art-banner.png'))
   page.locator('#communityUpdates button').click()
   page.wait_for_function('()=>document.querySelectorAll("#communityGrid .community-card").length===2 && document.querySelector("#communityUpdates").textContent===""')
   assert page.locator('#communityGrid [data-id="1003"]').count()==0
