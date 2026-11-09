@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
 import random
 import sqlite3
@@ -51,6 +52,7 @@ TAG_BOOST_CAP = 3.0
 MIN_PAUSE = 5.0
 MAX_PAUSE = 5.8
 MAX_ATTEMPTS = 5
+HIDDEN_PREFERENCES_RETRY_SECONDS = 300
 
 
 class IncompleteProfileSnapshot(RuntimeError):
@@ -107,6 +109,8 @@ class TasteStore:
         self.lock = threading.RLock()
         self.cancel = threading.Event()
         self.sync_thread: threading.Thread | None = None
+        self._hidden_preferences_thread: threading.Thread | None = None
+        self._hidden_preferences_retry_at = 0.0
         self.job: dict = {"running": False, "phase": "idle", "images": 0, "pages": 0,
                           "message": "", "error": None, "startedAt": None}
         self._initialize()
@@ -713,9 +717,10 @@ class TasteStore:
                                          ("blocked", payload.get("blockedUsers")))
                     for row in named(rows) if row.get("id")]
         tags = [(int(row["id"]), str(row.get("name") or "").casefold())
-                for row in named(payload.get("hiddenTags")) if row.get("id") and row.get("name")]
+                for row in named(payload.get("hiddenTags")) if row.get("id") and row.get("name") and not row.get("nsfwLevel")]
         images = []
-        for row in (payload.get("hiddenImages") or []) + (payload.get("hiddenImagesImplicit") or []):
+        for row in payload.get("hiddenImages") or []:
+            if isinstance(row,dict) and row.get("tagId") is not None:continue
             if isinstance(row,dict) and row.get('hidden') is False:continue
             value = row.get("id") if isinstance(row, dict) else row
             try:
@@ -733,6 +738,8 @@ class TasteStore:
                            "VALUES(?,?,?)", creators)
             db.executemany("INSERT OR REPLACE INTO hidden_tags(tag_id, tag_name) VALUES(?,?)", tags)
             db.executemany("INSERT OR REPLACE INTO hidden_images(image_id) VALUES(?)", images)
+            self._set_state(db, "hidden_image_preferences", json.dumps({
+                key: payload.get(key, []) for key in ('hiddenTags', 'hiddenImages', 'hiddenImagesImplicit')}))
             self._set_state(db, "hidden_imported_at", _now())
         return {"creators": len(creators), "tags": len(tags), "images": len(images)}
 
@@ -745,21 +752,55 @@ class TasteStore:
         with self.connect() as db:
             return {row["tag_name"] for row in db.execute("SELECT tag_name FROM hidden_tags")}
 
-    def hidden_image_ids(self) -> set[int]:
-        """Images hidden outright, plus any whose known tags the account hides.
+    def ensure_hidden_preferences_current(self):
+        # Legacy reads keep their mirror while one background request recovers source
+        # information. Offline browsing must neither wait for Civitai nor retry per read.
+        if (os.environ.get('CAD_COMMUNITY_MODE') == 'fixture'
+                or os.environ.get('CAD_COMMUNITY_TESTING') == '1'):
+            return
+        with self.lock:
+            with self.connect() as db:
+                refresh = self._state(db, 'hidden_imported_at') and not self._state(db, 'hidden_image_preferences')
+            if (not refresh or time.monotonic() < self._hidden_preferences_retry_at
+                    or (self._hidden_preferences_thread is not None
+                        and self._hidden_preferences_thread.is_alive())):
+                return
+            self._hidden_preferences_retry_at = time.monotonic() + HIDDEN_PREFERENCES_RETRY_SECONDS
 
-        Tags are only known for images the app has already read them for, so this is a
-        floor rather than a guarantee — which is why creators, where the match is exact,
-        do the heavy lifting.
-        """
+            def recover():
+                try:
+                    self.import_hidden_preferences()
+                except Exception:  # Keep the previous mirror; a later read can retry.
+                    pass
+
+            self._hidden_preferences_thread = threading.Thread(
+                target=recover, name='content-control-recovery', daemon=True)
+            self._hidden_preferences_thread.start()
+
+    def hidden_image_ids(self, *, include_tags: bool = True, include_images: bool = True,
+                         levels=(1, 2)) -> set[int]:
+        """Resolve saved exclusions using their source and the active viewing filters."""
+        from dataclasses import replace
+        from .community import content_profile
+        self.ensure_hidden_preferences_current()
         with self.connect() as db:
-            direct = {row["image_id"] for row in db.execute("SELECT image_id FROM hidden_images")}
-            tagged = {row["image_id"] for row in db.execute(
-                "SELECT DISTINCT image_id FROM archive_image_tags "
-                "WHERE tag_name IN (SELECT tag_name FROM hidden_tags)")}
+            raw = self._state(db, 'hidden_image_preferences')
+            if raw:
+                profile = content_profile({**json.loads(raw), 'hiddenUsers': [],
+                    'blockedUsers': [], 'blockedByUsers': []}, levels)
+                direct = replace(profile, apply_tag_filters=include_tags,
+                                 apply_image_filters=include_images).excluded_image_ids()
+            else:
+                # Their source is unknown until recovery succeeds. Do not accidentally
+                # relax legacy tag/rating exclusions through the direct-artwork switch.
+                direct = {row[0] for row in db.execute('SELECT image_id FROM hidden_images')}
+            tagged = {row[0] for row in db.execute(
+                'SELECT DISTINCT image_id FROM archive_image_tags '
+                'WHERE tag_name IN (SELECT tag_name FROM hidden_tags)')} if include_tags else set()
         return direct | tagged
 
     def hidden_summary(self) -> dict:
+        self.ensure_hidden_preferences_current()
         with self.connect() as db:
             counts = {name: db.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
                       for name, table in (("creators", "hidden_creators"),

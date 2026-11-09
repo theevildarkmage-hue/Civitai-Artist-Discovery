@@ -231,7 +231,8 @@ class TimeMachine:
                 blocked.add(int(row[0]))
         return blocked
 
-    def cards(self, levels=None) -> list[dict]:
+    def cards(self, levels=None, *, apply_tag_filters=True,
+              hidden_creators=frozenset(), hidden_images=frozenset()) -> list[dict]:
         """The oldest unseen image for each primed creator, one per creator.
 
         Creators with nothing at the visible levels are omitted rather than shown empty,
@@ -239,11 +240,13 @@ class TimeMachine:
         """
         visible = sorted(levels or self.archive.visible_levels)
         holes = ",".join("?" for _ in visible)
-        hidden_tags = self.hidden_tag_names()
+        hidden_tags = self.hidden_tag_names() if apply_tag_filters else set()
         out = []
         with self.connect() as db:
             for row in db.execute("""SELECT * FROM creator_progress
                                      ORDER BY updated_at ASC, username_key ASC"""):
+                if row['username_key'] in hidden_creators:
+                    continue
                 candidates = db.execute(
                     f"""SELECT * FROM creator_images
                         WHERE username_key=? AND position>=? AND browsing_level IN ({holes})
@@ -253,7 +256,8 @@ class TimeMachine:
                 blocked = self._hidden_image_ids(
                     [int(entry["image_id"]) for entry in candidates], hidden_tags)
                 image = next((entry for entry in candidates
-                              if int(entry["image_id"]) not in blocked), None)
+                              if int(entry["image_id"]) not in blocked
+                              and int(entry["image_id"]) not in hidden_images), None)
                 if image is None:
                     continue
                 seen = db.execute(
@@ -298,7 +302,8 @@ class TimeMachine:
                  "complete": bool(row["exhausted"])} for row in rows]
 
     def creator_history(self, username: str, after: int | None = None, limit: int = 40,
-                        refill: bool = True, levels=None) -> dict:
+                        refill: bool = True, levels=None, *, apply_tag_filters=True,
+                        hidden_creators=frozenset(), hidden_images=frozenset()) -> dict:
         """One followed creator's images, oldest first, from where the reader left off.
 
         ``after`` is the last position the page already holds, so paging continues from
@@ -312,11 +317,14 @@ class TimeMachine:
                                   (key,)).fetchone()
         if progress is None:
             raise KeyError("That creator is not one the Time Machine follows")
+        if key in hidden_creators:
+            return {'username': progress['username'], 'images': [], 'knownCount': 0,
+                    'seenCount': 0, 'complete': bool(progress['exhausted']), 'hasMore': False}
         start = int(progress["next_position"]) if after is None else int(after) + 1
         limit = max(1, min(int(limit), 100))
         visible = sorted(levels or self.archive.visible_levels)
         holes = ",".join("?" for _ in visible)
-        hidden_tags = self.hidden_tag_names()
+        hidden_tags = self.hidden_tag_names() if apply_tag_filters else set()
         images: list[dict] = []
         position = start
         # Bounded: each pass either reads saved rows or fetches one more page.
@@ -332,7 +340,7 @@ class TimeMachine:
                     (key,)).fetchone()
             blocked = self._hidden_image_ids([int(row["image_id"]) for row in rows], hidden_tags)
             for row in rows:
-                if int(row["image_id"]) not in blocked:
+                if int(row["image_id"]) not in blocked and int(row["image_id"]) not in hidden_images:
                     images.append({"position": int(row["position"]), **_representative(row, self.archive)})
             if rows:
                 position = int(rows[-1]["position"]) + 1

@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
     import discovery.taste as taste
     from discovery.history import HistoryArchive
     from discovery.taste import TasteStore
+    from discovery.timemachine import TimeMachine
 
     day = (datetime.now() - timedelta(days=1)).date().isoformat()
     pixel = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3C/svg%3E"
@@ -90,6 +91,31 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
         HIDDEN if procedure == "hiddenPreferences.getHidden" else {})
     store.import_hidden_preferences()
 
+    # Real Time Machine HTTP reads must use the same saved switches as Daily.
+    machine = TimeMachine(Path(temporary) / 'discovery', history, store)
+    with machine.connect() as db:
+        for name, ids in [('VisibleArtist', [9101]), ('HiddenArtist', [9201]),
+                          ('BlockedMe', [9251]), ('TaggedArtist', [9301, 9302, 9303]),
+                          ('AllHiddenArtist', [9401])]:
+            db.execute('INSERT INTO creator_progress(username_key,username,updated_at,exhausted) '
+                       'VALUES(?,?,?,1)', (name.casefold(), name, day))
+            for position, image_id in enumerate(ids):
+                db.execute('INSERT INTO creator_images(username_key,position,image_id,username,created_at,url) '
+                           'VALUES(?,?,?,?,?,?)', (name.casefold(), position, image_id, name, day, pixel))
+
+    # Rating votes are not personal hidden tags or direct image hides.
+    rating_controls = {**HIDDEN, 'hiddenTags': HIDDEN['hiddenTags'] + [
+        {'id': 99, 'name': 'rating-topic', 'nsfwLevel': 16}],
+        'hiddenImagesImplicit': [{'id': 9303, 'tagId': 99}]}
+    taste.SocialClient.query = lambda *args: rating_controls
+    store.import_hidden_preferences()
+    assert 'rating-topic' not in store.hidden_tag_names()
+    assert 9303 in store.hidden_image_ids(levels=(1, 2), include_tags=False)
+    assert 9303 not in store.hidden_image_ids(levels=(1, 2, 4, 8, 16))
+    assert 9302 not in store.hidden_image_ids(include_images=False)
+    taste.SocialClient.query = lambda *args: HIDDEN
+    store.import_hidden_preferences()
+
     env = {**os.environ, "CIVITAI_HISTORY_DATA_DIR": temporary}
     process = subprocess.Popen([sys.executable, str(ROOT / "server.py"), "--port", str(PORT),
                                 "--no-browser"], cwd=ROOT, env=env)
@@ -113,6 +139,36 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
                 data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(request, timeout=30) as response:
                 return json.loads(response.read())
+
+        def tm_ids():
+            return {card['username']: card['representative']['id']
+                    for card in get('/api/timemachine')['cards']}
+
+        def tm_history(name):
+            return [image['id'] for image in get(
+                f'/api/timemachine/creator?username={name}&savedOnly=1')['images']]
+
+        assert tm_ids() == {'VisibleArtist': 9101, 'TaggedArtist': 9303}
+        assert tm_history('TaggedArtist') == [9303]
+        assert tm_history('HiddenArtist') == []
+        assert tm_history('BlockedMe') == []
+        post('/api/settings', {'applyTagFilters': False})
+        assert tm_ids()['TaggedArtist'] == 9301
+        assert tm_ids()['AllHiddenArtist'] == 9401
+        assert tm_history('TaggedArtist') == [9301, 9303]
+        post('/api/settings', {'applyAccountFilters': False})
+        assert tm_ids()['HiddenArtist'] == 9201 and tm_ids()['BlockedMe'] == 9251
+        assert tm_history('HiddenArtist') == [9201]
+        assert tm_history('BlockedMe') == [9251]
+        post('/api/settings', {'applyImageFilters': False})
+        assert tm_history('TaggedArtist') == [9301, 9302, 9303]
+        post('/api/settings', {'applyTagFilters': True, 'applyAccountFilters': True,
+                               'applyImageFilters': True})
+        assert tm_ids() == {'VisibleArtist': 9101, 'TaggedArtist': 9303}
+        assert tm_history('TaggedArtist') == [9303]
+        with machine.connect() as db:
+            assert db.execute('SELECT count(*) FROM creator_images').fetchone()[0] == 7
+            assert db.execute('SELECT sum(next_position) FROM creator_progress').fetchone()[0] == 0
 
         # Every view, including the plain default, leaves hidden creators out.
         for view in ("discovery", "foryou", "followed", "new", "emerging"):
@@ -167,6 +223,29 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
         after_filter = get(f"/api/history/day?date={day}&segment=all")
         assert after_filter["artistCount"] == summary["artistCount"], after_filter
         assert get(f"/api/history/artists?date={day}&segment=all&view=discovery&offset=0&limit=50")["artists"]
+
+        # The two local viewing switches are independent and never erase the
+        # imported rules. Explicitly hidden images remain hidden in every mode.
+        before_controls = get('/api/discovery/hidden')
+        post('/api/settings', {'applyTagFilters': False})
+        for view in ('discovery', 'foryou', 'followed', 'new', 'emerging'):
+            rows = get(f'/api/history/artists?date={day}&segment=all&view={view}')['artists']
+            names = {row['username'] for row in rows}
+            assert 'AllHiddenArtist' in names, (view, names)
+            assert not {'HiddenArtist', 'BlockedMe'} & names, (view, names)
+        images = get(f'/api/history/artist?date={day}&segment=all&username=TaggedArtist')['images']
+        assert {row['id'] for row in images} == {9301, 9303}, images
+        post('/api/settings', {'applyTagFilters': True, 'applyAccountFilters': False})
+        rows = get(f'/api/history/artists?date={day}&segment=all&view=discovery')['artists']
+        names = {row['username'] for row in rows}
+        assert {'HiddenArtist', 'BlockedMe'} <= names, names
+        assert 'AllHiddenArtist' not in names, names
+        post('/api/settings', {'applyTagFilters': False})
+        images = get(f'/api/history/artist?date={day}&segment=all&username=TaggedArtist')['images']
+        assert 9302 not in {row['id'] for row in images}, images
+        assert get('/api/discovery/hidden') == before_controls
+        post('/api/settings', {'applyTagFilters': True, 'applyAccountFilters': True})
+        assert get(f'/api/history/day?date={day}&segment=all')['artistCount'] == summary['artistCount']
 
         # If tags arrive later (an on-demand details read or the background sweep), a
         # fresh gallery session must immediately enforce them rather than retaining the

@@ -89,3 +89,7 @@
 }
 @media (max-width: 700px) { .filter-panel { top: 12px; right: 12px; max-height: calc(100dvh - 24px); } }
 @media (max-width: 700px) { .calendar-panel { top: 12px; right: 12px; max-height: calc(100dvh - 24px); overflow: auto; } .active-filters { flex-wrap: wrap; } .active-filters #summary { width: 100%; margin-left: 0; } }
+
+#filterPanel .tag-filter-toggle, #filterPanel .account-filter-toggle, #filterPanel .image-filter-toggle { min-height: 40px; gap: 10px; }
+
+#filterPanel .image-filter-toggle small { display: block; color: var(--muted); margin-top: 4px; }
