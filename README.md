@@ -2,7 +2,8 @@
 
 ## Production stable 3.0.1
 
-The published stable Windows release connects to Production Community. Normal
+This checkout prepares the 3.0.1 maintenance release; publication requires separate
+owner approval. Published stable Windows packages connect to Production Community. Normal
 Civitai sign-in automatically enrolls verified users; no invitation or separate
 registration is required. The separate activity Registry remains disabled.
 
@@ -14,8 +15,9 @@ source entry point, including a local Community ledger by default. Checking out 
 stable tag alone does not select Production. See [Linux stable source setup](docs/3.0-linux-stable-source.md).
 
 For this source fix, update to current `main` (or current `development/3.0`), then
-launch with `--stable`. The original `v3.0.0` tag is immutable and does not contain
-the fix. Updated source launches show a notice explaining the selected Community
+launch with `--stable`. The historical `v3.0.0` source does not contain
+the fix; use current stable source. A privacy cleanup may replace historical Git
+identities without changing that historical application behavior. Updated source launches show a notice explaining the selected Community
 mode and, when needed, the command for switching to public Community. This applies
 to Windows source users as well as Linux; the published Windows ZIP already has
 the correct Production configuration.
@@ -28,7 +30,13 @@ Privacy/data deletion: [theevildarkmage@gmail.com](mailto:theevildarkmage@gmail.
 confirmed by the owner for public listing. Security reports continue through
 [GitHub private vulnerability reporting](SECURITY.md).
 
-## Windows beta 3.0.0-beta.13
+## Historical beta notes (superseded by stable instructions)
+
+The following records describe earlier beta preparation. They do not require a
+new beta bridge, authorize a Production deployment, or override current stable
+installation and recovery instructions.
+
+### Windows beta 3.0.0-beta.13
 
 The published Windows beta includes recommendation previews, shared Community
 cards and filtering, static video posters, artwork-based video visibility, and

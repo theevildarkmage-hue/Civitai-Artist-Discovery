@@ -97,6 +97,9 @@ try {
     Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
   Copy-Item -LiteralPath $configuration -Destination (Join-Path $package 'build-configuration.json')
+  $recoveryTools = Join-Path $package 'tools'
+  New-Item -ItemType Directory -Force $recoveryTools | Out-Null
+  Copy-Item -LiteralPath (Join-Path $root 'scripts/copy-local-data.py') -Destination $recoveryTools
   python -B scripts/stamp-beta-build.py finish --record $sourceRecord --package $package --configuration $configuration
   if ($LASTEXITCODE -ne 0) { throw 'Build provenance verification failed' }
   python -B scripts/check-personal-identity.py --package $package
