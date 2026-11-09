@@ -1,6 +1,6 @@
 """Synthetic personal-identity variants, contextual matches and log boundary tests."""
 import test_safety
-import base64,hashlib,hmac,importlib.util,io,json,subprocess,sys,tempfile,unittest,zipfile
+import base64,contextlib,hashlib,hmac,importlib.util,io,json,runpy,subprocess,sys,tempfile,unittest,zipfile
 from pathlib import Path
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
@@ -90,6 +90,15 @@ assert 'unicodedata' not in sys.modules
         command=[sys.executable,str(ROOT/'scripts/run-redacted.py'),'--','-c',"import sys;print('/home/SyntheticBuildUser/project');sys.exit(7)"]
         result=subprocess.run(command,capture_output=True)
         self.assertEqual(result.returncode,7);self.assertNotIn(b'SyntheticBuildUser',result.stdout+result.stderr)
+    def test_build_tool_keeps_strict_owner_name_redaction_after_runtime_separation(self):
+        output=io.StringIO()
+        command=[str(ROOT/'scripts/run-redacted.py'),'--','-c',"import sys;print('Alex '+sys.argv[1]);sys.exit(7)",SYNTHETIC_SURNAME]
+        with patch.object(sys,'argv',command),contextlib.redirect_stdout(output):
+            with self.assertRaises(SystemExit) as stopped:
+                runpy.run_path(str(ROOT/'scripts/run-redacted.py'),run_name='__main__')
+        self.assertEqual(stopped.exception.code,7)
+        self.assertNotIn(SYNTHETIC_SURNAME,output.getvalue())
+        self.assertIn('[redacted personal-identity detail]',output.getvalue())
     def test_private_key_and_mapping_material_are_rejected(self):
         for value in [P._KEY,P._KEY.hex(),base64.b64encode(P._KEY).decode(),next(iter(P.NAME_HASHES.values())).__iter__().__next__()]:
             self.assertIn('private-policy-material',P.categories(value))
