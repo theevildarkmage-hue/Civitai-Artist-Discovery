@@ -9,7 +9,7 @@ import time
 import secrets
 from collections import OrderedDict
 from urllib.parse import urlsplit, urlunsplit
-from .privacy_patterns import redact_personal
+from .runtime_redaction import redact_personal
 
 
 LOG_LOCK = threading.Lock()

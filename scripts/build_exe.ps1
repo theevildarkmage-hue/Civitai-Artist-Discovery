@@ -60,6 +60,7 @@ try {
   if ($LASTEXITCODE) { throw 'Development Test Lab must be excluded from release inputs' }
   python -B scripts/run-redacted.py -- -m PyInstaller --noconfirm --clean --onedir --windowed --noupx --log-level ERROR `
     --exclude-module discovery.community_dev --exclude-module discovery.community_fixtures `
+    --exclude-module discovery.privacy_patterns `
     --name $applicationId `
     --icon $icon `
     --version-file $versionResource `

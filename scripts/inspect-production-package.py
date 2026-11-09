@@ -37,7 +37,7 @@ def main():
     configuration=json.loads((package/'build-configuration.json').read_text(encoding='utf-8'))
     assert configuration==json.loads((package/'_internal/discovery/build-configuration.json').read_text(encoding='utf-8'))
     assert package.name==('CivitaiDiscoveryBeta' if configuration['channel']=='beta' else 'CivitaiArtistDiscovery')
-    forbidden=[name for name in pyz.toc if name.startswith(('dev.','tests.')) or name in ('discovery.community_dev','discovery.community_fixtures','lab','actor')]
+    forbidden=[name for name in pyz.toc if name.startswith(('dev.','tests.')) or name in ('discovery.community_dev','discovery.community_fixtures','discovery.privacy_patterns','lab','actor')]
     assert not forbidden,forbidden
     # Inspect our actual frozen code constants/filenames, not just archive names.
     code_findings=[]

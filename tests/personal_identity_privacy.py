@@ -45,9 +45,44 @@ class PersonalIdentityPrivacy(unittest.TestCase):
         self.assertNotIn('AnotherUser',redact_sensitive('/home/AnotherUser/project'))
     def test_actual_append_log_boundary_is_redacted(self):
         with tempfile.TemporaryDirectory() as folder:
-            append_log(Path(folder),'failure: Alex '+SYNTHETIC_SURNAME+' '+SYNTHETIC_EMAIL)
+            append_log(Path(folder),'failure: C:\\Users\\'+SYNTHETIC_ACCOUNT+'\\trace.py '+SYNTHETIC_EMAIL+' Bearer credential-canary')
             text=(Path(folder)/'error.log').read_text()
-            self.assertNotIn(SYNTHETIC_SURNAME,text);self.assertNotIn(SYNTHETIC_EMAIL,text)
+            self.assertNotIn(SYNTHETIC_ACCOUNT,text);self.assertNotIn(SYNTHETIC_EMAIL,text)
+            self.assertNotIn('credential-canary',text)
+    def test_runtime_redaction_matches_prior_shipped_policy_free_behavior(self):
+        from discovery.runtime_redaction import redact_personal
+        # Owner-aware scans remain strict tooling. The shipped application never
+        # contains a private policy, so compare its former policy-free behavior.
+        with patch.object(P,'_KEY',None),patch.object(P,'NAME_HASHES',{}),patch.object(P,'EMAIL_HASHES',{}),patch.object(P,'HOME_ACCOUNT_HASHES',{}):
+            for value in ['C:\\Users\\'+SYNTHETIC_ACCOUNT+'\\trace.py', '/home/AnotherUser/project',SYNTHETIC_EMAIL,'Mark the item complete','https://api.github.com/users/PublicHandle']:
+                self.assertEqual(redact_personal(value),P.redact_personal(value))
+    def test_fresh_runtime_import_never_loads_identity_policy_or_unicode_tooling(self):
+        # A fresh child makes eager imports observable even if this test runner
+        # already imported Unicode tooling. A guarded policy-file open also
+        # rejects any accidental private configuration read.
+        program=r'''
+import builtins, importlib.abc, os, sys
+sys.path.insert(0,sys.argv[1])
+class Deny(importlib.abc.MetaPathFinder):
+    def find_spec(self,fullname,path=None,target=None):
+        if fullname in ('unicodedata','discovery.privacy_patterns'):
+            raise AssertionError('Runtime imported audit-only dependency')
+sys.modules.pop('unicodedata',None)
+sys.meta_path.insert(0,Deny())
+os.environ['DISCOVERY_IDENTITY_POLICY_FILE']='synthetic-forbidden-policy.json'
+os.environ['DISCOVERY_IDENTITY_POLICY']='synthetic-forbidden-policy'
+def audit(event,args):
+    if event=='open' and str(args[0]).endswith('synthetic-forbidden-policy.json'):
+        raise AssertionError('Runtime opened private policy')
+sys.addaudithook(audit)
+from discovery.diagnostics import redact_sensitive
+assert 'canary' not in redact_sensitive('Bearer canary')
+assert 'private@example.invalid' not in redact_sensitive('private@example.invalid')
+assert 'discovery.privacy_patterns' not in sys.modules
+assert 'unicodedata' not in sys.modules
+'''
+        result=subprocess.run([sys.executable,'-S','-c',program,str(ROOT)],capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
     def test_family_collision_requires_review_without_rewriting_attribution(self):
         value='Copyright Other '+SYNTHETIC_SURNAME
         self.assertTrue(P.categories(value));self.assertEqual(value,'Copyright Other '+SYNTHETIC_SURNAME)
