@@ -93,7 +93,7 @@ try {
   foreach ($guide in @('3.0-beta-README.md','3.0-beta-linux.md','3.0-beta-privacy.md','3.0-beta-release-notes.md','3.0-beta-operations.md','3.0-beta-publication-checklist.md','3.0-audit-response-2026-10-24.md','3.0-owner-quota-testing.md','3.0-beta-testing-quota-exceptions.md','3.0-audit-closure-2026-10-24.md','3.0-beta-signing-design.md','3.0-stable-readiness.md','3.0-stable-installation.md','3.0-production-handoff.md','3.0-recovery.md','3.0-production-bootstrap.md','3.0-audit-tracker.md','3.0-supabase-public-release.md')) {
     Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
-  foreach ($guide in @('3.0-stable-release-notes.md','3.0-changelog.md','3.0-privacy.md','3.0-public-launch.md')) {
+  foreach ($guide in @('3.0-stable-release-notes.md','3.0-changelog.md','3.0-privacy.md','3.0-public-launch.md','3.0-community-rating-policy.md','3.0-linux-stable-source.md','release-notes.md','3.0-identity-only-authentication.md','3.0-audit-reconciliation-2026-11-07.md','3.0-beta11-verification.md','3.0-beta11-review-corrections.md','3.0-beta11-reliability.md','3.0-beta11-accepted-gallery.md')) {
     Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
   Copy-Item -LiteralPath $configuration -Destination (Join-Path $package 'build-configuration.json')
