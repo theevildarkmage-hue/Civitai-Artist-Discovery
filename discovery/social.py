@@ -267,6 +267,21 @@ class SocialClient:
             "removeFromCollectionIds": [],
         })
 
+    def comment_on_image(self, image_id: int, content: str) -> object:
+        """Post one comment. ``content`` is the HTML Civitai's own editor produces."""
+        return self.mutate("commentv2.upsert", {
+            "entityId": int(image_id), "entityType": "image", "content": content,
+        })
+
+    def set_collection_items_status(self, collection_id: int, collection_item_ids: list[int],
+                                    status: str) -> object:
+        """Accept or reject items in a collection the account owns or manages."""
+        return self.mutate("collection.updateCollectionItemsStatus", {
+            "collectionId": int(collection_id),
+            "collectionItemIds": [int(value) for value in collection_item_ids],
+            "status": status,
+        })
+
     def hide_user(self, user_id: int, username: str | None = None) -> object:
         """Add one creator to the connected account's Civitai Content Controls."""
         data = {"id": int(user_id), "username": username or None}

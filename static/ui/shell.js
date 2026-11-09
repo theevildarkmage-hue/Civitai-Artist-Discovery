@@ -27,7 +27,7 @@ export function mountShell() {
   const tabs = document.querySelector('.view-tabs');
   tabs.setAttribute('aria-label', 'Main navigation');
   tabs.after(navigation);
-  for (const [id, name] of [['tabGallery', 'gallery'], ['tabTimeMachine', 'history'], ['tabDiscovery', 'profile']]) {
+  for (const [id, name] of [['tabGallery', 'gallery'], ['tabTimeMachine', 'history'], ['tabCollectalytics', 'stats'], ['tabDiscovery', 'profile']]) {
     const button = document.getElementById(id);
     button.insertAdjacentHTML('afterbegin', icon(name));
   }
