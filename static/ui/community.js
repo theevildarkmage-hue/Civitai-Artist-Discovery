@@ -626,8 +626,7 @@ export function mountCommunity() {
       const deadline=Date.now()+330000;
       while(Date.now()<deadline) {
         await new Promise(resolve=>setTimeout(resolve,700));
-        const auth=await api('/api/auth-status');
-        window.dispatchEvent(new CustomEvent('discovery-auth-changed',{detail:auth}));
+        const auth=await window.refreshAuth();
         if(auth.oauthJob?.state==='error')throw new Error(auth.oauthJob.error);
         if(auth.oauthJob?.state==='complete') {
           if(auth.communityAuthorization?.state!=='ready')throw new Error(recoveryMessage());

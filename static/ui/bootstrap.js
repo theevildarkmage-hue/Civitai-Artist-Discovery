@@ -1,6 +1,7 @@
 import { mountShell, groupPageControls } from './shell.js';
 import { enhancePopover } from './menu.js';
 import { api, finishControlChange } from './api.js';
+import { createAuthSession, socialWriteReason } from './auth-session.js';
 import { createSelectionQueue } from './selection-queue.js';
 import { showArtwork, showVideoPoster } from './artwork.js';
 import { showGallerySkeleton, showPageError } from './feedback.js';
@@ -27,7 +28,7 @@ if (new URLSearchParams(location.search).get('uiPerf') === '1') {
 mountShell();
 window.reportClientEvent = reportClientEvent;
 // Temporary bridge for the classic page controller; new modules import directly.
-window.CivitaiUI = Object.freeze({ api, finishControlChange, createSelectionQueue, showArtwork, showVideoPoster, showGallerySkeleton, showPageError, createCreatorCard, createInfinitePager, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget });
+window.CivitaiUI = Object.freeze({ api, createAuthSession, socialWriteReason, finishControlChange, createSelectionQueue, showArtwork, showVideoPoster, showGallerySkeleton, showPageError, createCreatorCard, createInfinitePager, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget });
 
 // Transitional classic controller preserves existing integration tests and global
 // callbacks while page behavior moves into modules one tested slice at a time.

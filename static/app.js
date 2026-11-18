@@ -21,6 +21,7 @@ let recommendationsNeedRefresh = false, refreshRecommendationsAfterSync = false;
 const imageReactionState = new Map();
 const imageTagState = new Map();
 let tagAccount=null,tagEpoch=0;
+let authWriteReason = 'Sign in to follow and react.';
 const pendingTagChecks = new Map();
 let tagCheckTimer = 0;
 const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><button id="galleryPreferences" class="filter-button preferences-button" aria-expanded="false" aria-label="Gallery preferences" title="Gallery preferences">&#9881;</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div><div id="preferencesMenu" class="filter-menu preferences-menu hidden" aria-label="Gallery preferences"><div class="filter-head"><strong>Gallery preferences</strong><button id="closePreferences" class="quiet-button" aria-label="Close gallery preferences">×</button></div><label class="preference-row"><span><b>Dim viewed cards</b><small>Previously viewed artists still move later either way.</small></span><input id="prefDimSeen" type="checkbox"></label><label class="preference-row"><span><b>Enable sound in details view</b><small>Videos opened in the details view play with sound.</small></span><input id="prefDetailVideoSound" type="checkbox"></label><label class="preference-row"><span><b>Hide high-volume artists</b><small>Applies to every gallery view.</small></span><input id="prefHideHighVolume" type="checkbox"></label><label class="preference-field" for="prefHighVolumeThreshold"><span>High-volume threshold</span><select id="prefHighVolumeThreshold"><option value="50">50+ images</option><option value="100">100+ images</option><option value="200">200+ images</option></select></label><label class="preference-field" for="prefEmergingMode"><span>Emerging First</span><select id="prefEmergingMode"><option value="balanced">Balanced discovery</option><option value="strict">Strict discovery</option><option value="unadjusted">No adjustment</option></select></label><p id="emergingModeHelp" class="preference-help"></p><label class="preference-field" for="prefEmergingLimit"><span>Strict-mode threshold</span><select id="prefEmergingLimit"><option value="100">100+ daily reactions</option><option value="250">250+ daily reactions</option><option value="500">500+ daily reactions</option></select></label><small class="preferences-footnote">Thresholds can be set anytime and apply when their matching option is active. These controls use the saved gallery and never download the day again.</small></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
@@ -66,6 +67,10 @@ const CARD_SCALE_KEY = "civitai-card-scale";
   };
 })();
 const api = window.CivitaiUI.api;
+const authSession = window.CivitaiUI.createAuthSession({
+  read: ({signal}) => api('/api/auth-status', {signal, timeoutMs: 10000}),
+  apply: applyAuth,
+});
 const contentLabels = { Soft: "PG + PG-13", Mature: "PG through R", X: "All ratings" };
 const browsingLevelLabels = new Map([[1, "PG"], [2, "PG-13"], [4, "R"], [8, "X"], [16, "XXX"]]);
 function contentButtonLabel() {
@@ -481,7 +486,7 @@ async function hydrateReactionStates(images) {
     });
   }
 }
-function reactionBar(image) { const state = imageReactionState.get(String(image.id)), s = state?.stats || image.stats || {}, selected = new Set(state?.reactions || []); return `<div class="reaction-bar" data-state-known="${!!state}" aria-label="${state ? 'Image reactions' : 'Your reaction selection has not loaded yet'}">${Object.entries(reactionInfo).map(([name, [icon, key]]) => `<button class="${selected.has(name) ? "selected" : ""}" data-reaction="${name}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${icon} <b>${safeCount(s[key])}</b></button>`).join("")}<span class="total-reactions" title="Total reactions">Total ${safeCount(s.reactionCount)}</span></div>`; }
+function reactionBar(image) { const state = imageReactionState.get(String(image.id)), s = state?.stats || image.stats || {}, selected = new Set(state?.reactions || []); return `<div class="reaction-bar" data-state-known="${!!state}" aria-label="${state ? 'Image reactions' : 'Your reaction selection has not loaded yet'}">${Object.entries(reactionInfo).map(([name, [icon, key]]) => `<button class="${selected.has(name) ? "selected" : ""}" data-reaction="${name}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : escapeHtml(authWriteReason)}">${icon} <b>${safeCount(s[key])}</b></button>`).join("")}<span class="total-reactions" title="Total reactions">Total ${safeCount(s.reactionCount)}</span></div>`; }
 // Follower count is public information like the avatar, so it survives a disconnect.
 // An unreadable count shows nothing rather than claiming the creator has none.
 function applyCreatorFollowers(el, metadata) {
@@ -528,8 +533,12 @@ function readFeedState() {
 }
 window.addEventListener("scroll", scheduleFeedSave, { passive: true });
 window.addEventListener("pagehide", saveFeedState);
-// Poll often enough that the authorization is renewed long before it expires.
+// Routine checks renew ahead of expiry; temporary renewal/offline responses also
+// trigger bounded follow-up polling through the shared session reconciler.
 setInterval(() => { refreshAuth().catch(() => {}); }, 5 * 60 * 1000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshAuth().catch(() => {});
+});
 // Back to top. Days run to thousands of cards, so scrolling back by hand is a real cost.
 (() => {
   const button = $("scrollTop");
@@ -704,6 +713,7 @@ function card(a, source = {}) {
     api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, notifyReactionState, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore,
     date: selectedDate, segment: selectedSegment, models: modelQuery(),
     canWrite: () => socialWrite,
+    writeUnavailableReason: () => authWriteReason,
     accountEpoch: () => tagEpoch,
     canManageContentControls: () => userWrite,
     canManageCollections: () => collectionsWrite,
@@ -874,23 +884,26 @@ function applyAuth(auth) {
     imageReactionState.clear();document.querySelectorAll(".creator-card").forEach(card=>card.dispatchEvent(new Event("reactionstate")));
     for(const waiters of pendingTagChecks.values())for(const {reject} of waiters)reject(new Error('Account changed'));
     pendingTagChecks.clear();}
-  oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; userWrite = !!auth.userWrite; collectionsWrite = !!auth.collectionsWrite; window.dispatchEvent(new CustomEvent('discovery-auth-changed',{detail:auth})); const waiting = auth.oauthJob?.state === "loading";
+  oauthConnected = !!auth.connected;
+  const usable = oauthConnected && !auth.needsReauthentication && auth.sessionState !== 'offline';
+  socialWrite = usable && !!auth.socialWrite; userWrite = usable && !!auth.userWrite; collectionsWrite = usable && !!auth.collectionsWrite;
+  authWriteReason = window.CivitaiUI.socialWriteReason(auth);
+  window.dispatchEvent(new CustomEvent('discovery-auth-changed',{detail:auth})); const waiting = auth.oauthJob?.state === "loading";
   // Follows and reactions are granted at sign-in, so the normal signed-in state needs no
   // qualifier. The exception is worth naming: Civitai can complete a sign-in while
   // withholding write access, and silently dead buttons would look like a broken app.
   $("accountStatus").textContent = auth.needsReauthentication && auth.cachedSession ? "Session expired · sign in to resume updates" : auth.sessionState === 'offline' ? `Cached profile @${auth.username || 'Civitai'} · offline` : auth.sessionState === 'refreshing' ? `@${auth.username || 'Civitai'} · refreshing session…` : !oauthConnected ? "Not signed in"
     : `Signed in as @${auth.username || "Civitai"}${socialWrite ? "" : " · follows & reactions not granted"}`;
-  $("accountStatus").title = !oauthConnected ? "Signing in is encrypted and saved for future launches."
-    : socialWrite ? "Follows and reactions are sent only when you click them."
-    : "Civitai did not grant follow and reaction access. Sign out and back in to allow it.";
+  $("accountStatus").title = socialWrite ? "Follows and reactions are sent only when you click them." : authWriteReason;
   $("connect").classList.toggle("hidden", oauthConnected); $("connect").disabled = waiting;
   $("connect").textContent = waiting ? "Waiting for Civitai…" : "Sign in";
   $("disconnect").classList.toggle("hidden", !oauthConnected);
   document.querySelectorAll("[data-reaction],.follow-button").forEach(button => {
-    button.disabled = !socialWrite;
-    button.title = socialWrite ? "" : "Civitai did not grant follow and reaction access.";
+    button.disabled = !socialWrite || !!button.dataset.followPending || !!button.dataset.reactionPending ||
+      (button.hasAttribute('data-reaction') && button.closest('.creator-card')?.getAttribute('aria-busy') === 'true');
+    button.title = socialWrite ? "" : authWriteReason;
   }); }
-async function refreshAuth() { const auth = await api("/api/auth-status"); applyAuth(auth); return auth; }
+function refreshAuth() { return authSession.refresh(); }
 // A half-built block is otherwise invisible: you land on whichever block is finished and
 // nothing says another one is part-way through. The window control states it instead.
 const segmentLabels = { morning: "Morning · 12 AM–12 PM", evening: "Evening · 12 PM–12 AM",
@@ -1087,7 +1100,7 @@ function showReady(status) {
   setNavigationBusy(false);
 }
 function showStopped() { $("loadingTitle").textContent = "Loading stopped"; $("loadingMessage").textContent = "Everything collected so far has been saved. Press Continue building whenever you are ready."; $("progressText").textContent = "Safe to close the app"; $("progressBar").classList.remove("indeterminate"); $("stopLoading").classList.add("hidden"); $("startLoading").textContent = "Continue building"; $("startLoading").classList.remove("hidden"); $("startLoading").disabled = false; setNavigationBusy(false); }
-async function showCompletedDay(value, token) { const [day, auth] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), api("/api/auth-status")]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; applyAuth(auth); const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); if (currentView === "gallery") $("gallery").classList.remove("hidden"); if (currentView === "gallery") segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); const needs = { emerging: "followers", foryou: "tags" }[selectedView]; if (needs === "tags") showPreliminaryPlaceholder(); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); if (needs) ensureViewData(needs); }
+async function showCompletedDay(value, token) { const [day] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), refreshAuth()]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); if (currentView === "gallery") $("gallery").classList.remove("hidden"); if (currentView === "gallery") segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); const needs = { emerging: "followers", foryou: "tags" }[selectedView]; if (needs === "tags") showPreliminaryPlaceholder(); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); if (needs) ensureViewData(needs); }
 function buildStatusError(status) { const error = new Error(status.error || "Daily import failed"); error.kind = status.errorKind; error.savedItems = safeCount(status.itemCount); return error; }
 async function beginSelectedDay(rebuild = false) { const value = selectedDate, token = ++activeLoadToken; activeBuildSegment = selectedSegment; activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases(); showBuildSetup(false); $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery(); $("startLoading").disabled = true; $("startLoading").classList.add("hidden"); $("stopLoading").classList.remove("hidden"); $("stopLoading").disabled = false; $("elapsedText").classList.remove("hidden"); $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} ${displayDate(value)}`; setNavigationBusy(true); updateProgress({ phase: "locating", elapsedSeconds: 0, itemCount: 0, creatorCount: 0 }); const request = { ...dayRequest(value), contentRating: buildCoverageRating }; let status = await api(rebuild ? "/api/history/rebuild" : "/api/history/start", { method: "POST", body: JSON.stringify(request) }); while (!status.complete) { if (token !== activeLoadToken) return; if (loadCancelled || status.state === "cancelled") return; if (status.state === "error") throw buildStatusError(status); updateProgress(status); await new Promise(resolve => setTimeout(resolve, 750)); if (loadCancelled || token !== activeLoadToken) return; status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`); } activeBuildSegment = null; setLoadingPhase("complete"); await showCompletedDay(value, token); refreshBlockLabels(value); }
 async function beginFullDay(rebuild = false) {
@@ -1267,11 +1280,12 @@ $("startLoading").onclick = async () => {
 $("rebuildDay").onclick = () => { if (!dayBuilt || !confirm(`Rebuild ${displayDate(selectedDate)}? Your current gallery will remain safe if you stop.`)) return; (selectedSegment === "all" ? beginFullDay(true) : beginSelectedDay(true)).catch(showLoadError); };
 async function closeApplication() { loadCancelled = true; document.body.innerHTML = '<main id="loading"><div class="history-loading"><h2>App closed</h2><p>You can close this browser tab. Launch the executable again whenever you want to continue.</p></div></main>'; try { await api("/api/app/close", { method: "POST", body: "{}" }); } catch (_) {} }
 $("closeApp").onclick = closeApplication; $("closeLoading").onclick = closeApplication;
-async function connectCivitai() { await api("/api/oauth/login", { method: "POST", body: "{}" }); let auth; do { await new Promise(resolve => setTimeout(resolve, 1000)); auth = await refreshAuth(); if (auth.oauthJob?.state === "error") throw new Error(auth.oauthJob.error); } while (!auth.connected); if (dayBuilt) await loadDay(selectedDate); else await refreshVisibleCreatorMetadata(); toast(`Signed in as @${auth.username}`); return auth; }
+async function connectCivitai() { authSession.invalidate(); await api("/api/oauth/login", { method: "POST", body: "{}" }); let auth; do { await new Promise(resolve => setTimeout(resolve, 1000)); auth = await refreshAuth(); if (auth.oauthJob?.state === "error") throw new Error(auth.oauthJob.error); } while (!auth.connected); if (dayBuilt) await loadDay(selectedDate); else await refreshVisibleCreatorMetadata(); toast(`Signed in as @${auth.username}`); return auth; }
 $("connect").onclick = () => connectCivitai(); $("disconnect").onclick = async () => {
+  authSession.invalidate();
   try {
     await api("/api/oauth/disconnect", { method: "POST", body: "{}" });
-    applyAuth({ connected: false });
+    authSession.reset({ connected: false });
     // There is no signed-out view of this app, so signing out returns to the front door
     // rather than leaving a gallery on screen that can no longer do anything.
     try { sessionStorage.removeItem(FEED_STATE); } catch (_) {}
@@ -1578,8 +1592,7 @@ async function startup() {
   const navigationAtStartup = navigationVersion;
   try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; detailVideoSound = settings.detailVideoSound !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 50; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
-  try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
-  applyAuth(auth);
+  try { auth = await refreshAuth(); } catch (_) { auth = { connected: false }; }
   // Only a genuine first launch is onboarded. Someone with archives already made this
   // choice, and re-asking every launch would be nagging rather than helping.
   // The gallery is ordered by the user's own reactions and its actions are follows and
@@ -1758,7 +1771,7 @@ async function followFromDashboard(row) {
   return window.CivitaiUI.toggleCreatorFollow(button, {
     userId: Number(row.dataset.userId), username: row.dataset.username,
     following: button.classList.contains("is-following"),
-  }, { api, canWrite: () => socialWrite, toast, onChange: async () => {
+  }, { api, canWrite: () => socialWrite, accountEpoch: () => tagEpoch, toast, onChange: async () => {
     const data = await api("/api/discovery/summary");
     const values = $("summaryRow").querySelectorAll(".metric-card .value");
     if (values.length >= 4) {
