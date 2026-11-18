@@ -51,9 +51,11 @@ the exact portable ZIP, and assets without GitHub digest metadata are ignored.
 
 ## Publishing a compatible release
 
-1. Set `APP_VERSION` in `server.py` to the intended semantic version and use the matching
-   `v<version>` Git tag.
-2. Run `scripts/release.ps1`. It builds the Windows folder package and produces
+1. Set the stable source version in `discovery/build_config.py` and pass the same
+   explicit `-Version` to the release build. Use the matching `v<version>` tag.
+2. Run `scripts/release.ps1 -Channel stable -Version <version> -Environment production
+   -ProjectRef <reviewed-production-reference>` with the reviewed patched Python.
+   Never publish a Development preview as stable. The script builds the folder package and produces
    `CivitaiArtistDiscovery-<version>.zip` plus a local SHA-256 text file.
 3. Upload that exact ZIP as an asset on the matching GitHub release. GitHub calculates
    the asset digest exposed by its release API.
