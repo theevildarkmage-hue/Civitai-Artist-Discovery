@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import test_safety  # Fail closed before any test network request.
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -49,7 +49,17 @@ with tempfile.TemporaryDirectory(prefix="cad3-creator-metadata-unit-", ignore_cl
             raise AssertionError("Read-only enrichment attempted a mutation")
 
     class FakeTaste:
-        counts: dict[str, int] = {}
+        # These scenarios exercise fresh cached public metadata, not expiration.
+        # Give the cache explicit per-creator observations under the new policy.
+        counts: dict[str, int] = {'blueeyes':640,'bigname':42000}
+        def follower_records(self,names):
+            return {name.casefold():{'follower_count':self.counts.get(name.casefold()),
+                                    'fetched_at':datetime.now(timezone.utc).isoformat()}
+                    for name in names if name.casefold() in self.counts or name.casefold()=='unknowncount'}
+        def cache_follower_profiles(self,profiles):
+            for profile in profiles:
+                count=(profile.get('stats') or {}).get('followerCountAllTime')
+                if count is not None:self.counts[profile['username'].casefold()]=count
         def follower_counts(self, names):
             return {name.casefold(): self.counts[name.casefold()] for name in names
                     if name.casefold() in self.counts}

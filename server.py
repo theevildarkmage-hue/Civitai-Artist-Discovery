@@ -45,6 +45,7 @@ from discovery.social import (CivitaiHTTPError, SocialClient, auth_status,
                               following_ids, reaction_names)
 from discovery.taste import (EMERGING_FOLLOWERS, GALLERY_HEART_MIN, TasteStore,
                              WORTH_FOLLOWING_MIN)
+from discovery.followers import follower_count, follower_fresh, fetched_time
 from discovery.tray import start_windows_tray, stop_windows_tray
 from discovery.updater import UpdateManager, apply_staged_update
 
@@ -287,7 +288,7 @@ def collected_image(image_id: int) -> bool:
 
 
 def decorate_history_artist(artist: dict, profiles: dict | None = None, follows: set[str] | None = None,
-                            signals: dict | None = None, seen: set | None = None) -> dict:
+                            signals: dict | None = None, seen: set | None = None, follower_counts=None) -> dict:
     username = artist["username"]
     profile = (profiles if profiles is not None else creator_profiles()).get(username.casefold())
     followed = follows if follows is not None else followed_usernames()
@@ -296,6 +297,7 @@ def decorate_history_artist(artist: dict, profiles: dict | None = None, follows:
     # day on screen. Five earns the gallery familiarity heart; the dashboard's stronger
     # "Worth following" recommendation starts at ten. Both disappear once followed.
     reacted_count = (signals or {}).get("reacted", {}).get(username.casefold(), 0)
+    counts = follower_counts if follower_counts is not None else TASTE.follower_counts([username])
     return {**artist, "profileUrl": profile_url(username),
         "avatarUrl": profile_avatar(profile), "following": following,
         "userId": (profile or {}).get("id"),
@@ -306,7 +308,7 @@ def decorate_history_artist(artist: dict, profiles: dict | None = None, follows:
         # is marked seen is the whole point, while the order it sits in only moves on
         # the next fresh load — see cached_day_view_order.
         "seen": username.casefold() in (seen or ()),
-        **_follower_fields(profile)}
+        **_follower_fields(profile,counts.get(username.casefold()))}
 
 
 def connected_user_id() -> int | None:
@@ -397,8 +399,8 @@ def hidden_preferences() -> tuple[set, set]:
 GALLERY_VIEWS = ("discovery", "followed", "new", "emerging", "foryou")
 RECENT_MODEL_MIN_SHARE = .10
 # Two personalised views need data the daily archive never collected: follower counts for
-# every creator, and tags for the image on each card. Both are fetched once per day in the
-# background and cached permanently.
+# every creator, and tags for the image on each card. Counts expire after 24 hours;
+# unavailable tag outcomes have their own durable recheck policy.
 SWEEP_KINDS = ("followers", "tags")
 SWEEP_JOBS: dict[str, dict] = {kind: {"running": False, "done": 0, "total": 0, "day": None,
                                       "error": None, "attemptedAll": False,
@@ -427,7 +429,8 @@ def sweep_status(kind: str, key: str) -> dict:
     with SWEEP_LOCK:
         job = dict(SWEEP_JOBS[kind])
     attempted = (job.get("day") == key and not job.get("running")
-                 and not job.get("error") and job.get("attemptedAll"))
+                 and not job.get("error") and job.get("attemptedAll")
+                 and time.time()-job.get('finishedAt',0)<300)
     return {"kind": kind, "known": known, "total": total,
             "complete": known >= total or bool(attempted),
             "job": job}
@@ -470,6 +473,7 @@ def run_sweep(kind: str, key: str, targets, known: int, total: int) -> None:
             attempted_all = fresh >= total
         with SWEEP_LOCK:
             SWEEP_JOBS[kind].update({"running": False, "done": fresh,
+                                     "finishedAt": time.time(),
                                      "attemptedAll": attempted_all,
                                      "error": None if attempted_all else
                                      "Preparation stopped before it finished."})
@@ -846,16 +850,19 @@ def cached_day_view_order(key: str, view: str, pinned_username: str | None, sign
     return order, total
 
 
-def _follower_fields(profile: object) -> dict:
+def _follower_fields(profile: object, cached_count=None) -> dict:
     """Follower count and emerging flag from a cached user.getCreator profile."""
     stats = (profile or {}).get("stats") if isinstance(profile, dict) else None
     value = (stats or {}).get("followerCountAllTime")
-    count = int(value) if isinstance(value, (int, float)) else None
+    count = follower_count(cached_count)
+    if count is None: count=follower_count(value)
     return {"followers": count, "emerging": count is not None and count < EMERGING_FOLLOWERS}
 
 
 FOLLOW_STATUS_LOCK = threading.Lock()
 FOLLOW_STATUS_CACHE = {}
+CREATOR_REFRESH_LOCK = threading.Lock()
+CREATOR_REFRESH_AFTER = {}
 
 
 def creator_follow_status(user_ids: list[int]) -> dict:
@@ -879,7 +886,19 @@ def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -
     # Copied because this adds newly resolved creators before writing the file back, and
     # creator_profiles() hands out the shared cached parse.
     profiles = dict(creator_profiles())
-    missing = [name for name in clean if name.casefold() not in profiles]
+    records = TASTE.follower_records(clean)
+    missing = []
+    with CREATOR_REFRESH_LOCK:
+        now=time.monotonic()
+        for key in list(CREATOR_REFRESH_AFTER):
+            if CREATOR_REFRESH_AFTER[key]<=now:del CREATOR_REFRESH_AFTER[key]
+        for name in clean:
+            record=records.get(name.casefold(),{})
+            fetched=fetched_time(record.get('fetched_at'))
+            recent_unknown = record.get('follower_count') is None and fetched is not None and 0<=time.time()-fetched<300
+            fresh_count = record.get('follower_count') is not None and follower_fresh(record.get('fetched_at'))
+            if (name.casefold() not in profiles or not (fresh_count or recent_unknown)) and name.casefold() not in CREATOR_REFRESH_AFTER:
+                missing.append(name);CREATOR_REFRESH_AFTER[name.casefold()]=now+300
     client = SocialClient()
     if include_follow:
         identity = auth_status()
@@ -889,16 +908,33 @@ def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -
     if missing:
         # A deleted or renamed creator is an ordinary condition in a saved daily
         # archive. Keep every successful row instead of failing all 50 visible cards.
-        resolved = client.batch_query_optional(
-            "user.getCreator", [{"username": name} for name in missing])
+        try:
+            resolved = client.batch_query_optional(
+                "user.getCreator", [{"username": name} for name in missing])
+        except Exception:
+            # Public cached metadata remains usable during an outage; retry is
+            # bounded above. Do not erase counts, avatars or unrelated profile fields.
+            if not any(name.casefold() in profiles or name.casefold() in records for name in missing):raise
+            resolved = []
+        updates=[];new_profiles={}
         for name, profile in zip(missing, resolved):
             if isinstance(profile, dict) and profile.get("id"):
-                profiles[name.casefold()] = profile
-        with WRITE_LOCK:
-            CREATOR_PROFILES.parent.mkdir(parents=True, exist_ok=True)
-            temporary = CREATOR_PROFILES.with_suffix(".tmp")
-            temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "byUsername": profiles}, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(CREATOR_PROFILES)
+                existing=profiles.get(name.casefold(),{})
+                merged={**existing,**profile,'stats':{**(existing.get('stats') or {}),**(profile.get('stats') or {})}}
+                merged['username']=profile.get('username') or name
+                profiles[name.casefold()] = merged
+                updates.append({**profile,'username':profile.get('username') or name})
+                if not existing:new_profiles[name.casefold()]=merged
+        TASTE.cache_follower_profiles(updates)
+        # Existing metadata needs no whole-file rewrite just to update a count.
+        # SQLite is authoritative for counts and per-creator observation time.
+        if new_profiles:
+            with WRITE_LOCK:
+                persisted=dict(creator_profiles());persisted.update(new_profiles)
+                CREATOR_PROFILES.parent.mkdir(parents=True, exist_ok=True)
+                temporary = CREATOR_PROFILES.with_suffix(".tmp")
+                temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "byUsername": persisted}, ensure_ascii=False, indent=2), encoding="utf-8")
+                temporary.replace(CREATOR_PROFILES)
 
     if include_follow:
         followed_names = {
@@ -914,15 +950,13 @@ def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -
             temporary.replace(FOLLOW_CACHE)
 
     follower_counts = TASTE.follower_counts(clean)
+    resolved_records = TASTE.follower_records(clean)
 
     def result_for(name: str) -> dict:
         key = name.casefold()
         profile = profiles.get(key)
-        fields = _follower_fields(profile)
         cached_count = follower_counts.get(key)
-        if fields["followers"] is None and cached_count is not None:
-            fields = {"followers": cached_count,
-                      "emerging": cached_count < EMERGING_FOLLOWERS}
+        fields = _follower_fields(profile,cached_count)
         result = {
             "username": name,
             "avatarUrl": profile_avatar(profile),
@@ -930,6 +964,8 @@ def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -
             # The all-day sweep stores counts in SQLite. The profile cache carries
             # avatars and ids, but is populated only for cards the user has loaded.
             **fields,
+            'followersFetchedAt':resolved_records.get(key,{}).get('fetched_at'),
+            'followersStale':not follower_fresh(resolved_records.get(key,{}).get('fetched_at')),
         }
         if include_follow:
             result["following"] = bool(
@@ -1472,9 +1508,11 @@ class Handler(BaseHTTPRequestHandler):
                 # reaction history a gallery card does.
                 signals = gallery_signals()
                 profiles, follows = creator_profiles(), signals["followed"]
+                tm_cards=TIME_MACHINE.cards()
+                tm_counts=TASTE.follower_counts([card['username'] for card in tm_cards])
                 self.json_response({
-                    "cards": attach_preview_tags([decorate_history_artist(card, profiles, follows, signals)
-                              for card in TIME_MACHINE.cards()], source='timemachine'),
+                    "cards": attach_preview_tags([decorate_history_artist(card, profiles, follows, signals,follower_counts=tm_counts)
+                              for card in tm_cards], source='timemachine'),
                     "status": TIME_MACHINE.status()})
             except Exception as error: self.internal_error("Time machine", error)
             return
@@ -1496,9 +1534,10 @@ class Handler(BaseHTTPRequestHandler):
                 profiles, follows = creator_profiles(), signals["followed"]
                 # Each image rides in a one-image card entry so the gallery's own
                 # decoration (avatar, follow state, reactions) applies unchanged.
+                history_counts=TASTE.follower_counts([history['username']])
                 cards = [decorate_history_artist({"username": history["username"], "imageCount": 1,
                                                   "representativeIndex": 0, "representative": image},
-                                                 profiles, follows, signals)
+                                                 profiles, follows, signals,follower_counts=history_counts)
                          for image in history["images"]]
                 self.json_response({**history, "cards": attach_preview_tags(cards, source='timemachine')})
             except KeyError as error: self.json_response({"error": str(error.args[0])}, 404)
@@ -1601,9 +1640,10 @@ class Handler(BaseHTTPRequestHandler):
                         if key_name not in hidden_creators
                         and (showable is None or key_name in showable)]
                     total = len(order)
-                artists = [decorate_history_artist(item, profiles, follows, signals, seen)
-                    for item in archive.artists_page(key, offset, limit, pinned_username, order,
-                                                     representatives, hidden_images)]
+                page_artists=archive.artists_page(key, offset, limit, pinned_username, order,representatives, hidden_images)
+                page_counts=TASTE.follower_counts([item['username'] for item in page_artists])
+                artists = [decorate_history_artist(item, profiles, follows, signals, seen,page_counts)
+                           for item in page_artists]
                 if view in {"foryou", "emerging"}:
                     # State why each card placed where it did, rather than presenting a
                     # personalised order the user cannot inspect.

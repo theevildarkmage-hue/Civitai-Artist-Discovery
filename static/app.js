@@ -493,9 +493,10 @@ function applyCreatorFollowers(el, metadata) {
   const count = metadata.followers, line = el.querySelector(".creator-followers"), badge = el.querySelector(".creator-badge");
   if (!line || !badge) return;
   line.textContent = count === null || count === undefined ? "" : ` · ${displayCount(count)} followers`;
+  line.title = metadata.followersStale ? 'Last known count; awaiting a fresh follower count.' : '';
   badge.className = metadata.emerging ? "creator-badge pill emerging" : "creator-badge";
   badge.textContent = metadata.emerging ? "EMERGING" : "";
-  badge.title = metadata.emerging ? "Fewer than 1,000 followers" : "";
+  badge.title = metadata.emerging ? (metadata.followersStale ? 'Fewer than 1,000 followers at the last observation.' : "Fewer than 1,000 followers") : "";
 }
 // Keep the sticky window/view bar pinned exactly below the masthead. The masthead grows
 // and shrinks with its content and the viewport, so the offset is measured rather than

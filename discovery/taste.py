@@ -23,6 +23,7 @@ from .civitai import API_LANE
 from .social import CivitaiHTTPError, SocialClient, auth_status
 from .retry import retry_after_seconds
 from .pagination import PageProgress, PaginationStopped
+from .followers import follower_count, follower_fresh, fetched_time
 
 # Civitai's own reaction set. Dislike is collected so reconciliation stays complete,
 # but the dashboard only names it when the user actually has some.
@@ -170,6 +171,7 @@ class TasteStore:
                     follower_count INTEGER, fetched_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS creator_followers_name ON creator_followers(username);
+                CREATE INDEX IF NOT EXISTS creator_followers_name_nocase ON creator_followers(username COLLATE NOCASE);
                 CREATE TABLE IF NOT EXISTS recent_posts (
                     image_id INTEGER PRIMARY KEY, created_at TEXT
                 );
@@ -615,18 +617,15 @@ class TasteStore:
                     db.executemany("""INSERT INTO creator_followers(creator_id, username,
                                       follower_count, fetched_at) VALUES(?,?,?,?)
                                       ON CONFLICT(creator_id) DO UPDATE SET
-                                      username=excluded.username,
-                                      fetched_at=excluded.fetched_at""", rows)
+                                      username=excluded.username""", rows)
 
     def follower_coverage(self, usernames: list[str]) -> tuple[int, int]:
         """How many of these creators already have a cached follower count."""
         keys = {name.casefold() for name in usernames}
         if not keys:
             return 0, 0
-        with self.connect() as db:
-            known = {row["username"].casefold() for row in db.execute(
-                "SELECT username FROM creator_followers "
-                "WHERE username IS NOT NULL AND follower_count IS NOT NULL")}
+        known = {name for name,row in self.follower_records(usernames).items()
+                 if row['follower_count'] is not None and follower_fresh(row['fetched_at'])}
         return len(keys & known), len(keys)
 
     def sweep_followers(self, client: SocialClient, usernames: list[str],
@@ -637,10 +636,8 @@ class TasteStore:
         way to know them for a creator the user has not scrolled past.
         """
         keys = list(dict.fromkeys(name for name in usernames if name))
-        with self.connect() as db:
-            known = {row["username"].casefold() for row in db.execute(
-                "SELECT username FROM creator_followers "
-                "WHERE username IS NOT NULL AND follower_count IS NOT NULL")}
+        known = {name for name,row in self.follower_records(keys).items()
+                 if row['follower_count'] is not None and follower_fresh(row['fetched_at'])}
         missing = [name for name in keys if name.casefold() not in known]
         done = 0
         for start in range(0, len(missing), 100):
@@ -664,22 +661,8 @@ class TasteStore:
                     raise
             else:
                 raise RuntimeError("Civitai follower lookup exhausted its retries")
-            stamp = _now()
-            rows = []
-            for name, profile in zip(chunk, profiles):
-                value = ((profile or {}).get("stats") or {}).get("followerCountAllTime")
-                identifier = (profile or {}).get("id")
-                if isinstance(identifier, int):
-                    rows.append((identifier, (profile or {}).get("username") or name,
-                                 int(value) if isinstance(value, (int, float)) else None, stamp))
-            if rows:
-                with self.connect() as db:
-                    db.executemany("""INSERT INTO creator_followers(creator_id, username,
-                                      follower_count, fetched_at) VALUES(?,?,?,?)
-                                      ON CONFLICT(creator_id) DO UPDATE SET
-                                      username=excluded.username,
-                                      follower_count=excluded.follower_count,
-                                      fetched_at=excluded.fetched_at""", rows)
+            self.cache_follower_profiles([{**profile,'username':profile.get('username') or name}
+                                          for name,profile in zip(chunk,profiles) if isinstance(profile,dict)])
             done += len(chunk)
             if progress:
                 progress(done, len(missing))
@@ -806,14 +789,61 @@ class TasteStore:
                                (day, SEEN_TRACKING_VERSION))}
 
     def follower_counts(self, usernames: list[str]) -> dict[str, int]:
+        return {key:row['follower_count'] for key,row in self.follower_records(usernames).items()
+                if row['follower_count'] is not None}
+
+    def follower_records(self, usernames) -> dict:
         keys = {name.casefold() for name in usernames}
         if not keys:
             return {}
+        result={}
         with self.connect() as db:
-            return {row["username"].casefold(): row["follower_count"] for row in db.execute(
-                "SELECT username, follower_count FROM creator_followers "
-                "WHERE username IS NOT NULL AND follower_count IS NOT NULL")
-                if row["username"].casefold() in keys}
+            names=list(keys)
+            if any(not name.isascii() for name in names):
+                # SQLite NOCASE folds ASCII only; retain Python casefold semantics
+                # for the uncommon Unicode username without a custom disk collation.
+                rows=db.execute('SELECT creator_id,username,follower_count,fetched_at FROM creator_followers WHERE username IS NOT NULL')
+                for row in rows:
+                    key=row['username'].casefold()
+                    if key in keys:
+                        candidate=dict(row);candidate['follower_count']=follower_count(row['follower_count'])
+                        if key not in result or (fetched_time(row['fetched_at']) or 0)>(fetched_time(result[key]['fetched_at']) or 0):result[key]=candidate
+                return result
+            for start in range(0,len(names),400):
+                chunk=names[start:start+400];holes=','.join('?' for _ in chunk)
+                rows=db.execute(f'SELECT creator_id,username,follower_count,fetched_at FROM creator_followers WHERE username COLLATE NOCASE IN ({holes})',chunk)
+                for row in rows:
+                    key=row['username'].casefold();candidate=dict(row)
+                    candidate['follower_count']=follower_count(row['follower_count'])
+                    if key not in result or (fetched_time(row['fetched_at']) or 0) > (fetched_time(result[key]['fetched_at']) or 0):
+                        result[key]=candidate
+            missing=keys-result.keys()
+            if missing:
+                # Casefold can map a Unicode name to ASCII (for example ß -> ss).
+                # Consult only Unicode candidates in this small public metadata
+                # cache; never scan artwork/tag tables for name matching.
+                for row in db.execute("SELECT creator_id,username,follower_count,fetched_at FROM creator_followers WHERE username GLOB '*[^ -~]*'"):
+                    key=row['username'].casefold()
+                    if key in missing:
+                        candidate=dict(row);candidate['follower_count']=follower_count(row['follower_count'])
+                        if key not in result or (fetched_time(row['fetched_at']) or 0)>(fetched_time(result[key]['fetched_at']) or 0):result[key]=candidate
+        return result
+
+    def cache_follower_profiles(self, profiles, stamp=None):
+        stamp=stamp or _now()
+        with self.connect() as db:
+            for profile in profiles:
+                identifier=profile.get('id');name=profile.get('username')
+                count=follower_count((profile.get('stats') or {}).get('followerCountAllTime'))
+                if type(identifier) is not int or identifier <= 0 or not name or count is None:continue
+                previous=db.execute('SELECT fetched_at FROM creator_followers WHERE creator_id=?',(identifier,)).fetchone()
+                old=fetched_time(previous[0]) if previous else None
+                new=fetched_time(stamp)
+                if new is None:raise ValueError('Follower observation requires a timestamp')
+                if old is not None and new<old<=time.time():continue
+                db.execute('''INSERT INTO creator_followers(creator_id,username,follower_count,fetched_at) VALUES(?,?,?,?)
+                    ON CONFLICT(creator_id) DO UPDATE SET username=excluded.username,
+                    follower_count=excluded.follower_count,fetched_at=excluded.fetched_at''',(identifier,name,count,stamp))
 
     def refresh_recent_work(self, client: SocialClient, username: str) -> int:
         """Archive public uploads once, then stop each refresh at the first known page.
@@ -1405,18 +1435,10 @@ class TasteStore:
                     "user.getCreator", [{"username": name} for _, name in chunk])
             except Exception:  # noqa: BLE001
                 return
-            rows = []
-            for (creator_id, name), profile in zip(chunk, profiles):
-                value = ((profile or {}).get("stats") or {}).get("followerCountAllTime")
-                rows.append((creator_id, name,
-                             int(value) if isinstance(value, (int, float)) else None, stamp))
-            with self.connect() as db:
-                db.executemany("""INSERT INTO creator_followers(creator_id, username,
-                                  follower_count, fetched_at) VALUES(?,?,?,?)
-                                  ON CONFLICT(creator_id) DO UPDATE SET
-                                  username=excluded.username,
-                                  follower_count=excluded.follower_count,
-                                  fetched_at=excluded.fetched_at""", rows)
+            self.cache_follower_profiles([
+                {'id':creator_id,'username':name,**profile}
+                for (creator_id,name),profile in zip(chunk,profiles) if isinstance(profile,dict)
+            ],stamp)
 
     # ---------- analysis ----------
 
