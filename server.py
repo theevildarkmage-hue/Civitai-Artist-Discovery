@@ -2491,9 +2491,12 @@ def main() -> None:
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=8907)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--pause-auto-capture", action="store_true",
+                        help="Pause automatic capture for this launch without changing saved preferences")
     parser.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--replacing", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    CAPTURE.session_paused = args.pause_auto_capture
     from discovery.community_security import disable_test_outbound
     disable_test_outbound(DATA_ROOT)
     bind_host = args.host or ("0.0.0.0" if SETTINGS.load()['allowLanAccess'] else "127.0.0.1")

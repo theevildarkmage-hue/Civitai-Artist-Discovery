@@ -184,3 +184,22 @@ print({"lookbackDays": CAPTURE_LOOKBACK_DAYS, "oldestFirst": True,
        "unreachableSkipped": True, "todayNeverCaptured": True, "idempotent": True,
        "installsSpreadAcrossInterval": True, "slotStableAcrossRestarts": True,
        "everyRunLogged": True, "noopRunsLogged": True, "failureReasonsKept": True})
+
+# A launch-level pause prevents every worker-start/trigger path without rewriting
+# settings. Removing the launch option on restart restores the saved schedule.
+with tempfile.TemporaryDirectory(prefix="cad3-capture-session-pause-") as temporary:
+    settings=AppSettings(Path(temporary)/"settings.json")
+    settings.update(auto_capture_value=True)
+    before=settings.path.read_bytes()
+    archive=FakeArchive(floor_day=date(2026,8,29),complete=set())
+    capture=AutoCapture(archive,settings,now=lambda:NOW)
+    capture.session_paused=True
+    capture.start();capture.trigger();capture.start()
+    state=capture.status()
+    assert state['enabled'] and state['sessionPaused'] and not state['running']
+    assert state['nextRunAt'] is None and state['nextRunInSeconds'] is None
+    assert capture.thread is None and not capture.wake.is_set() and not archive.started
+    assert settings.path.read_bytes()==before
+    restored=AutoCapture(archive,settings,now=lambda:NOW).status()
+    assert restored['enabled'] and not restored['sessionPaused'] and restored['nextRunAt']
+print('PASS: session-only capture pause preserves settings, suppresses workers/triggers and restores schedule on normal relaunch')

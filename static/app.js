@@ -418,6 +418,7 @@ $("lanRestartConfirm").onclick = async () => {
 };
 let captureState = null;
 function describeNextRun(state) {
+  if (state.sessionPaused) return "Paused for this launch";
   if (!state.enabled) return "Off";
   const seconds = Number(state.nextRunInSeconds);
   const when = state.nextRunAt ? new Date(state.nextRunAt) : null;
@@ -439,6 +440,7 @@ function renderCaptureState(state) {
     : `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
   $("captureAtClear").classList.toggle("hidden", minute === null || minute === undefined);
   $("captureNextRun").textContent = describeNextRun(state);
+  $("captureRunNow").disabled = !!state.sessionPaused;
   const recovery = state.recovery || [];
   if (recovery.length) $("captureNextRun").textContent += ` · ${recovery.length} ${recovery.length === 1 ? "block needs" : "blocks need"} recovery`;
   $("captureNextRun").title = recovery.map(item => `${item.block_key}: ${item.reason}`).join("\n");
@@ -452,7 +454,7 @@ async function postCapture(body) {
   controls.forEach(id => { $(id).disabled = true; });
   try { renderCaptureState(await api("/api/history/capture", { method: "POST", body: JSON.stringify(body) })); }
   catch (error) { toast(error.message); if (captureState) renderCaptureState(captureState); }
-  finally { controls.forEach(id => { $(id).disabled = false; }); }
+  finally { controls.forEach(id => { $(id).disabled = false; }); $("captureRunNow").disabled = !!captureState?.sessionPaused; }
 }
 $("captureEnabled").onchange = () => postCapture({ enabled: $("captureEnabled").checked });
 $("captureInterval").onchange = () => postCapture({ intervalHours: Number($("captureInterval").value) });

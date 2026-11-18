@@ -472,10 +472,16 @@ class HistoryArchive:
         tolerance = timedelta(minutes=30)
         invalid_days: set[str] = set()
         with self.connect() as db:
-            rows = list(db.execute("""SELECT day,start_utc,end_utc FROM days
+            db.execute('''CREATE TABLE IF NOT EXISTS legacy_block_coverage_audits (
+                block_key TEXT PRIMARY KEY, start_utc TEXT NOT NULL,
+                end_utc TEXT NOT NULL, updated_at TEXT)''')
+            rows = list(db.execute("""SELECT day,start_utc,end_utc,updated_at FROM days d
                 WHERE complete=1 AND collection_version=0
                   AND (day LIKE '%#morning' OR day LIKE '%#evening')
-                  AND start_utc IS NOT NULL AND end_utc IS NOT NULL"""))
+                  AND start_utc IS NOT NULL AND end_utc IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM legacy_block_coverage_audits a
+                    WHERE a.block_key=d.day AND a.start_utc IS d.start_utc
+                      AND a.end_utc IS d.end_utc AND a.updated_at IS d.updated_at)"""))
             for row in rows:
                 limits = db.execute("""SELECT MIN(i.created_at),MAX(i.created_at),COUNT(*)
                     FROM block_images b JOIN images i ON i.id=b.image_id
@@ -487,6 +493,10 @@ class HistoryArchive:
                     db.execute("UPDATE days SET complete=0,scan_cursor=NULL,updated_at=? WHERE day=?",
                                (utcnow(), row["day"]))
                     invalid_days.add(row["day"].split("#", 1)[0])
+                else:
+                    db.execute('''INSERT OR REPLACE INTO legacy_block_coverage_audits
+                        (block_key,start_utc,end_utc,updated_at) VALUES(?,?,?,?)''',
+                        (row['day'], row['start_utc'], row['end_utc'], row['updated_at']))
             for day in invalid_days:
                 db.execute("UPDATE days SET complete=0,updated_at=? WHERE day=?", (utcnow(), day))
 

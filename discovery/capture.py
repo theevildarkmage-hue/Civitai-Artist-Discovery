@@ -69,6 +69,7 @@ class AutoCapture:
         self.thread: threading.Thread | None = None
         self.wake = threading.Event()
         self.stopping = threading.Event()
+        self.session_paused = False
         self.last_run: str | None = None
         self.last_result: dict | None = None
         self.recovery = CaptureRecovery(archive) if hasattr(archive, "connect") else None
@@ -277,6 +278,8 @@ class AutoCapture:
 
     def start(self) -> None:
         with self.lock:
+            if self.session_paused:
+                return
             if self.thread and self.thread.is_alive():
                 return
             self.stopping.clear()
@@ -290,6 +293,8 @@ class AutoCapture:
 
     def trigger(self) -> None:
         """Ask the worker to wake and capture now rather than at the next interval."""
+        if self.session_paused:
+            return
         self.wake.set()
 
     def status(self) -> dict:
@@ -299,11 +304,12 @@ class AutoCapture:
         with self.lock:
             running = bool(self.thread and self.thread.is_alive())
             return {"enabled": settings["autoCapture"],
+                    "sessionPaused": self.session_paused,
                     "intervalHours": settings["autoCaptureHours"],
                     "coverage": settings["captureCoverage"],
                     "running": running, "lastRun": self.last_run,
                     "lastResult": self.last_result,
                     "recovery": list(self.recovery.entries().values()) if self.recovery else [],
                     "atMinute": settings.get("autoCaptureMinute"),
-                    "nextRunAt": next_run.isoformat(),
-                    "nextRunInSeconds": round((next_run - now).total_seconds())}
+                    "nextRunAt": None if self.session_paused else next_run.isoformat(),
+                    "nextRunInSeconds": None if self.session_paused else round((next_run - now).total_seconds())}

@@ -77,4 +77,52 @@ class MembershipMigration(unittest.TestCase):
         self.migrate()
         self.assertEqual(self.db.execute('PRAGMA user_version').fetchone()[0],37)
 
+class LegacyAuditCheckpoint(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix='cad3-legacy-audit-')
+        self.addCleanup(self.temp.cleanup)
+        self.archive=HistoryArchive(Path(self.temp.name))
+        self.key='2026-11-10#morning'
+        self.start='2026-11-10T06:00:00+00:00';self.end='2026-11-10T18:00:00+00:00'
+        with self.archive.connect() as db:
+            db.execute("INSERT INTO days(day,complete,start_utc,end_utc,updated_at) VALUES(?,1,?,?,?)",(self.key,self.start,self.end,'sentinel'))
+            for id,created in ((1,self.start),(2,self.end)):
+                db.execute("INSERT INTO images(id,local_date,username,username_key,created_at,url) VALUES(?,'2026-11-10','Synthetic','synthetic',?,'https://example.invalid/test')",(id,created))
+                db.execute('INSERT INTO block_images VALUES(?,?)',(self.key,id))
+
+    def deny_image_reads(self):
+        from contextlib import contextmanager
+        original=self.archive.connect
+        @contextmanager
+        def guarded():
+            with original() as db:
+                db.set_authorizer(lambda action,table,*args:sqlite3.SQLITE_DENY if action==sqlite3.SQLITE_READ and table=='images' else sqlite3.SQLITE_OK)
+                yield db
+        self.archive.connect=guarded
+
+    def test_valid_block_not_rescanned(self):
+        self.archive._audit_legacy_block_coverage()
+        self.deny_image_reads()
+        self.archive._audit_legacy_block_coverage()
+        with self.archive.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM legacy_block_coverage_audits').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT complete FROM days WHERE day=?',(self.key,)).fetchone()[0],1)
+
+    def test_changed_checkpoint_requires_new_audit(self):
+        self.archive._audit_legacy_block_coverage()
+        with self.archive.connect() as db:db.execute("UPDATE days SET updated_at='changed' WHERE day=?",(self.key,))
+        self.deny_image_reads()
+        with self.assertRaises(sqlite3.DatabaseError):self.archive._audit_legacy_block_coverage()
+        with self.archive.connect() as db:
+            self.assertEqual(db.execute('SELECT updated_at FROM legacy_block_coverage_audits').fetchone()[0],'sentinel')
+
+    def test_changed_boundary_reopens_invalid_block(self):
+        self.archive._audit_legacy_block_coverage()
+        with self.archive.connect() as db:db.execute("UPDATE days SET end_utc='2026-11-10T20:00:00+00:00' WHERE day=?",(self.key,))
+        self.archive._audit_legacy_block_coverage()
+        with self.archive.connect() as db:
+            self.assertEqual(db.execute('SELECT complete FROM days WHERE day=?',(self.key,)).fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM images').fetchone()[0],2)
+        self.deny_image_reads();self.archive._audit_legacy_block_coverage()
+
 if __name__=='__main__':unittest.main()
