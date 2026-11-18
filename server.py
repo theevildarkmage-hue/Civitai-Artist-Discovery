@@ -1318,8 +1318,9 @@ class Handler(BaseHTTPRequestHandler):
                 level=row['browsing_level'] or {'None':1,'Soft':2,'Mature':4,'X':8}.get(row['nsfw_level'])
                 hidden_names,hidden_images=hidden_preferences()
                 tags=TASTE.image_tags_many([image_id])[image_id]
-                if (level not in SETTINGS.load()['browsingLevels'] or row['username_key'] in hidden_names or image_id in hidden_images
-                        or (SETTINGS.load()['applyTagFilters'] and TASTE.hidden_tag_names() and (not tags['known'] or any(tag['hidden'] for tag in tags['tags'])))):
+                settings=SETTINGS.load()
+                if (level not in settings['browsingLevels'] or row['username_key'] in hidden_names or image_id in hidden_images
+                        or (settings.get('applyTagFilters') is not False and TASTE.hidden_tag_names() and (not tags['known'] or any(tag['hidden'] for tag in tags['tags'])))):
                     raise CommunityError('CONTENT_FILTERED',403)
                 body,kind=PERSONAL_THUMBNAILS.get(row['url'])
                 self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
