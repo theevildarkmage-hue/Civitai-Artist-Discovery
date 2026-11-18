@@ -54,11 +54,12 @@ try:
    assert probe_refresh and all(value=='0' for value in probe_refresh),'background notice must not force metadata refresh'
    assert page.evaluate('()=>{const now=[...document.querySelectorAll("#communityGrid .community-card")];return now.length===window.__noticeCards.length&&now.every((el,i)=>el===window.__noticeCards[i])}')
    assert abs(page.evaluate('scrollY')-saved)<2
-   page.screenshot(path=str(test_safety.REPORTS/f'new-recommendations-{width}.png'),full_page=True)
    # Background outage preserves both the notice and existing browsing state.
    state['fail']=True;page.clock.fast_forward(60000);page.wait_for_timeout(100)
    assert page.locator('#communityUpdates').inner_text().startswith('3 new recommendations')
-   assert abs(page.evaluate('scrollY')-saved)<2;state['fail']=False
+   actual_scroll=page.evaluate('scrollY')
+   assert abs(actual_scroll-saved)<2, {'width':width,'saved':saved,'actual':actual_scroll,'layout':page.evaluate("()=>({height:document.documentElement.scrollHeight,header:document.querySelector('header').getBoundingClientRect().height,cards:document.querySelectorAll('#communityGrid .community-card').length,focus:document.activeElement.id})")}
+   state['fail']=False
    # Tab hidden: no gallery probes. Returning checks without replacing cards.
    page.locator('#tabGallery').click();count=len(calls);page.clock.fast_forward(60000);page.wait_for_timeout(50);assert len(calls)==count
    page.locator('#tabCommunity').click();page.wait_for_timeout(100)
@@ -96,6 +97,9 @@ try:
    assert len(calls)-count==4
    assert page.locator('#communityGrid .community-card').first.get_attribute('data-id')=='20003'
    assert not errors,errors
+   # Full-page capture can resize the mobile viewport and trigger native scroll
+   # anchoring. Capture evidence after all unchanged scroll/poll assertions.
+   page.screenshot(path=str(test_safety.REPORTS/f'new-recommendations-{width}.png'),full_page=True)
    page.close()
   browser.close()
  print('PASS: desktop/mobile notices, count deduplication, unchanged DOM/scroll and paging, hidden-tab pause, transient outage, refresh newest-first/top, late-probe cancellation, bounded96+ count; synthetic HTTP only')

@@ -61,7 +61,7 @@ export function createCreatorCard(a, context) {
       if (toggle && !toggle.hidden && !navigating) { event.preventDefault(); toggle.click(); }
     }
   });
-  el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${context.canWrite() ? "" : "disabled"} title="${context.canWrite() ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="card-nav-status" role="status" aria-live="polite"><span class="card-nav-spinner" aria-hidden="true"></span><span>Loading image…</span></div><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
+  el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${context.canWrite() ? "" : "disabled"} title="${context.canWrite() ? "" : escapeHtml(context.writeUnavailableReason?.() || "Civitai did not grant follow and reaction access.")}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="card-nav-status" role="status" aria-live="polite"><span class="card-nav-spinner" aria-hidden="true"></span><span>Loading image…</span></div><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
   [[".previous", "Previous image", "15 5 8 12 15 19"], [".next", "Next image", "9 5 16 12 9 19"]].forEach(([selector, label, points]) => {
     const button = el.querySelector(selector);
     button.setAttribute("aria-label", label);
@@ -99,7 +99,31 @@ export function createCreatorCard(a, context) {
     wireReactions();
     if (navigating) reaction.querySelectorAll("[data-reaction]").forEach(button => { button.disabled = true; });
   }
-  function wireReactions() { reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => { event.stopPropagation(); if (!context.canWrite()) return toast("Civitai did not grant reaction access."); button.disabled = true; const accountEpoch = context.accountEpoch?.(), targetImage = current, imageId = targetImage.id, reactionName = button.dataset.reaction, active = !button.classList.contains("selected"); try { const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) }); if (accountEpoch !== context.accountEpoch?.()) return; const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) }; targetImage.stats = stats; imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats }); if (context.notifyReactionState) context.notifyReactionState(imageId); else if (String(current.id) === String(imageId)) renderReactions(); toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`); } catch (error) { toast(error.message); if (String(current.id) === String(imageId)) button.disabled = false; } }); }
+  function wireReactions() {
+    reaction.querySelectorAll("[data-reaction]").forEach(button => button.onclick = async event => {
+      event.stopPropagation();
+      if (!context.canWrite()) return toast(context.writeUnavailableReason?.() || "Civitai did not grant reaction access.");
+      if (button.dataset.reactionPending) return;
+      button.dataset.reactionPending = 'true'; button.disabled = true;
+      const accountEpoch = context.accountEpoch?.(), targetImage = current, imageId = targetImage.id,
+        reactionName = button.dataset.reaction, active = !button.classList.contains("selected");
+      try {
+        const result = await api("/api/reaction", { method: "POST", body: JSON.stringify({ imageId, reaction: reactionName, active }) });
+        if (accountEpoch !== context.accountEpoch?.()) return;
+        const stats = { ...(targetImage.stats || {}), ...(result.stats || {}) };
+        targetImage.stats = stats;
+        imageReactionState.set(String(imageId), { reactions: [...(result.reactions || [])], stats });
+        if (context.notifyReactionState) context.notifyReactionState(imageId);
+        else if (String(current.id) === String(imageId)) renderReactions();
+        toast(active ? `${reactionName} reaction added` : `${reactionName} reaction removed`);
+      } catch (error) {
+        if (accountEpoch === context.accountEpoch?.()) toast(error.message);
+      } finally {
+        delete button.dataset.reactionPending;
+        button.disabled = !context.canWrite() || navigating;
+      }
+    });
+  }
   function cardDate() {
     const value = selectedDate || String(current.createdAt || '').slice(0, 10);
     const date = new Date(`${value}T12:00:00`);
@@ -152,7 +176,7 @@ export function createCreatorCard(a, context) {
     // For media failures the existing sentinel supplies more artists when it enters
     // view. Never start an eager replacement loop for a whole missing page.
   }
-  async function selectAllowed(candidate, delta = 1) {
+  async function selectAllowed(candidate, delta = 1, { waitForPreview = true, isCurrent = () => true } = {}) {
     let skippedUnavailable = false;
     while (images.length) {
       candidate = (candidate + images.length) % images.length;
@@ -163,8 +187,8 @@ export function createCreatorCard(a, context) {
         continue;
       }
       const result = await checkImageTags(images[candidate].id);
-      if (!el.isConnected) return false;
-      if (!tagsHideImage(result)) { index = candidate; paint(); if (navigating) await waitForArtwork(); return true; }
+      if (!el.isConnected || !isCurrent()) return false;
+      if (!tagsHideImage(result)) { index = candidate; paint(); if (navigating && waitForPreview) await waitForArtwork(); return true; }
       if (navigating) setCardNavigationBusy(true, 'Skipping a filtered image…');
       images.splice(candidate, 1); a.imageCount = images.length;
       if (delta < 0) candidate--;
@@ -233,6 +257,20 @@ export function createCreatorCard(a, context) {
     finally { if (document.body.contains(el)) setCardNavigationBusy(false); }
   }
   async function move(delta) { await navigateTo(index + delta, delta); }
+  // Details uses the same lazy list and content gates as the card, without waiting
+  // for a preview that may be behind the modal. Closing invalidates pending moves.
+  el.detailArtwork = () => ({ image: current, artist: a,
+    index: imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0), total: a.imageCount });
+  el.moveDetailArtwork = async (delta, isCurrent) => {
+    if (navigating || !isCurrent()) return null;
+    setCardNavigationBusy(true);
+    try {
+      await ensureImages();
+      if (!isCurrent() || !el.isConnected) return null;
+      if (await selectAllowed(index + delta, delta, { waitForPreview: false, isCurrent })) return el.detailArtwork();
+      return null;
+    } finally { if (el.isConnected) setCardNavigationBusy(false); }
+  };
   function closeActionMenu() { actionMenu.classList.add('hidden'); el.querySelector('.more-menu').setAttribute('aria-expanded', 'false'); }
   async function showCollections() {
     if (context.canManageCollections && !context.canManageCollections()) {
@@ -311,7 +349,7 @@ export function createCreatorCard(a, context) {
     follow.classList.toggle('is-following', a.following);
     follow.textContent = a.following ? '\u2713 Following' : '+ Follow';
   });
-  follow.onclick = () => toggleCreatorFollow(follow, a, { api, canWrite: context.canWrite, toast });
+  follow.onclick = () => toggleCreatorFollow(follow, a, { api, canWrite: context.canWrite, accountEpoch: context.accountEpoch, toast });
   el.addEventListener("reactionstate", () => { if (document.body.contains(el)) renderReactions(); });
   // Avatar and follower count only; Community reads follow state separately.
   el.applyCreatorProfile = metadata => { a.avatarUrl = metadata.avatarUrl; const oldAvatar = el.querySelector(".creator-avatar"); if (a.avatarUrl && oldAvatar && oldAvatar.getAttribute("src") !== a.avatarUrl) { const image = document.createElement("img"); image.className = "creator-avatar"; image.src = a.avatarUrl; image.alt = ""; wireAvatarFallback(image, a.username); oldAvatar.replaceWith(image); } applyCreatorFollowers(el, metadata); };

@@ -1,6 +1,8 @@
 import { mountShell, groupPageControls } from './shell.js';
+import { mountSourceNotice } from './source-notice.js';
 import { enhancePopover } from './menu.js';
 import { api, finishControlChange } from './api.js';
+import { createAuthSession, socialWriteReason } from './auth-session.js';
 import { createSelectionQueue } from './selection-queue.js';
 import { showArtwork, showVideoPoster } from './artwork.js';
 import { showGallerySkeleton, showPageError } from './feedback.js';
@@ -25,9 +27,10 @@ if (new URLSearchParams(location.search).get('uiPerf') === '1') {
 }
 
 mountShell();
+mountSourceNotice();
 window.reportClientEvent = reportClientEvent;
 // Temporary bridge for the classic page controller; new modules import directly.
-window.CivitaiUI = Object.freeze({ api, finishControlChange, createSelectionQueue, showArtwork, showVideoPoster, showGallerySkeleton, showPageError, createCreatorCard, createInfinitePager, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget });
+window.CivitaiUI = Object.freeze({ api, createAuthSession, socialWriteReason, finishControlChange, createSelectionQueue, showArtwork, showVideoPoster, showGallerySkeleton, showPageError, createCreatorCard, createInfinitePager, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget });
 
 // Transitional classic controller preserves existing integration tests and global
 // callbacks while page behavior moves into modules one tested slice at a time.
@@ -52,6 +55,9 @@ controller.onload = () => {
     removeModel: name => window.removeGalleryModel(name).catch(error => window.toast(error.message)),
     reset: () => window.resetGalleryFilters(),
     setMedia: value => window.setGalleryMedia(value),
+    setTagFilters: value => window.setGalleryTagFilters(value),
+    setAccountFilters: value => window.setGalleryAccountFilters(value),
+    setImageFilters: value => window.setGalleryImageFilters(value),
     toggleLevel: level => window.toggleBrowsingLevel(level),
   });
   window.updateGalleryFilters = filters.update;

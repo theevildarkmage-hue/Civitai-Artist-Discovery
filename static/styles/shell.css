@@ -4,6 +4,20 @@ body { background: var(--bg); }
   border-left: 4px solid #73d6c8; border-radius: var(--radius-md);
   background: #1d302f; color: var(--text); line-height: 1.5;
 }
+.source-launch-notice { position: relative; padding-right: 52px; }
+.source-launch-dismiss {
+  position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; padding: 0;
+  border: 0; border-radius: var(--radius-sm); background: transparent; color: inherit; font-size: 20px; line-height: 1;
+}
+.source-launch-dismiss:hover { background: rgba(255, 255, 255, .08); }
+.app-channel {
+  flex: none; font-size: 10px; font-weight: 750; line-height: 1.35; white-space: nowrap;
+}
+.app-channel-public { border-color: #478b85; background: #1d302f; color: #a5eee3; }
+.app-channel-development { border-color: #8e7642; background: #302b21; color: #f4d89f; }
+.app-build-info { display: inline-flex; flex: none; align-items: center; gap: 7px; padding: 3px 8px; border: 1px solid; border-radius: 999px; }
+.app-build-info .app-version { padding: 0; border: 0; background: transparent; color: inherit; }
+.app-build-info .app-channel { padding-left: 7px; border-left: 1px solid currentColor; }
 .source-launch-notice strong { display: block; color: #a5eee3; font-size: 17px; }
 .source-launch-notice p { margin: 7px 0 0; }
 .source-launch-notice > code { display: block; margin-top: 10px; padding: 10px 12px; border-radius: 6px; background: #141f20; }
@@ -11,7 +25,7 @@ body { background: var(--bg); }
 .source-launch-alternative { color: #c3cece; font-size: 13px; }
 .source-launch-development { border-color: #8e7642; border-left-color: #e9bd6d; background: #302b21; }
 .source-launch-development strong { color: #f4d89f; }
-@media (max-width: 700px) { .source-launch-notice { margin: 10px 12px; padding: 14px; } }
+@media (max-width: 700px) { .source-launch-notice { margin: 10px 12px; padding: 14px 48px 14px 14px; } }
 :where(button, a, input, select, summary):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
@@ -81,3 +95,10 @@ main { padding: 18px 20px 60px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
 }
+
+/* Owner-approved transparent B artwork in the upper-left header. */
+body > .app-header{min-height:96px;padding:12px 20px 11px}
+.app-brand h1{display:flex;align-items:center;min-width:0}
+.app-brand .app-logo{width:216px;height:auto;max-width:100%;display:block}
+.app-brand .app-title-row{column-gap:10px;align-items:center}
+@media(max-width:700px){body > .app-header{min-height:64px;padding:10px 12px}.app-brand .app-logo{width:156px}}

@@ -45,6 +45,7 @@ from discovery.social import (CivitaiHTTPError, SocialClient, auth_status,
                               following_ids, reaction_names)
 from discovery.taste import (EMERGING_FOLLOWERS, GALLERY_HEART_MIN, TasteStore,
                              WORTH_FOLLOWING_MIN)
+from discovery.followers import follower_count, follower_fresh, fetched_time
 from discovery.tray import start_windows_tray, stop_windows_tray
 from discovery.updater import UpdateManager, apply_staged_update
 
@@ -73,6 +74,7 @@ TASTE = TasteStore(DATA_ROOT / "discovery")
 UPDATES = UpdateManager(DATA_ROOT, application_root(), APP_VERSION)
 # The listing sweep is the only step that expires, so it is the only one run unattended.
 CAPTURE = AutoCapture(HISTORY, SETTINGS)
+SESSION_BACKGROUND_PAUSED = False
 # Shares HISTORY's paced request lane, so priming queues behind a day build rather
 # than racing it for the same API budget.
 TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
@@ -115,8 +117,20 @@ def community_content_profile(token):
     if not isolated and not TASTE.ensure_current_account():raise CommunityError('AUTH_REQUIRED',401)
     with TASTE.connect() as db:imported=TASTE._state(db,'hidden_imported_at')
     if not imported and not isolated:TASTE.import_hidden_preferences()
+    if not isolated:TASTE.ensure_hidden_preferences_current()
     with TASTE.connect() as db:
-        return ContentProfile(levels=frozenset(SETTINGS.load()['browsingLevels']),
+        settings = SETTINGS.load()
+        raw = TASTE._state(db, 'hidden_image_preferences')
+        from discovery.community import content_profile
+        rules = content_profile({**json.loads(raw), 'hiddenUsers': [], 'blockedUsers': [],
+            'blockedByUsers': []}, settings['browsingLevels']) if raw else ContentProfile()
+        return ContentProfile(levels=frozenset(settings['browsingLevels']),
+            apply_tag_filters=settings['applyTagFilters'],
+            apply_account_filters=settings['applyAccountFilters'],
+            # Only legacy mirrors have unknown image sources to preserve.
+            apply_image_filters=settings['applyImageFilters'] if raw or not imported else True,
+            implicit_images=rules.implicit_images, rating_tags=rules.rating_tags,
+            unknown_images=rules.unknown_images, known_tag_ids=rules.known_tag_ids,
             creators=frozenset(r[0] for r in db.execute('select creator_id from hidden_creators')),
             usernames=frozenset(r[0] for r in db.execute('select username_key from hidden_creators where username_key is not null')),
             images=frozenset(r[0] for r in db.execute('select image_id from hidden_images')),
@@ -136,7 +150,7 @@ def shared_cached_artwork(image):
     hidden,images=hidden_preferences()
     creator=COMMUNITY.listed_creator(image) if COMMUNITY else None
     profile=community_content_profile(None)
-    if creator in profile.creators|profile.blocked_creators or value['username'].casefold() in hidden or image in images or (TASTE.hidden_tag_names() and (not tags['known'] or any(t['hidden'] for t in tags['tags']))):raise CommunityError('CONTENT_FILTERED',403)
+    if (profile.apply_account_filters and creator in profile.creators|profile.blocked_creators) or value['username'].casefold() in hidden or image in images or (profile.apply_tag_filters and TASTE.hidden_tag_names() and (not tags['known'] or any(t['hidden'] for t in tags['tags']))):raise CommunityError('CONTENT_FILTERED',403)
     return Artwork(image,creator or 0,value['username'],value['browsingLevel'],value['url'],tuple(t['name'] for t in tags['tags']),tags_known=tags['known'],base_model=value['baseModel'],media_type=value['type'])
 
 
@@ -287,7 +301,7 @@ def collected_image(image_id: int) -> bool:
 
 
 def decorate_history_artist(artist: dict, profiles: dict | None = None, follows: set[str] | None = None,
-                            signals: dict | None = None, seen: set | None = None) -> dict:
+                            signals: dict | None = None, seen: set | None = None, follower_counts=None) -> dict:
     username = artist["username"]
     profile = (profiles if profiles is not None else creator_profiles()).get(username.casefold())
     followed = follows if follows is not None else followed_usernames()
@@ -296,6 +310,7 @@ def decorate_history_artist(artist: dict, profiles: dict | None = None, follows:
     # day on screen. Five earns the gallery familiarity heart; the dashboard's stronger
     # "Worth following" recommendation starts at ten. Both disappear once followed.
     reacted_count = (signals or {}).get("reacted", {}).get(username.casefold(), 0)
+    counts = follower_counts if follower_counts is not None else TASTE.follower_counts([username])
     return {**artist, "profileUrl": profile_url(username),
         "avatarUrl": profile_avatar(profile), "following": following,
         "userId": (profile or {}).get("id"),
@@ -306,7 +321,7 @@ def decorate_history_artist(artist: dict, profiles: dict | None = None, follows:
         # is marked seen is the whole point, while the order it sits in only moves on
         # the next fresh load — see cached_day_view_order.
         "seen": username.casefold() in (seen or ()),
-        **_follower_fields(profile)}
+        **_follower_fields(profile,counts.get(username.casefold()))}
 
 
 def connected_user_id() -> int | None:
@@ -390,15 +405,19 @@ def visible_creator_keys(key: str, hidden_images: set) -> set:
 
 
 def hidden_preferences() -> tuple[set, set]:
-    """(creator username keys, image ids) the account has chosen not to see."""
-    return TASTE.hidden_creator_keys(), TASTE.hidden_image_ids()
+    """Active local exclusions; imported rules remain stored when paused."""
+    TASTE.ensure_hidden_preferences_current()
+    settings = SETTINGS.load()
+    creators = TASTE.hidden_creator_keys() if settings["applyAccountFilters"] else set()
+    return creators, TASTE.hidden_image_ids(include_tags=settings["applyTagFilters"],
+        include_images=settings["applyImageFilters"], levels=settings["browsingLevels"])
 
 
 GALLERY_VIEWS = ("discovery", "followed", "new", "emerging", "foryou")
 RECENT_MODEL_MIN_SHARE = .10
 # Two personalised views need data the daily archive never collected: follower counts for
-# every creator, and tags for the image on each card. Both are fetched once per day in the
-# background and cached permanently.
+# every creator, and tags for the image on each card. Counts expire after 24 hours;
+# unavailable tag outcomes have their own durable recheck policy.
 SWEEP_KINDS = ("followers", "tags")
 SWEEP_JOBS: dict[str, dict] = {kind: {"running": False, "done": 0, "total": 0, "day": None,
                                       "error": None, "attemptedAll": False,
@@ -413,15 +432,22 @@ def sweep_targets(kind: str, key: str):
         names = [row["username"] for row in rows]
         return names, TASTE.follower_coverage(names)
     ids = [row["representativeId"] for row in rows if row["representativeId"]]
-    return ids, TASTE.tag_coverage(ids)
+    coverage = TASTE.tag_preparation_coverage(ids)
+    return ids, (coverage['processed'],coverage['total'])
 
 
 def sweep_status(kind: str, key: str) -> dict:
+    if kind == 'tags':
+        ids = [row['representativeId'] for row in HISTORY.day_artist_keys(key) if row['representativeId']]
+        with SWEEP_LOCK:
+            job = dict(SWEEP_JOBS[kind])
+        return {'kind':kind, **TASTE.tag_preparation_coverage(ids), 'job':job}
     _, (known, total) = sweep_targets(kind, key)
     with SWEEP_LOCK:
         job = dict(SWEEP_JOBS[kind])
     attempted = (job.get("day") == key and not job.get("running")
-                 and not job.get("error") and job.get("attemptedAll"))
+                 and not job.get("error") and job.get("attemptedAll")
+                 and time.time()-job.get('finishedAt',0)<300)
     return {"kind": kind, "known": known, "total": total,
             "complete": known >= total or bool(attempted),
             "job": job}
@@ -460,8 +486,11 @@ def run_sweep(kind: str, key: str, targets, known: int, total: int) -> None:
             processed = TASTE.sweep_image_tags(client, targets, SWEEP_CANCEL[kind], progress)
         _, (fresh, _total) = sweep_targets(kind, key)
         attempted_all = processed >= max(0, total - known)
+        if kind == 'tags':
+            attempted_all = fresh >= total
         with SWEEP_LOCK:
             SWEEP_JOBS[kind].update({"running": False, "done": fresh,
+                                     "finishedAt": time.time(),
                                      "attemptedAll": attempted_all,
                                      "error": None if attempted_all else
                                      "Preparation stopped before it finished."})
@@ -838,16 +867,19 @@ def cached_day_view_order(key: str, view: str, pinned_username: str | None, sign
     return order, total
 
 
-def _follower_fields(profile: object) -> dict:
+def _follower_fields(profile: object, cached_count=None) -> dict:
     """Follower count and emerging flag from a cached user.getCreator profile."""
     stats = (profile or {}).get("stats") if isinstance(profile, dict) else None
     value = (stats or {}).get("followerCountAllTime")
-    count = int(value) if isinstance(value, (int, float)) else None
+    count = follower_count(cached_count)
+    if count is None: count=follower_count(value)
     return {"followers": count, "emerging": count is not None and count < EMERGING_FOLLOWERS}
 
 
 FOLLOW_STATUS_LOCK = threading.Lock()
 FOLLOW_STATUS_CACHE = {}
+CREATOR_REFRESH_LOCK = threading.Lock()
+CREATOR_REFRESH_AFTER = {}
 
 
 def creator_follow_status(user_ids: list[int]) -> dict:
@@ -871,7 +903,19 @@ def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -
     # Copied because this adds newly resolved creators before writing the file back, and
     # creator_profiles() hands out the shared cached parse.
     profiles = dict(creator_profiles())
-    missing = [name for name in clean if name.casefold() not in profiles]
+    records = TASTE.follower_records(clean)
+    missing = []
+    with CREATOR_REFRESH_LOCK:
+        now=time.monotonic()
+        for key in list(CREATOR_REFRESH_AFTER):
+            if CREATOR_REFRESH_AFTER[key]<=now:del CREATOR_REFRESH_AFTER[key]
+        for name in clean:
+            record=records.get(name.casefold(),{})
+            fetched=fetched_time(record.get('fetched_at'))
+            recent_unknown = record.get('follower_count') is None and fetched is not None and 0<=time.time()-fetched<300
+            fresh_count = record.get('follower_count') is not None and follower_fresh(record.get('fetched_at'))
+            if (name.casefold() not in profiles or not (fresh_count or recent_unknown)) and name.casefold() not in CREATOR_REFRESH_AFTER:
+                missing.append(name);CREATOR_REFRESH_AFTER[name.casefold()]=now+300
     client = SocialClient()
     if include_follow:
         identity = auth_status()
@@ -881,16 +925,33 @@ def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -
     if missing:
         # A deleted or renamed creator is an ordinary condition in a saved daily
         # archive. Keep every successful row instead of failing all 50 visible cards.
-        resolved = client.batch_query_optional(
-            "user.getCreator", [{"username": name} for name in missing])
+        try:
+            resolved = client.batch_query_optional(
+                "user.getCreator", [{"username": name} for name in missing])
+        except Exception:
+            # Public cached metadata remains usable during an outage; retry is
+            # bounded above. Do not erase counts, avatars or unrelated profile fields.
+            if not any(name.casefold() in profiles or name.casefold() in records for name in missing):raise
+            resolved = []
+        updates=[];new_profiles={}
         for name, profile in zip(missing, resolved):
             if isinstance(profile, dict) and profile.get("id"):
-                profiles[name.casefold()] = profile
-        with WRITE_LOCK:
-            CREATOR_PROFILES.parent.mkdir(parents=True, exist_ok=True)
-            temporary = CREATOR_PROFILES.with_suffix(".tmp")
-            temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "byUsername": profiles}, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(CREATOR_PROFILES)
+                existing=profiles.get(name.casefold(),{})
+                merged={**existing,**profile,'stats':{**(existing.get('stats') or {}),**(profile.get('stats') or {})}}
+                merged['username']=profile.get('username') or name
+                profiles[name.casefold()] = merged
+                updates.append({**profile,'username':profile.get('username') or name})
+                if not existing:new_profiles[name.casefold()]=merged
+        TASTE.cache_follower_profiles(updates)
+        # Existing metadata needs no whole-file rewrite just to update a count.
+        # SQLite is authoritative for counts and per-creator observation time.
+        if new_profiles:
+            with WRITE_LOCK:
+                persisted=dict(creator_profiles());persisted.update(new_profiles)
+                CREATOR_PROFILES.parent.mkdir(parents=True, exist_ok=True)
+                temporary = CREATOR_PROFILES.with_suffix(".tmp")
+                temporary.write_text(json.dumps({"updatedAt": datetime.now(timezone.utc).isoformat(), "byUsername": persisted}, ensure_ascii=False, indent=2), encoding="utf-8")
+                temporary.replace(CREATOR_PROFILES)
 
     if include_follow:
         followed_names = {
@@ -906,15 +967,13 @@ def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -
             temporary.replace(FOLLOW_CACHE)
 
     follower_counts = TASTE.follower_counts(clean)
+    resolved_records = TASTE.follower_records(clean)
 
     def result_for(name: str) -> dict:
         key = name.casefold()
         profile = profiles.get(key)
-        fields = _follower_fields(profile)
         cached_count = follower_counts.get(key)
-        if fields["followers"] is None and cached_count is not None:
-            fields = {"followers": cached_count,
-                      "emerging": cached_count < EMERGING_FOLLOWERS}
+        fields = _follower_fields(profile,cached_count)
         result = {
             "username": name,
             "avatarUrl": profile_avatar(profile),
@@ -922,6 +981,8 @@ def enrich_creator_metadata(usernames: list[str], include_follow: bool = True) -
             # The all-day sweep stores counts in SQLite. The profile cache carries
             # avatars and ids, but is populated only for cards the user has loaded.
             **fields,
+            'followersFetchedAt':resolved_records.get(key,{}).get('fetched_at'),
+            'followersStale':not follower_fresh(resolved_records.get(key,{}).get('fetched_at')),
         }
         if include_follow:
             result["following"] = bool(
@@ -1258,8 +1319,9 @@ class Handler(BaseHTTPRequestHandler):
                 level=row['browsing_level'] or {'None':1,'Soft':2,'Mature':4,'X':8}.get(row['nsfw_level'])
                 hidden_names,hidden_images=hidden_preferences()
                 tags=TASTE.image_tags_many([image_id])[image_id]
-                if (level not in SETTINGS.load()['browsingLevels'] or row['username_key'] in hidden_names or image_id in hidden_images
-                        or (TASTE.hidden_tag_names() and (not tags['known'] or any(tag['hidden'] for tag in tags['tags'])))):
+                settings=SETTINGS.load()
+                if (level not in settings['browsingLevels'] or row['username_key'] in hidden_names or image_id in hidden_images
+                        or (settings.get('applyTagFilters') is not False and TASTE.hidden_tag_names() and (not tags['known'] or any(tag['hidden'] for tag in tags['tags'])))):
                     raise CommunityError('CONTENT_FILTERED',403)
                 body,kind=PERSONAL_THUMBNAILS.get(row['url'])
                 self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
@@ -1278,6 +1340,11 @@ class Handler(BaseHTTPRequestHandler):
                     fixture=db.execute("SELECT 1 FROM images WHERE id=? AND url LIKE '%/community-fixture.svg%'",(requested_id,)).fetchone()
                 else:fixture=None
             if fixture:
+                if requested_day:
+                    # Remember legacy synthetic archives only when explicitly visited;
+                    # never scan millions of artwork rows just to open the calendar.
+                    with HISTORY.connect() as db:
+                        db.execute("INSERT OR IGNORE INTO fixture_archive_images SELECT i.id FROM block_images b JOIN images i ON i.id=b.image_id WHERE b.block_key=? AND i.url LIKE '%/community-fixture.svg%'", (requested_day,))
                 if parsed.path=='/api/history/status':
                     self.json_response({'complete':False,'date':requested_day,'fixtureArchiveExcluded':True});return
                 self.json_response({'error':'This archive contains isolated test artwork, not personal Civitai metadata.','code':'TEST_ARCHIVE'},409);return
@@ -1459,14 +1526,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/timemachine":
             try:
+                hidden_creators, hidden_images = hidden_preferences()
+                settings = SETTINGS.load()
                 # Decorated by the same function the daily gallery uses, so a Time
                 # Machine card carries the follow state, avatar, follower counts and
                 # reaction history a gallery card does.
                 signals = gallery_signals()
                 profiles, follows = creator_profiles(), signals["followed"]
+                tm_cards=TIME_MACHINE.cards(apply_tag_filters=settings['applyTagFilters'],
+                    hidden_creators=hidden_creators,hidden_images=hidden_images)
+                tm_counts=TASTE.follower_counts([card['username'] for card in tm_cards])
                 self.json_response({
-                    "cards": attach_preview_tags([decorate_history_artist(card, profiles, follows, signals)
-                              for card in TIME_MACHINE.cards()], source='timemachine'),
+                    "cards": attach_preview_tags([decorate_history_artist(card, profiles, follows, signals,follower_counts=tm_counts)
+                              for card in tm_cards], source='timemachine'),
                     "status": TIME_MACHINE.status()})
             except Exception as error: self.internal_error("Time machine", error)
             return
@@ -1479,18 +1551,23 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/timemachine/creator":
             try:
                 after = query.get("after", [None])[0]
+                hidden_creators, hidden_images = hidden_preferences()
+                settings = SETTINGS.load()
                 history = TIME_MACHINE.creator_history(
                     query.get("username", [""])[0],
                     after=int(after) if after not in (None, "") else None,
                     limit=int(query.get("limit", ["40"])[0]),
-                    refill=query.get("savedOnly", [""])[0] != "1")
+                    refill=query.get("savedOnly", [""])[0] != "1",
+                    apply_tag_filters=settings['applyTagFilters'],
+                    hidden_creators=hidden_creators, hidden_images=hidden_images)
                 signals = gallery_signals()
                 profiles, follows = creator_profiles(), signals["followed"]
                 # Each image rides in a one-image card entry so the gallery's own
                 # decoration (avatar, follow state, reactions) applies unchanged.
+                history_counts=TASTE.follower_counts([history['username']])
                 cards = [decorate_history_artist({"username": history["username"], "imageCount": 1,
                                                   "representativeIndex": 0, "representative": image},
-                                                 profiles, follows, signals)
+                                                 profiles, follows, signals,follower_counts=history_counts)
                          for image in history["images"]]
                 self.json_response({**history, "cards": attach_preview_tags(cards, source='timemachine')})
             except KeyError as error: self.json_response({"error": str(error.args[0])}, 404)
@@ -1547,11 +1624,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/history/calendar":
             try:
-                days=HISTORY.calendar_days()
-                if os.environ.get('CAD_COMMUNITY_TESTING')!='1':
-                    with HISTORY.connect() as db:
-                        excluded={row[0].split('#')[0] for row in db.execute("SELECT DISTINCT b.block_key FROM block_images b JOIN images i ON i.id=b.image_id WHERE i.url LIKE '%/community-fixture.svg%'")}
-                    days=[day for day in days if day['date'] not in excluded]
+                days=HISTORY.calendar_days(exclude_fixtures=os.environ.get('CAD_COMMUNITY_TESTING')!='1')
                 self.json_response({"days": days})
             except Exception as error:
                 self.internal_error("History calendar", error)
@@ -1593,9 +1666,10 @@ class Handler(BaseHTTPRequestHandler):
                         if key_name not in hidden_creators
                         and (showable is None or key_name in showable)]
                     total = len(order)
-                artists = [decorate_history_artist(item, profiles, follows, signals, seen)
-                    for item in archive.artists_page(key, offset, limit, pinned_username, order,
-                                                     representatives, hidden_images)]
+                page_artists=archive.artists_page(key, offset, limit, pinned_username, order,representatives, hidden_images)
+                page_counts=TASTE.follower_counts([item['username'] for item in page_artists])
+                artists = [decorate_history_artist(item, profiles, follows, signals, seen,page_counts)
+                           for item in page_artists]
                 if view in {"foryou", "emerging"}:
                     # State why each card placed where it did, rather than presenting a
                     # personalised order the user cannot inspect.
@@ -1725,7 +1799,8 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/discovery/summary":
             try:
                 self.json_response({**TASTE.summary(), "sync": TASTE.status(),
-                    "connected": connected_or_false()})
+                    "connected": connected_or_false(),
+                    **({"automaticRefreshPaused": True} if SESSION_BACKGROUND_PAUSED else {})})
             except Exception as error:
                 self.internal_error("Discovery summary", error)
             return
@@ -1786,7 +1861,9 @@ class Handler(BaseHTTPRequestHandler):
             body = target.read_bytes()
             if target.name == 'index.html':
                 body = body.replace(b'Civitai Discovery 3.0 Beta', APP_NAME.encode('utf-8'))
-                from discovery.source_notice import render as render_source_notice
+                from discovery.source_notice import pill as render_channel_pill, render as render_source_notice
+                body = body.replace(b'</span></div><p class="tagline">',
+                                    b'</span>' + render_channel_pill(environment=ENVIRONMENT).encode('utf-8') + b'</div><p class="tagline">', 1)
                 notice = render_source_notice(frozen=bool(getattr(sys, 'frozen', False)), environment=ENVIRONMENT)
                 body = body.replace(b'</header>', b'</header>' + notice.encode('utf-8'), 1)
         except OSError:
@@ -2007,12 +2084,15 @@ class Handler(BaseHTTPRequestHandler):
                 with OAUTH_LOCK: OAUTH_JOB.update({"state": "idle", "error": None})
                 self.json_response({"connected": False}); return
             if parsed.path == "/api/settings":
-                content_change = ("browsingLevels" in body or "contentRating" in body)
+                content_change = ("browsingLevels" in body or "contentRating" in body or "applyTagFilters" in body or "applyAccountFilters" in body or "applyImageFilters" in body)
                 gallery_change = any(name in body for name in (
                     "hideHighVolumeCreators", "highVolumeThreshold",
                     "emergingReactionMode", "emergingReactionLimit", "mediaType"))
                 value = SETTINGS.transactional_update(
                                         effect=(lambda value: HISTORY.set_content_filter(value["browsingLevels"])) if content_change else None,
+                                        apply_tag_filters_value=body.get("applyTagFilters"),
+                                        apply_account_filters_value=body.get("applyAccountFilters"),
+                                        apply_image_filters_value=body.get("applyImageFilters"),
                                         media_type_value=body.get("mediaType"),
                                         browsing_levels_value=body.get("browsingLevels"),
                                         content_rating_value=body.get("contentRating"),
@@ -2069,6 +2149,10 @@ class Handler(BaseHTTPRequestHandler):
                 # this settings page) reconnects on its own once the new process is up,
                 # instead of being stranded on a port that no longer answers.
                 restart_args = ["--port", str(RUNNING_PORT), "--no-browser", "--replacing"]
+                if SESSION_BACKGROUND_PAUSED:
+                    restart_args.append('--pause-background-work')
+                elif CAPTURE.session_paused:
+                    restart_args.append('--pause-auto-capture')
                 if not UPDATES.supported and ENVIRONMENT == 'production':
                     # Source configuration is selected before imports. The child
                     # must receive the same explicit stable selection; packages
@@ -2218,7 +2302,7 @@ class Handler(BaseHTTPRequestHandler):
                 images=HISTORY.gallery_images(raw,SocialClient())
                 hidden,excluded=hidden_preferences()
                 allowed=[i for i in images if i['browsingLevel'] in profile.levels and i['username'].casefold() not in hidden and i['id'] not in excluded
-                    and (not COMMUNITY or COMMUNITY.listed_creator(i['id']) not in profile.creators|profile.blocked_creators)]
+                    and (not COMMUNITY or not profile.apply_account_filters or COMMUNITY.listed_creator(i['id']) not in profile.creators|profile.blocked_creators)]
                 if viewer!=connected_user_id():raise CommunityError('AUTH_EXPIRED',401)
                 if COMMUNITY:COMMUNITY.remember_presented([{'artwork':i} for i in allowed],self.community_viewer(None))
                 self.json_response({'images':[personal_preview(i) for i in allowed],
@@ -2415,9 +2499,16 @@ def main() -> None:
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=8907)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--pause-auto-capture", action="store_true",
+                        help="Pause automatic capture for this launch without changing saved preferences")
+    parser.add_argument("--pause-background-work", action="store_true",
+                        help="Pause automatic capture and profile refresh for this launch; manual analysis remains available")
     parser.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--replacing", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    global SESSION_BACKGROUND_PAUSED
+    SESSION_BACKGROUND_PAUSED = args.pause_background_work
+    CAPTURE.session_paused = args.pause_auto_capture or args.pause_background_work
     from discovery.community_security import disable_test_outbound
     disable_test_outbound(DATA_ROOT)
     bind_host = args.host or ("0.0.0.0" if SETTINGS.load()['allowLanAccess'] else "127.0.0.1")

@@ -7,6 +7,8 @@ from http.server import ThreadingHTTPServer
 
 def scenario():
  import server
+ server.SESSION_BACKGROUND_PAUSED = '--background-paused' in sys.argv
+ server.CAPTURE.session_paused = '--session-paused' in sys.argv or server.SESSION_BACKGROUND_PAUSED
  from discovery.build_config import ENVIRONMENT,CHANNEL
  root=server.DATA_ROOT
  marker=root/'preserved-profile.txt';marker.write_text('synthetic profile sentinel',encoding='utf-8')
@@ -39,12 +41,18 @@ def scenario():
     time.sleep(.1)
   assert config['environment']==ENVIRONMENT,(ENVIRONMENT,config['environment'])
   assert config['channel']==CHANNEL
+  with urllib.request.urlopen(base+'/api/history/capture',timeout=5) as response:capture=json.load(response)
+  assert capture['sessionPaused']==server.CAPTURE.session_paused
+  with urllib.request.urlopen(base+'/api/discovery/summary',timeout=5) as response:summary=json.load(response)
+  assert bool(summary.get('automaticRefreshPaused'))==server.SESSION_BACKGROUND_PAUSED
   assert marker.read_text(encoding='utf-8')=='synthetic profile sentinel'
   instance=json.loads((root/'running-instance.json').read_text(encoding='utf-8'))
   assert instance['pid']==child.pid and instance['url']==base
   # Reject credentials or an unexpected destination in generated process args.
   args=children[0].args
   assert ('--stable' in args)==(ENVIRONMENT=='production')
+  assert ('--pause-background-work' in args)==server.SESSION_BACKGROUND_PAUSED
+  assert ('--pause-auto-capture' in args)==(server.CAPTURE.session_paused and not server.SESSION_BACKGROUND_PAUSED)
   print(json.dumps({'realReplacement':True,'environment':ENVIRONMENT,'channel':CHANNEL,'samePort':True,'sameIsolatedProfile':True}),flush=True)
  finally:
   if thread.is_alive():http.shutdown()
@@ -55,13 +63,15 @@ def scenario():
 if '--scenario' in sys.argv:
  scenario()
 else:
- for stable in (True,False):
+ for stable,paused,background in ((True,False,False),(False,False,False),(True,True,False),(False,True,False),(True,False,True),(False,False,True)):
   with tempfile.TemporaryDirectory(prefix='cad3-real-restart-',ignore_cleanup_errors=True) as folder:
    env={**os.environ,'CIVITAI_HISTORY_DATA_DIR':folder}
    for key in ('CAD_COMMUNITY_MODE','CAD_COMMUNITY_URL','CAD_COMMUNITY_TESTING','CAD_DEVELOPMENT'):env.pop(key,None)
    # Signed out, empty profile; settings disable unattended work and update checks.
    Path(folder,'settings.json').write_text(json.dumps({'autoCapture':False,'checkForUpdates':False}))
    args=[sys.executable,str(Path(__file__).resolve()),'--scenario']+(['--stable'] if stable else [])
+   if paused:args.append('--session-paused')
+   if background:args.append('--background-paused')
    result=subprocess.run(args,cwd=test_safety.ROOT,env=env,text=True,capture_output=True,timeout=45)
    assert result.returncode==0,result.stdout+result.stderr
    print(result.stdout,flush=True)

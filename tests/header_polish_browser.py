@@ -18,11 +18,17 @@ try:
    page.route('**/api/community/status*',lambda r:reply(r,{'member':{'id':17},'quota':{'remaining':3},'beta':{'available':True,'submissions':True}}))
    page.route('**/api/community/gallery*',lambda r:reply(r,{'items':[],'nextCursor':None}))
    page.goto(h.base,wait_until='networkidle')
-   page.get_by_role('button',name='Community Beta',exact=True).wait_for()
+   page.get_by_role('button',name='Community',exact=True).wait_for()
    page.wait_for_function('()=>document.querySelector(".app-logo").complete&&document.querySelector(".app-logo").naturalWidth>0')
-   assert page.locator('h1').inner_text()=='Civitai Discovery 3.0 Beta'
+   assert page.get_by_role('heading',name='Civitai Discovery',exact=True).count()==1
    assert page.locator('#appVersion').inner_text().startswith('v3.')
-   assert page.locator('.app-logo').get_attribute('alt')==''
+   assert page.locator('.app-logo').get_attribute('alt')=='Civitai Discovery'
+   assert page.locator('.app-logo').get_attribute('src')=='/discovery-header.png'
+   geometry=page.locator('.app-logo').evaluate('i=>({width:i.getBoundingClientRect().width,height:i.getBoundingClientRect().height})')
+   assert abs(geometry['width']/geometry['height']-3)<.01,geometry
+   assert geometry['width']==(156 if width<=700 else 216),geometry
+   if width==1440:assert page.locator('body>header').evaluate('h=>h.getBoundingClientRect().height')==96
+   assert page.locator('link[rel=icon]').get_attribute('href')=='/discovery-icon.svg'
    for tab in ('tabCommunity','tabGallery','tabTimeMachine','tabDiscovery'):
     assert page.locator('#'+tab+' svg.ui-icon[aria-hidden="true"]').count()==1
    sizes=page.locator('.view-tabs > button > svg').evaluate_all('(xs)=>xs.map(x=>[getComputedStyle(x).width,getComputedStyle(x).height])')

@@ -317,6 +317,7 @@ class HistoryArchive:
     def _initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
+            had_block_table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='block_images'").fetchone() is not None
             db.executescript("""
                 PRAGMA journal_mode=WAL;
                 PRAGMA synchronous=NORMAL;
@@ -362,6 +363,9 @@ class HistoryArchive:
                     PRIMARY KEY(block_key,image_id), FOREIGN KEY(image_id) REFERENCES images(id)
                 );
                 CREATE INDEX IF NOT EXISTS block_images_image ON block_images(image_id);
+                CREATE TABLE IF NOT EXISTS fixture_archive_images (
+                    image_id INTEGER PRIMARY KEY
+                );
                 CREATE TABLE IF NOT EXISTS block_feeds (
                     block_key TEXT NOT NULL, browsing_mask INTEGER NOT NULL,
                     complete INTEGER NOT NULL DEFAULT 0, scan_cursor TEXT,
@@ -400,7 +404,7 @@ class HistoryArchive:
                 db.execute("ALTER TABLE images ADD COLUMN stats_fetched_at TEXT")
             db.execute("CREATE INDEX IF NOT EXISTS images_visual_hash "
                        "ON images(visual_hash,width,height) WHERE visual_hash IS NOT NULL")
-            db.execute("INSERT OR IGNORE INTO block_images(block_key,image_id) SELECT local_date,id FROM images")
+            self._ensure_block_membership_migration(db, had_block_table)
             # Popular v2 ranks by total daily reactions and uses the most-reacted image.
             # Cached indexes are derived data, so invalidate the old hash-ranked version
             # once and rebuild each saved day locally when it is next opened.
@@ -413,6 +417,30 @@ class HistoryArchive:
                 db.execute(f"PRAGMA user_version={POPULAR_INDEX_VERSION}")
         self._ensure_capture_recovery_schema()
         self._audit_legacy_block_coverage()
+
+    @staticmethod
+    def _ensure_block_membership_migration(db, had_block_table: bool) -> None:
+        """Backfill legacy memberships once, atomically with its durable marker.
+
+        Popular index v2 historically committed only *after* this backfill. Existing
+        populated v2 archives can adopt that completion evidence without reading
+        millions of images. Empty/missing tables still recover interrupted DDL.
+        All normal archive import/capture writers maintain memberships themselves.
+        """
+        if not db.in_transaction:
+            db.execute('BEGIN IMMEDIATE')
+        db.execute('''CREATE TABLE IF NOT EXISTS archive_migrations (
+            name TEXT PRIMARY KEY, completed_at TEXT NOT NULL)''')
+        name = 'local-date-block-memberships-v1'
+        if had_block_table and db.execute('SELECT 1 FROM archive_migrations WHERE name=?', (name,)).fetchone():
+            return
+        previous_version = db.execute('PRAGMA user_version').fetchone()[0]
+        established = had_block_table and previous_version >= 2 and db.execute(
+            'SELECT 1 FROM block_images LIMIT 1').fetchone() is not None
+        if not established:
+            db.execute('''INSERT OR IGNORE INTO block_images(block_key,image_id)
+                SELECT local_date,id FROM images''')
+        db.execute('INSERT OR REPLACE INTO archive_migrations(name,completed_at) VALUES(?,?)', (name, utcnow()))
 
     def _ensure_capture_recovery_schema(self) -> None:
         """Add the retry ledger atomically; never repair or replace archive records.
@@ -447,10 +475,16 @@ class HistoryArchive:
         tolerance = timedelta(minutes=30)
         invalid_days: set[str] = set()
         with self.connect() as db:
-            rows = list(db.execute("""SELECT day,start_utc,end_utc FROM days
+            db.execute('''CREATE TABLE IF NOT EXISTS legacy_block_coverage_audits (
+                block_key TEXT PRIMARY KEY, start_utc TEXT NOT NULL,
+                end_utc TEXT NOT NULL, updated_at TEXT)''')
+            rows = list(db.execute("""SELECT day,start_utc,end_utc,updated_at FROM days d
                 WHERE complete=1 AND collection_version=0
                   AND (day LIKE '%#morning' OR day LIKE '%#evening')
-                  AND start_utc IS NOT NULL AND end_utc IS NOT NULL"""))
+                  AND start_utc IS NOT NULL AND end_utc IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM legacy_block_coverage_audits a
+                    WHERE a.block_key=d.day AND a.start_utc IS d.start_utc
+                      AND a.end_utc IS d.end_utc AND a.updated_at IS d.updated_at)"""))
             for row in rows:
                 limits = db.execute("""SELECT MIN(i.created_at),MAX(i.created_at),COUNT(*)
                     FROM block_images b JOIN images i ON i.id=b.image_id
@@ -462,6 +496,10 @@ class HistoryArchive:
                     db.execute("UPDATE days SET complete=0,scan_cursor=NULL,updated_at=? WHERE day=?",
                                (utcnow(), row["day"]))
                     invalid_days.add(row["day"].split("#", 1)[0])
+                else:
+                    db.execute('''INSERT OR REPLACE INTO legacy_block_coverage_audits
+                        (block_key,start_utc,end_utc,updated_at) VALUES(?,?,?,?)''',
+                        (row['day'], row['start_utc'], row['end_utc'], row['updated_at']))
             for day in invalid_days:
                 db.execute("UPDATE days SET complete=0,updated_at=? WHERE day=?", (utcnow(), day))
 
@@ -531,6 +569,14 @@ class HistoryArchive:
             if archive:
                 db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)",
                     [(row[1], row[0]) for row in rows])
+            # Track synthetic artwork while these bounded rows are already in hand.
+            # Calendar requests must never rediscover fixtures by scanning the archive.
+            for row in rows:
+                url = row[6] if archive else db.execute('SELECT url FROM images WHERE id=?', (row[0],)).fetchone()[0]
+                if '/community-fixture.svg' in url:
+                    db.execute('INSERT OR IGNORE INTO fixture_archive_images VALUES(?)', (row[0],))
+                elif archive:
+                    db.execute('DELETE FROM fixture_archive_images WHERE image_id=?', (row[0],))
         return [row[0] for row in rows]
 
     def gallery_images(self,image_ids,client=None):
@@ -2082,15 +2128,23 @@ class HistoryArchive:
             images, artists = counts[0], counts[1]
         return {"date": value, "complete": bool(day and day["complete"]), "imageCount": images, "artistCount": artists, "updatedAt": day["updated_at"] if day else None}
 
-    def calendar_days(self) -> list[dict]:
+    def calendar_days(self, *, exclude_fixtures=False) -> list[dict]:
         """Return compact archive coverage for the calendar without hydrating artwork."""
         with self.connect() as db:
             rows = db.execute(
                 "SELECT day,complete FROM days WHERE day GLOB '????-??-??*' ORDER BY day"
             ).fetchall()
+            excluded = set()
+            if exclude_fixtures:
+                excluded = {row[0].split('#')[0] for row in db.execute(
+                    'SELECT b.block_key FROM fixture_archive_images f '
+                    'CROSS JOIN block_images b INDEXED BY block_images_image '
+                    'WHERE b.image_id=f.image_id')}
         dates: dict[str, dict] = {}
         for row in rows:
             base, _, block = row["day"].partition("#")
+            if base in excluded:
+                continue
             entry = dates.setdefault(base, {"date": base, "all": False,
                                              "morning": False, "evening": False})
             if row["complete"]:

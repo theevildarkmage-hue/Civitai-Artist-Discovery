@@ -1,8 +1,8 @@
 """Generate the application icon.
 
-Three candidate marks; `CANDIDATE` selects the one that ships. All are flat, high-contrast
-shapes because the size that actually matters is 16px in a taskbar, where gradients and
-fine detail turn to mud.
+The approved Discovery D-with-star ships for every channel. Its vector geometry
+is shared with the header master; ten ICO frames cover Windows scaling. The older
+compass/spark/fan/beta recipes remain available only for historical reproduction.
 
   compass  - finding your way to something. Discovery in the general sense.
   spark    - a framed work with a spark: the app surfaces work worth seeing.
@@ -15,7 +15,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-CANDIDATE = sys.argv[1] if len(sys.argv) > 1 else "beta"
+# The reviewed embedded release interpreter does not add the script directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+CANDIDATE = sys.argv[1] if len(sys.argv) > 1 else "discovery"
 OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "static" / "app.ico"
 OUT.parent.mkdir(parents=True, exist_ok=True)
 
@@ -24,7 +26,7 @@ LIGHT = (240, 241, 245)
 ACCENT = (85, 214, 194)
 INK = (37, 39, 45)
 DIM = (108, 112, 122)
-SIZES = [256, 128, 64, 48, 32, 16]
+SIZES = [256, 128, 96, 64, 48, 40, 32, 24, 20, 16]
 SCALE = 8
 
 
@@ -93,6 +95,9 @@ BUILDERS = {"compass": compass, "spark": spark, "fan": fan,"beta":beta}
 
 
 def render(name, size):
+    if name == 'discovery':
+        from brand_artwork import render_icon
+        return render_icon(size)
     return BUILDERS[name](size).resize((size, size), Image.LANCZOS)
 
 
@@ -109,5 +114,5 @@ if CANDIDATE == "preview":
         print(f"preview: icon-{name}.png")
 else:
     frames = [render(CANDIDATE, size) for size in SIZES]
-    frames[0].save(OUT, format="ICO", sizes=[(s, s) for s in SIZES])
+    frames[0].save(OUT, format="ICO", sizes=[(s, s) for s in SIZES], append_images=frames[1:])
     print(f"wrote {OUT.name} ({OUT.stat().st_size:,} bytes, '{CANDIDATE}', sizes {SIZES})")

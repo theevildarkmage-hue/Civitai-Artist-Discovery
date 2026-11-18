@@ -70,6 +70,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-foryou-status-", ignore_cleanup
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1400, "height": 900})
             complete = [False]
+            unavailable, failure = [0], [None]
             artist_requests = []
 
             page.route("**/api/auth-status", lambda route: route.fulfill(
@@ -80,9 +81,10 @@ with tempfile.TemporaryDirectory(prefix="civitai-foryou-status-", ignore_cleanup
                 status=200 if route.request.method == "GET" else 202,
                 content_type="application/json",
                 body=json.dumps({
-                    "kind": "tags", "known": 4 if complete[0] else 1, "total": 4,
+                    "kind": "tags", "known": (4-unavailable[0]) if complete[0] else 1, "total": 4,
+                    "unavailable": unavailable[0], "pending": 0 if complete[0] else 3-unavailable[0],
                     "complete": complete[0],
-                    "job": {"running": not complete[0], "error": None},
+                    "job": {"running": not complete[0] and not failure[0], "error": failure[0]},
                 }),
             ))
             page.on("request", lambda request: artist_requests.append(request.url)
@@ -101,6 +103,18 @@ with tempfile.TemporaryDirectory(prefix="civitai-foryou-status-", ignore_cleanup
             banner.wait_for(state="hidden", timeout=10000)
             assert len(artist_requests) >= 2, artist_requests
             assert page.locator(".creator-card").count() > 0
+
+            unavailable[0] = 1
+            page.evaluate("ensureViewData('tags')")
+            assert banner.is_visible()
+            assert '3 analyzed, 1 unavailable' in banner.inner_text()
+            assert '24 hours' in banner.inner_text()
+            assert 'fully personalized' not in banner.inner_text()
+            complete[0] = False; failure[0] = 'Synthetic temporary service failure'
+            page.evaluate("ensureViewData('tags')")
+            assert '1 analyzed, 1 unavailable, 2 remaining' in banner.inner_text()
+            assert 'Synthetic temporary service failure' in banner.inner_text()
+            assert banner.get_by_role('button',name='Retry').is_visible()
 
             # A non-personalized view must cancel the watcher and remove the banner.
             page.select_option("#dayView", "discovery")

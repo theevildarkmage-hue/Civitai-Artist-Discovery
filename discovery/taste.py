@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
 import random
 import sqlite3
@@ -23,6 +24,7 @@ from .civitai import API_LANE
 from .social import CivitaiHTTPError, SocialClient, auth_status
 from .retry import retry_after_seconds
 from .pagination import PageProgress, PaginationStopped
+from .followers import follower_count, follower_fresh, fetched_time
 
 # Civitai's own reaction set. Dislike is collected so reconciliation stays complete,
 # but the dashboard only names it when the user actually has some.
@@ -51,6 +53,7 @@ TAG_BOOST_CAP = 3.0
 MIN_PAUSE = 5.0
 MAX_PAUSE = 5.8
 MAX_ATTEMPTS = 5
+HIDDEN_PREFERENCES_RETRY_SECONDS = 300
 
 
 class IncompleteProfileSnapshot(RuntimeError):
@@ -83,6 +86,7 @@ ACCOUNT_SCOPED_TABLES = (
     "baseline_sample", "followed_creators", "creator_followers",
     "recent_posts", "recent_post_tags", "recent_post_models", "recent_model_names",
 )
+TAG_UNAVAILABLE_RECHECK_SECONDS = 24 * 60 * 60
 
 
 def _image_url(value: str, name: str | None, width: int = 768) -> str:
@@ -107,6 +111,8 @@ class TasteStore:
         self.lock = threading.RLock()
         self.cancel = threading.Event()
         self.sync_thread: threading.Thread | None = None
+        self._hidden_preferences_thread: threading.Thread | None = None
+        self._hidden_preferences_retry_at = 0.0
         self.job: dict = {"running": False, "phase": "idle", "images": 0, "pages": 0,
                           "message": "", "error": None, "startedAt": None}
         self._initialize()
@@ -169,6 +175,7 @@ class TasteStore:
                     follower_count INTEGER, fetched_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS creator_followers_name ON creator_followers(username);
+                CREATE INDEX IF NOT EXISTS creator_followers_name_nocase ON creator_followers(username COLLATE NOCASE);
                 CREATE TABLE IF NOT EXISTS recent_posts (
                     image_id INTEGER PRIMARY KEY, created_at TEXT
                 );
@@ -194,6 +201,11 @@ class TasteStore:
                     ON archive_image_tags(tag_name, image_id);
                 CREATE TABLE IF NOT EXISTS archive_image_seen (
                     image_id INTEGER PRIMARY KEY, fetched_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS archive_tag_unavailable (
+                    account_id INTEGER NOT NULL, image_id INTEGER NOT NULL,
+                    reason TEXT NOT NULL, observed_at TEXT NOT NULL, retry_after REAL NOT NULL,
+                    PRIMARY KEY(account_id,image_id)
                 );
                 -- The account's own Content Controls, mirrored from Civitai. Stored rather
                 -- than queried per request so the gallery can filter without a round trip,
@@ -609,18 +621,15 @@ class TasteStore:
                     db.executemany("""INSERT INTO creator_followers(creator_id, username,
                                       follower_count, fetched_at) VALUES(?,?,?,?)
                                       ON CONFLICT(creator_id) DO UPDATE SET
-                                      username=excluded.username,
-                                      fetched_at=excluded.fetched_at""", rows)
+                                      username=excluded.username""", rows)
 
     def follower_coverage(self, usernames: list[str]) -> tuple[int, int]:
         """How many of these creators already have a cached follower count."""
         keys = {name.casefold() for name in usernames}
         if not keys:
             return 0, 0
-        with self.connect() as db:
-            known = {row["username"].casefold() for row in db.execute(
-                "SELECT username FROM creator_followers "
-                "WHERE username IS NOT NULL AND follower_count IS NOT NULL")}
+        known = {name for name,row in self.follower_records(usernames).items()
+                 if row['follower_count'] is not None and follower_fresh(row['fetched_at'])}
         return len(keys & known), len(keys)
 
     def sweep_followers(self, client: SocialClient, usernames: list[str],
@@ -631,10 +640,8 @@ class TasteStore:
         way to know them for a creator the user has not scrolled past.
         """
         keys = list(dict.fromkeys(name for name in usernames if name))
-        with self.connect() as db:
-            known = {row["username"].casefold() for row in db.execute(
-                "SELECT username FROM creator_followers "
-                "WHERE username IS NOT NULL AND follower_count IS NOT NULL")}
+        known = {name for name,row in self.follower_records(keys).items()
+                 if row['follower_count'] is not None and follower_fresh(row['fetched_at'])}
         missing = [name for name in keys if name.casefold() not in known]
         done = 0
         for start in range(0, len(missing), 100):
@@ -658,22 +665,8 @@ class TasteStore:
                     raise
             else:
                 raise RuntimeError("Civitai follower lookup exhausted its retries")
-            stamp = _now()
-            rows = []
-            for name, profile in zip(chunk, profiles):
-                value = ((profile or {}).get("stats") or {}).get("followerCountAllTime")
-                identifier = (profile or {}).get("id")
-                if isinstance(identifier, int):
-                    rows.append((identifier, (profile or {}).get("username") or name,
-                                 int(value) if isinstance(value, (int, float)) else None, stamp))
-            if rows:
-                with self.connect() as db:
-                    db.executemany("""INSERT INTO creator_followers(creator_id, username,
-                                      follower_count, fetched_at) VALUES(?,?,?,?)
-                                      ON CONFLICT(creator_id) DO UPDATE SET
-                                      username=excluded.username,
-                                      follower_count=excluded.follower_count,
-                                      fetched_at=excluded.fetched_at""", rows)
+            self.cache_follower_profiles([{**profile,'username':profile.get('username') or name}
+                                          for name,profile in zip(chunk,profiles) if isinstance(profile,dict)])
             done += len(chunk)
             if progress:
                 progress(done, len(missing))
@@ -715,7 +708,8 @@ class TasteStore:
         tags = [(int(row["id"]), str(row.get("name") or "").casefold())
                 for row in named(payload.get("hiddenTags")) if row.get("id") and row.get("name")]
         images = []
-        for row in (payload.get("hiddenImages") or []) + (payload.get("hiddenImagesImplicit") or []):
+        for row in payload.get("hiddenImages") or []:
+            if isinstance(row,dict) and row.get("tagId") is not None:continue
             if isinstance(row,dict) and row.get('hidden') is False:continue
             value = row.get("id") if isinstance(row, dict) else row
             try:
@@ -733,6 +727,8 @@ class TasteStore:
                            "VALUES(?,?,?)", creators)
             db.executemany("INSERT OR REPLACE INTO hidden_tags(tag_id, tag_name) VALUES(?,?)", tags)
             db.executemany("INSERT OR REPLACE INTO hidden_images(image_id) VALUES(?)", images)
+            self._set_state(db, "hidden_image_preferences", json.dumps({
+                key: payload.get(key, []) for key in ('hiddenTags', 'hiddenImages', 'hiddenImagesImplicit')}))
             self._set_state(db, "hidden_imported_at", _now())
         return {"creators": len(creators), "tags": len(tags), "images": len(images)}
 
@@ -745,21 +741,58 @@ class TasteStore:
         with self.connect() as db:
             return {row["tag_name"] for row in db.execute("SELECT tag_name FROM hidden_tags")}
 
-    def hidden_image_ids(self) -> set[int]:
-        """Images hidden outright, plus any whose known tags the account hides.
+    def ensure_hidden_preferences_current(self):
+        # Legacy reads keep their mirror while one background request recovers source
+        # information. Offline browsing must neither wait for Civitai nor retry per read.
+        if (os.environ.get('CAD_COMMUNITY_MODE') == 'fixture'
+                or os.environ.get('CAD_COMMUNITY_TESTING') == '1'):
+            return
+        with self.lock:
+            with self.connect() as db:
+                refresh = self._state(db, 'hidden_imported_at') and not self._state(db, 'hidden_image_preferences')
+            if (not refresh or time.monotonic() < self._hidden_preferences_retry_at
+                    or (self._hidden_preferences_thread is not None
+                        and self._hidden_preferences_thread.is_alive())):
+                return
+            self._hidden_preferences_retry_at = time.monotonic() + HIDDEN_PREFERENCES_RETRY_SECONDS
 
-        Tags are only known for images the app has already read them for, so this is a
-        floor rather than a guarantee — which is why creators, where the match is exact,
-        do the heavy lifting.
-        """
+            def recover():
+                try:
+                    self.import_hidden_preferences()
+                except Exception:  # Keep the previous mirror; a later read can retry.
+                    pass
+
+            self._hidden_preferences_thread = threading.Thread(
+                target=recover, name='content-control-recovery', daemon=True)
+            try:
+                self._hidden_preferences_thread.start()
+            except RuntimeError:
+                self._hidden_preferences_thread = None
+
+    def hidden_image_ids(self, *, include_tags: bool = True, include_images: bool = True,
+                         levels=(1, 2)) -> set[int]:
+        """Resolve saved exclusions using their source and the active viewing filters."""
+        from dataclasses import replace
+        from .community import content_profile
+        self.ensure_hidden_preferences_current()
         with self.connect() as db:
-            direct = {row["image_id"] for row in db.execute("SELECT image_id FROM hidden_images")}
-            tagged = {row["image_id"] for row in db.execute(
-                "SELECT DISTINCT image_id FROM archive_image_tags "
-                "WHERE tag_name IN (SELECT tag_name FROM hidden_tags)")}
+            raw = self._state(db, 'hidden_image_preferences')
+            if raw:
+                profile = content_profile({**json.loads(raw), 'hiddenUsers': [],
+                    'blockedUsers': [], 'blockedByUsers': []}, levels)
+                direct = replace(profile, apply_tag_filters=include_tags,
+                                 apply_image_filters=include_images).excluded_image_ids()
+            else:
+                # Their source is unknown until recovery succeeds. Do not accidentally
+                # relax legacy tag/rating exclusions through the direct-artwork switch.
+                direct = {row[0] for row in db.execute('SELECT image_id FROM hidden_images')}
+            tagged = {row[0] for row in db.execute(
+                'SELECT DISTINCT image_id FROM archive_image_tags '
+                'WHERE tag_name IN (SELECT tag_name FROM hidden_tags)')} if include_tags else set()
         return direct | tagged
 
     def hidden_summary(self) -> dict:
+        self.ensure_hidden_preferences_current()
         with self.connect() as db:
             counts = {name: db.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
                       for name, table in (("creators", "hidden_creators"),
@@ -800,14 +833,61 @@ class TasteStore:
                                (day, SEEN_TRACKING_VERSION))}
 
     def follower_counts(self, usernames: list[str]) -> dict[str, int]:
+        return {key:row['follower_count'] for key,row in self.follower_records(usernames).items()
+                if row['follower_count'] is not None}
+
+    def follower_records(self, usernames) -> dict:
         keys = {name.casefold() for name in usernames}
         if not keys:
             return {}
+        result={}
         with self.connect() as db:
-            return {row["username"].casefold(): row["follower_count"] for row in db.execute(
-                "SELECT username, follower_count FROM creator_followers "
-                "WHERE username IS NOT NULL AND follower_count IS NOT NULL")
-                if row["username"].casefold() in keys}
+            names=list(keys)
+            if any(not name.isascii() for name in names):
+                # SQLite NOCASE folds ASCII only; retain Python casefold semantics
+                # for the uncommon Unicode username without a custom disk collation.
+                rows=db.execute('SELECT creator_id,username,follower_count,fetched_at FROM creator_followers WHERE username IS NOT NULL')
+                for row in rows:
+                    key=row['username'].casefold()
+                    if key in keys:
+                        candidate=dict(row);candidate['follower_count']=follower_count(row['follower_count'])
+                        if key not in result or (fetched_time(row['fetched_at']) or 0)>(fetched_time(result[key]['fetched_at']) or 0):result[key]=candidate
+                return result
+            for start in range(0,len(names),400):
+                chunk=names[start:start+400];holes=','.join('?' for _ in chunk)
+                rows=db.execute(f'SELECT creator_id,username,follower_count,fetched_at FROM creator_followers WHERE username COLLATE NOCASE IN ({holes})',chunk)
+                for row in rows:
+                    key=row['username'].casefold();candidate=dict(row)
+                    candidate['follower_count']=follower_count(row['follower_count'])
+                    if key not in result or (fetched_time(row['fetched_at']) or 0) > (fetched_time(result[key]['fetched_at']) or 0):
+                        result[key]=candidate
+            missing=keys-result.keys()
+            if missing:
+                # Casefold can map a Unicode name to ASCII (for example ß -> ss).
+                # Consult only Unicode candidates in this small public metadata
+                # cache; never scan artwork/tag tables for name matching.
+                for row in db.execute("SELECT creator_id,username,follower_count,fetched_at FROM creator_followers WHERE username GLOB '*[^ -~]*'"):
+                    key=row['username'].casefold()
+                    if key in missing:
+                        candidate=dict(row);candidate['follower_count']=follower_count(row['follower_count'])
+                        if key not in result or (fetched_time(row['fetched_at']) or 0)>(fetched_time(result[key]['fetched_at']) or 0):result[key]=candidate
+        return result
+
+    def cache_follower_profiles(self, profiles, stamp=None):
+        stamp=stamp or _now()
+        with self.connect() as db:
+            for profile in profiles:
+                identifier=profile.get('id');name=profile.get('username')
+                count=follower_count((profile.get('stats') or {}).get('followerCountAllTime'))
+                if type(identifier) is not int or identifier <= 0 or not name or count is None:continue
+                previous=db.execute('SELECT fetched_at FROM creator_followers WHERE creator_id=?',(identifier,)).fetchone()
+                old=fetched_time(previous[0]) if previous else None
+                new=fetched_time(stamp)
+                if new is None:raise ValueError('Follower observation requires a timestamp')
+                if old is not None and new<old<=time.time():continue
+                db.execute('''INSERT INTO creator_followers(creator_id,username,follower_count,fetched_at) VALUES(?,?,?,?)
+                    ON CONFLICT(creator_id) DO UPDATE SET username=excluded.username,
+                    follower_count=excluded.follower_count,fetched_at=excluded.fetched_at''',(identifier,name,count,stamp))
 
     def refresh_recent_work(self, client: SocialClient, username: str) -> int:
         """Archive public uploads once, then stop each refresh at the first known page.
@@ -1057,20 +1137,46 @@ class TasteStore:
         return self._tag_stats()[0]
 
     def tag_coverage(self, image_ids: list[int]) -> tuple[int, int]:
+        coverage = self.tag_preparation_coverage(image_ids)
+        return coverage['known'], coverage['total']
+
+    @staticmethod
+    def _tag_account() -> int:
+        try:
+            identity = auth_status()
+            return int(identity.get('id') or 0) if identity.get('connected') else 0
+        except Exception:
+            return 0
+
+    def _tag_preparation_sets(self, image_ids, account):
         wanted = {int(value) for value in image_ids if value}
-        if not wanted:
-            return 0, 0
+        seen, unavailable = set(), set()
+        ids = list(wanted)
         with self.connect() as db:
-            seen = {row["image_id"] for row in db.execute("SELECT image_id FROM archive_image_seen")}
-        return len(wanted & seen), len(wanted)
+            # Point lookups avoid scanning the entire personal archive on each poll.
+            for start in range(0, len(ids), 400):
+                chunk = ids[start:start+400]; holes = ','.join('?' for _ in chunk)
+                seen.update(row[0] for row in db.execute(f'SELECT image_id FROM archive_image_seen WHERE image_id IN ({holes})',chunk))
+                if account:
+                    unavailable.update(row[0] for row in db.execute(
+                        f'SELECT image_id FROM archive_tag_unavailable WHERE account_id=? AND retry_after>? AND image_id IN ({holes})',
+                        [account,time.time(),*chunk]))
+        return wanted, seen, unavailable-seen
+
+    def tag_preparation_coverage(self, image_ids) -> dict:
+        wanted, seen, unavailable = self._tag_preparation_sets(image_ids,self._tag_account())
+        processed = len(seen) + len(unavailable)
+        return {'known':len(seen),'total':len(wanted),'unavailable':len(unavailable),
+                'processed':processed,'pending':len(wanted)-processed,'complete':processed>=len(wanted),
+                'unavailableRecheckSeconds':TAG_UNAVAILABLE_RECHECK_SECONDS}
 
     def sweep_image_tags(self, client: SocialClient, image_ids: list[int],
                          cancel: threading.Event, progress=None) -> int:
         """Read tags for archived images. The daily archive endpoint does not carry them."""
         wanted = [int(value) for value in dict.fromkeys(image_ids) if value]
-        with self.connect() as db:
-            seen = {row["image_id"] for row in db.execute("SELECT image_id FROM archive_image_seen")}
-        missing = [value for value in wanted if value not in seen]
+        account = self._tag_account()
+        _, seen, unavailable = self._tag_preparation_sets(wanted,account)
+        missing = [value for value in wanted if value not in seen and value not in unavailable]
         done = 0
         for start in range(0, len(missing), 100):
             if cancel.is_set():
@@ -1094,9 +1200,13 @@ class TasteStore:
             else:
                 raise RuntimeError("Civitai tag lookup exhausted its retries")
             stamp = _now()
-            tag_rows, seen_rows = [], []
+            if len(results) != len(chunk) or any(tags is not None and not isinstance(tags,list) for tags in results):
+                raise RuntimeError('Civitai returned an incomplete or invalid tag batch')
+            tag_rows, seen_rows, unavailable_rows = [], [], []
             for image_id, tags in zip(chunk, results):
-                if not isinstance(tags, list):
+                if tags is None:
+                    if account:
+                        unavailable_rows.append((account,image_id,'not_found',stamp,time.time()+TAG_UNAVAILABLE_RECHECK_SECONDS))
                     continue
                 seen_rows.append((image_id, stamp))
                 for tag in tags if isinstance(tags, list) else []:
@@ -1108,6 +1218,9 @@ class TasteStore:
                                tag_rows)
                 db.executemany("INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)",
                                seen_rows)
+                db.executemany('INSERT OR REPLACE INTO archive_tag_unavailable(account_id,image_id,reason,observed_at,retry_after) VALUES(?,?,?,?,?)',unavailable_rows)
+                db.executemany('DELETE FROM archive_tag_unavailable WHERE account_id=? AND image_id=?',
+                               [(account,image_id) for image_id,_ in seen_rows])
             done += len(chunk)
             if progress:
                 progress(done, len(missing))
@@ -1366,18 +1479,10 @@ class TasteStore:
                     "user.getCreator", [{"username": name} for _, name in chunk])
             except Exception:  # noqa: BLE001
                 return
-            rows = []
-            for (creator_id, name), profile in zip(chunk, profiles):
-                value = ((profile or {}).get("stats") or {}).get("followerCountAllTime")
-                rows.append((creator_id, name,
-                             int(value) if isinstance(value, (int, float)) else None, stamp))
-            with self.connect() as db:
-                db.executemany("""INSERT INTO creator_followers(creator_id, username,
-                                  follower_count, fetched_at) VALUES(?,?,?,?)
-                                  ON CONFLICT(creator_id) DO UPDATE SET
-                                  username=excluded.username,
-                                  follower_count=excluded.follower_count,
-                                  fetched_at=excluded.fetched_at""", rows)
+            self.cache_follower_profiles([
+                {'id':creator_id,'username':name,**profile}
+                for (creator_id,name),profile in zip(chunk,profiles) if isinstance(profile,dict)
+            ],stamp)
 
     # ---------- analysis ----------
 

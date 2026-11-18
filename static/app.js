@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 let selectedModels = new Set();
 let contentRating = "Soft";
 let visibleBrowsingLevels = new Set([1, 2]);
+let applyTagFilters = true, applyAccountFilters = true, applyImageFilters = true, controlFiltersSaving = false;
 let dimSeenCards = true, detailVideoSound = true;
 let hideHighVolumeCreators = true, highVolumeThreshold = 50;
 let emergingReactionMode = "balanced", emergingReactionLimit = 0;
@@ -21,6 +22,7 @@ let recommendationsNeedRefresh = false, refreshRecommendationsAfterSync = false;
 const imageReactionState = new Map();
 const imageTagState = new Map();
 let tagAccount=null,tagEpoch=0;
+let authWriteReason = 'Sign in to follow and react.';
 const pendingTagChecks = new Map();
 let tagCheckTimer = 0;
 const segmentToolbar = document.createElement("nav"); segmentToolbar.className = "segment-toolbar"; segmentToolbar.innerHTML = '<label for="daySegment">Gallery window</label><select id="daySegment"><option value="evening">Evening · 12 PM–12 AM</option><option value="morning">Morning · 12 AM–12 PM</option><option value="all">All day · 12 AM–12 AM</option></select><label for="dayView">View</label><select id="dayView"><option value="foryou">For you</option><option value="discovery">Popular</option><option value="followed">Followed first</option><option value="new">New to you</option><option value="emerging">Emerging first</option></select><label for="cardSize">Card size</label><select id="cardSize"><option value="1">Large</option><option value="0.8">Medium</option><option value="0.6">Small</option></select><button id="modelFilter" class="filter-button" aria-expanded="false">Model: all</button><button id="galleryPreferences" class="filter-button preferences-button" aria-expanded="false" aria-label="Gallery preferences" title="Gallery preferences">&#9881;</button><span id="followerSweep" class="sweep-note hidden"></span><div id="contentMenu" class="filter-menu content-menu hidden" aria-label="Browsing level"><div class="content-menu-title">Browsing Level</div><p>Select any combination of content you want to see</p><div class="rating-pills"><button data-level="1">PG</button><button data-level="2">PG-13</button><button data-level="4">R</button><button data-level="8">X</button><button data-level="16">XXX</button></div><div class="content-warning">⚠ Mature content is off until you explicitly enable it.</div><small>Collection uses Civitai Red’s grouped feeds, but saved images are filtered by their individual level.</small></div><div id="modelMenu" class="filter-menu hidden" role="group" aria-label="Filter by generation model"></div><div id="preferencesMenu" class="filter-menu preferences-menu hidden" aria-label="Gallery preferences"><div class="filter-head"><strong>Gallery preferences</strong><button id="closePreferences" class="quiet-button" aria-label="Close gallery preferences">×</button></div><label class="preference-row"><span><b>Dim viewed cards</b><small>Previously viewed artists still move later either way.</small></span><input id="prefDimSeen" type="checkbox"></label><label class="preference-row"><span><b>Enable sound in details view</b><small>Videos opened in the details view play with sound.</small></span><input id="prefDetailVideoSound" type="checkbox"></label><label class="preference-row"><span><b>Hide high-volume artists</b><small>Applies to every gallery view.</small></span><input id="prefHideHighVolume" type="checkbox"></label><label class="preference-field" for="prefHighVolumeThreshold"><span>High-volume threshold</span><select id="prefHighVolumeThreshold"><option value="50">50+ images</option><option value="100">100+ images</option><option value="200">200+ images</option></select></label><label class="preference-field" for="prefEmergingMode"><span>Emerging First</span><select id="prefEmergingMode"><option value="balanced">Balanced discovery</option><option value="strict">Strict discovery</option><option value="unadjusted">No adjustment</option></select></label><p id="emergingModeHelp" class="preference-help"></p><label class="preference-field" for="prefEmergingLimit"><span>Strict-mode threshold</span><select id="prefEmergingLimit"><option value="100">100+ daily reactions</option><option value="250">250+ daily reactions</option><option value="500">500+ daily reactions</option></select></label><small class="preferences-footnote">Thresholds can be set anytime and apply when their matching option is active. These controls use the saved gallery and never download the day again.</small></div>'; document.body.insertBefore(segmentToolbar, document.querySelector("main"));
@@ -66,6 +68,10 @@ const CARD_SCALE_KEY = "civitai-card-scale";
   };
 })();
 const api = window.CivitaiUI.api;
+const authSession = window.CivitaiUI.createAuthSession({
+  read: ({signal}) => api('/api/auth-status', {signal, timeoutMs: 10000}),
+  apply: applyAuth,
+});
 const contentLabels = { Soft: "PG + PG-13", Mature: "PG through R", X: "All ratings" };
 const browsingLevelLabels = new Map([[1, "PG"], [2, "PG-13"], [4, "R"], [8, "X"], [16, "XXX"]]);
 function contentButtonLabel() {
@@ -86,6 +92,13 @@ function showContentRating() {
     : "⚠ Mature content is enabled. Some images may be explicit.";
 }
 window.addEventListener('shared-settings-changed', async event => {
+  if (!controlFiltersSaving) {
+    applyTagFilters = event.detail.applyTagFilters !== false;
+    applyAccountFilters = event.detail.applyAccountFilters !== false;
+    applyImageFilters = event.detail.applyImageFilters !== false;
+  }
+  ++tagEpoch; imageTagState.clear();
+  window.updateGalleryFilters?.();
   if(contentSelection.pending)return;
   visibleBrowsingLevels = new Set(event.detail.browsingLevels);
   contentRating = event.detail.contentRating;
@@ -405,6 +418,7 @@ $("lanRestartConfirm").onclick = async () => {
 };
 let captureState = null;
 function describeNextRun(state) {
+  if (state.sessionPaused) return "Paused for this launch";
   if (!state.enabled) return "Off";
   const seconds = Number(state.nextRunInSeconds);
   const when = state.nextRunAt ? new Date(state.nextRunAt) : null;
@@ -426,6 +440,7 @@ function renderCaptureState(state) {
     : `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
   $("captureAtClear").classList.toggle("hidden", minute === null || minute === undefined);
   $("captureNextRun").textContent = describeNextRun(state);
+  $("captureRunNow").disabled = !!state.sessionPaused;
   const recovery = state.recovery || [];
   if (recovery.length) $("captureNextRun").textContent += ` · ${recovery.length} ${recovery.length === 1 ? "block needs" : "blocks need"} recovery`;
   $("captureNextRun").title = recovery.map(item => `${item.block_key}: ${item.reason}`).join("\n");
@@ -439,7 +454,7 @@ async function postCapture(body) {
   controls.forEach(id => { $(id).disabled = true; });
   try { renderCaptureState(await api("/api/history/capture", { method: "POST", body: JSON.stringify(body) })); }
   catch (error) { toast(error.message); if (captureState) renderCaptureState(captureState); }
-  finally { controls.forEach(id => { $(id).disabled = false; }); }
+  finally { controls.forEach(id => { $(id).disabled = false; }); $("captureRunNow").disabled = !!captureState?.sessionPaused; }
 }
 $("captureEnabled").onchange = () => postCapture({ enabled: $("captureEnabled").checked });
 $("captureInterval").onchange = () => postCapture({ intervalHours: Number($("captureInterval").value) });
@@ -481,16 +496,17 @@ async function hydrateReactionStates(images) {
     });
   }
 }
-function reactionBar(image) { const state = imageReactionState.get(String(image.id)), s = state?.stats || image.stats || {}, selected = new Set(state?.reactions || []); return `<div class="reaction-bar" data-state-known="${!!state}" aria-label="${state ? 'Image reactions' : 'Your reaction selection has not loaded yet'}">${Object.entries(reactionInfo).map(([name, [icon, key]]) => `<button class="${selected.has(name) ? "selected" : ""}" data-reaction="${name}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : "Civitai did not grant follow and reaction access."}">${icon} <b>${safeCount(s[key])}</b></button>`).join("")}<span class="total-reactions" title="Total reactions">Total ${safeCount(s.reactionCount)}</span></div>`; }
+function reactionBar(image) { const state = imageReactionState.get(String(image.id)), s = state?.stats || image.stats || {}, selected = new Set(state?.reactions || []); return `<div class="reaction-bar" data-state-known="${!!state}" aria-label="${state ? 'Image reactions' : 'Your reaction selection has not loaded yet'}">${Object.entries(reactionInfo).map(([name, [icon, key]]) => `<button class="${selected.has(name) ? "selected" : ""}" data-reaction="${name}" ${socialWrite ? "" : "disabled"} title="${socialWrite ? "" : escapeHtml(authWriteReason)}">${icon} <b>${safeCount(s[key])}</b></button>`).join("")}<span class="total-reactions" title="Total reactions">Total ${safeCount(s.reactionCount)}</span></div>`; }
 // Follower count is public information like the avatar, so it survives a disconnect.
 // An unreadable count shows nothing rather than claiming the creator has none.
 function applyCreatorFollowers(el, metadata) {
   const count = metadata.followers, line = el.querySelector(".creator-followers"), badge = el.querySelector(".creator-badge");
   if (!line || !badge) return;
   line.textContent = count === null || count === undefined ? "" : ` · ${displayCount(count)} followers`;
+  line.title = metadata.followersStale ? 'Last known count; awaiting a fresh follower count.' : '';
   badge.className = metadata.emerging ? "creator-badge pill emerging" : "creator-badge";
   badge.textContent = metadata.emerging ? "EMERGING" : "";
-  badge.title = metadata.emerging ? "Fewer than 1,000 followers" : "";
+  badge.title = metadata.emerging ? (metadata.followersStale ? 'Fewer than 1,000 followers at the last observation.' : "Fewer than 1,000 followers") : "";
 }
 // Keep the sticky window/view bar pinned exactly below the masthead. The masthead grows
 // and shrinks with its content and the viewport, so the offset is measured rather than
@@ -528,8 +544,12 @@ function readFeedState() {
 }
 window.addEventListener("scroll", scheduleFeedSave, { passive: true });
 window.addEventListener("pagehide", saveFeedState);
-// Poll often enough that the authorization is renewed long before it expires.
+// Routine checks renew ahead of expiry; temporary renewal/offline responses also
+// trigger bounded follow-up polling through the shared session reconciler.
 setInterval(() => { refreshAuth().catch(() => {}); }, 5 * 60 * 1000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshAuth().catch(() => {});
+});
 // Back to top. Days run to thousands of cards, so scrolling back by hand is a real cost.
 (() => {
   const button = $("scrollTop");
@@ -563,6 +583,7 @@ async function flushTagChecks() {
   if (pendingTagChecks.size) tagCheckTimer = setTimeout(flushTagChecks, 20);
 }
 function checkImageTags(imageId) {
+  if (!applyTagFilters) return Promise.resolve({known: true, tags: []});
   const id = String(imageId), cached = imageTagState.get(id);
   if (cached) return Promise.resolve(cached);
   return new Promise((resolve, reject) => {
@@ -572,7 +593,7 @@ function checkImageTags(imageId) {
     else if (!tagCheckTimer) tagCheckTimer = setTimeout(flushTagChecks, 20);
   });
 }
-function tagsHideImage(result) { return !!result?.tags?.some(tag => tag.hidden); }
+function tagsHideImage(result) { return applyTagFilters && !!result?.tags?.some(tag => tag.hidden); }
 // The server owns read retries. A later explicit retry starts a fresh budget.
 function prepareCardArtwork(element) {
   if (!element.prepareArtwork || element.tagCheckPending) return;
@@ -704,6 +725,7 @@ function card(a, source = {}) {
     api, escapeHtml, avatar, wireAvatarFallback, applyCreatorFollowers, checkImageTags, tagsHideImage, hydrateReactionStates, notifyReactionState, reactionBar, showDetails, toast, ago, imageTagState, imageReactionState, cardImageObserver, seenObserver, pendingSeen, loadMore,
     date: selectedDate, segment: selectedSegment, models: modelQuery(),
     canWrite: () => socialWrite,
+    writeUnavailableReason: () => authWriteReason,
     accountEpoch: () => tagEpoch,
     canManageContentControls: () => userWrite,
     canManageCollections: () => collectionsWrite,
@@ -874,23 +896,26 @@ function applyAuth(auth) {
     imageReactionState.clear();document.querySelectorAll(".creator-card").forEach(card=>card.dispatchEvent(new Event("reactionstate")));
     for(const waiters of pendingTagChecks.values())for(const {reject} of waiters)reject(new Error('Account changed'));
     pendingTagChecks.clear();}
-  oauthConnected = !!auth.connected; socialWrite = !!auth.socialWrite; userWrite = !!auth.userWrite; collectionsWrite = !!auth.collectionsWrite; window.dispatchEvent(new CustomEvent('discovery-auth-changed',{detail:auth})); const waiting = auth.oauthJob?.state === "loading";
+  oauthConnected = !!auth.connected;
+  const usable = oauthConnected && !auth.needsReauthentication && auth.sessionState !== 'offline';
+  socialWrite = usable && !!auth.socialWrite; userWrite = usable && !!auth.userWrite; collectionsWrite = usable && !!auth.collectionsWrite;
+  authWriteReason = window.CivitaiUI.socialWriteReason(auth);
+  window.dispatchEvent(new CustomEvent('discovery-auth-changed',{detail:auth})); const waiting = auth.oauthJob?.state === "loading";
   // Follows and reactions are granted at sign-in, so the normal signed-in state needs no
   // qualifier. The exception is worth naming: Civitai can complete a sign-in while
   // withholding write access, and silently dead buttons would look like a broken app.
   $("accountStatus").textContent = auth.needsReauthentication && auth.cachedSession ? "Session expired · sign in to resume updates" : auth.sessionState === 'offline' ? `Cached profile @${auth.username || 'Civitai'} · offline` : auth.sessionState === 'refreshing' ? `@${auth.username || 'Civitai'} · refreshing session…` : !oauthConnected ? "Not signed in"
     : `Signed in as @${auth.username || "Civitai"}${socialWrite ? "" : " · follows & reactions not granted"}`;
-  $("accountStatus").title = !oauthConnected ? "Signing in is encrypted and saved for future launches."
-    : socialWrite ? "Follows and reactions are sent only when you click them."
-    : "Civitai did not grant follow and reaction access. Sign out and back in to allow it.";
+  $("accountStatus").title = socialWrite ? "Follows and reactions are sent only when you click them." : authWriteReason;
   $("connect").classList.toggle("hidden", oauthConnected); $("connect").disabled = waiting;
   $("connect").textContent = waiting ? "Waiting for Civitai…" : "Sign in";
   $("disconnect").classList.toggle("hidden", !oauthConnected);
   document.querySelectorAll("[data-reaction],.follow-button").forEach(button => {
-    button.disabled = !socialWrite;
-    button.title = socialWrite ? "" : "Civitai did not grant follow and reaction access.";
+    button.disabled = !socialWrite || !!button.dataset.followPending || !!button.dataset.reactionPending ||
+      (button.hasAttribute('data-reaction') && button.closest('.creator-card')?.getAttribute('aria-busy') === 'true');
+    button.title = socialWrite ? "" : authWriteReason;
   }); }
-async function refreshAuth() { const auth = await api("/api/auth-status"); applyAuth(auth); return auth; }
+function refreshAuth() { return authSession.refresh(); }
 // A half-built block is otherwise invisible: you land on whichever block is finished and
 // nothing says another one is part-way through. The window control states it instead.
 const segmentLabels = { morning: "Morning · 12 AM–12 PM", evening: "Evening · 12 PM–12 AM",
@@ -1087,7 +1112,7 @@ function showReady(status) {
   setNavigationBusy(false);
 }
 function showStopped() { $("loadingTitle").textContent = "Loading stopped"; $("loadingMessage").textContent = "Everything collected so far has been saved. Press Continue building whenever you are ready."; $("progressText").textContent = "Safe to close the app"; $("progressBar").classList.remove("indeterminate"); $("stopLoading").classList.add("hidden"); $("startLoading").textContent = "Continue building"; $("startLoading").classList.remove("hidden"); $("startLoading").disabled = false; setNavigationBusy(false); }
-async function showCompletedDay(value, token) { const [day, auth] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), api("/api/auth-status")]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; applyAuth(auth); const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); if (currentView === "gallery") $("gallery").classList.remove("hidden"); if (currentView === "gallery") segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); const needs = { emerging: "followers", foryou: "tags" }[selectedView]; if (needs === "tags") showPreliminaryPlaceholder(); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); if (needs) ensureViewData(needs); }
+async function showCompletedDay(value, token) { const [day] = await Promise.all([api(`/api/history/day?date=${value}&segment=${selectedSegment}`), refreshAuth()]); if (token !== activeLoadToken || selectedDate !== value || loadCancelled) return; hiddenCreators = safeCount(day.hiddenCreators); artistTotal = day.artistCount; imageTotal = day.imageCount; loadedArtists = 0; galleryToken++; dayBuilt = true; activeRebuild = false; const sentinel = document.createElement("div"); sentinel.id = "loadSentinel"; sentinel.className = "load-sentinel"; sentinel.textContent = "Loading more artists…"; $("gallery").appendChild(sentinel); showBuildSetup(false); $("loading").classList.add("hidden"); if (currentView === "gallery") $("gallery").classList.remove("hidden"); if (currentView === "gallery") segmentToolbar.classList.remove("hidden"); setNavigationBusy(false); const needs = { emerging: "followers", foryou: "tags" }[selectedView]; if (needs === "tags") showPreliminaryPlaceholder(); await refreshBlockLabels(value); await loadMore(); await applyPendingRestore(); if (needs) ensureViewData(needs); }
 function buildStatusError(status) { const error = new Error(status.error || "Daily import failed"); error.kind = status.errorKind; error.savedItems = safeCount(status.itemCount); return error; }
 async function beginSelectedDay(rebuild = false) { const value = selectedDate, token = ++activeLoadToken; activeBuildSegment = selectedSegment; activeRebuild = rebuild; loadCancelled = false; resetLoadingPhases(); showBuildSetup(false); $("loading").classList.remove("hidden"); $("gallery").classList.add("hidden"); clearGallery(); $("startLoading").disabled = true; $("startLoading").classList.add("hidden"); $("stopLoading").classList.remove("hidden"); $("stopLoading").disabled = false; $("elapsedText").classList.remove("hidden"); $("loadingTitle").textContent = `${rebuild ? "Rebuilding" : "Building"} ${displayDate(value)}`; setNavigationBusy(true); updateProgress({ phase: "locating", elapsedSeconds: 0, itemCount: 0, creatorCount: 0 }); const request = { ...dayRequest(value), contentRating: buildCoverageRating }; let status = await api(rebuild ? "/api/history/rebuild" : "/api/history/start", { method: "POST", body: JSON.stringify(request) }); while (!status.complete) { if (token !== activeLoadToken) return; if (loadCancelled || status.state === "cancelled") return; if (status.state === "error") throw buildStatusError(status); updateProgress(status); await new Promise(resolve => setTimeout(resolve, 750)); if (loadCancelled || token !== activeLoadToken) return; status = await api(`/api/history/status?date=${value}&segment=${selectedSegment}`); } activeBuildSegment = null; setLoadingPhase("complete"); await showCompletedDay(value, token); refreshBlockLabels(value); }
 async function beginFullDay(rebuild = false) {
@@ -1192,7 +1217,38 @@ function renderDetailTags(detail) {
 }
 let detailRequestToken = 0;
 let detailRequestAbort = null;
-async function showDetails(image, artist, artistCard) { detailRequestAbort?.abort(); detailRequestAbort = new AbortController(); const detailSignal = detailRequestAbort.signal; const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); artwork.cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); if (image.type === "video") window.CivitaiUI.showVideoPoster(artwork, image); else {
+let detailCard = null, detailMoveGeneration = 0, detailMoving = false;
+function updateDetailNavigation() {
+  const state = detailCard?.isConnected && detailCard.detailArtwork?.();
+  $('detailNavigation').hidden = !state || state.total < 2;
+  $('detailPosition').textContent = state ? `${state.index + 1} of ${state.total}` : '';
+  $('detailPrevious').disabled = $('detailNext').disabled = detailMoving;
+  $('detailAttribution').textContent = detailCard?.querySelector('.community-credit')?.textContent || '';
+}
+async function moveDetailArtwork(delta) {
+  if (detailMoving || !$('details').open || !detailCard?.isConnected) return;
+  const card = detailCard, generation = ++detailMoveGeneration, focused = document.activeElement;
+  const isCurrent = () => generation === detailMoveGeneration && $('details').open && detailCard === card;
+  detailMoving = true; updateDetailNavigation();
+  $('detailPosition').textContent = 'Checking artwork...';
+  try {
+    const state = await card.moveDetailArtwork(delta, isCurrent);
+    if (!isCurrent()) return;
+    if (state) await showDetails(state.image, state.artist, card);
+    else if (!card.isConnected) $('details').close();
+  } catch (error) { if (isCurrent()) { toast(error.message); $('detailPrompt').textContent = error.message; } }
+  finally { if (isCurrent()) { detailMoving = false; updateDetailNavigation(); if (focused?.isConnected && [document.body, $("details")].includes(document.activeElement)) focused.focus({ preventScroll: true }); } }
+}
+$('detailPrevious').onclick = () => moveDetailArtwork(-1);
+$('detailNext').onclick = () => moveDetailArtwork(1);
+$('details').addEventListener('keydown', event => {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+      event.target.isContentEditable || event.target.closest('input,textarea,select,video,[contenteditable]:not([contenteditable="false"]),[role="slider"],[role="spinbutton"],[role="combobox"],[role="listbox"],[role="menu"],[role="tablist"],[role="tree"],[role="grid"]')) return;
+  if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !$('detailNavigation').hidden) {
+    event.preventDefault(); moveDetailArtwork(event.key === 'ArrowLeft' ? -1 : 1);
+  }
+});
+async function showDetails(image, artist, artistCard) { detailCard = artistCard; updateDetailNavigation(); $("civitaiLink").href = image.civitaiUrl || `https://civitai.com/images/${image.id}`; $("fullLink").href = image.url || image.civitaiUrl || `https://civitai.com/images/${image.id}`; $("detailImage").onUnavailable = null; $("details").querySelector(".detail-copy").scrollTop = 0; detailRequestAbort?.abort(); detailRequestAbort = new AbortController(); const detailSignal = detailRequestAbort.signal; const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); artwork.cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); if (image.type === "video") window.CivitaiUI.showVideoPoster(artwork, image); else {
   artwork.onUnavailable = () => {
     if (token !== detailRequestToken || !dialog.open) return;
     dialog.close();
@@ -1200,10 +1256,10 @@ async function showDetails(image, artist, artistCard) { detailRequestAbort?.abor
     toast('Skipped unavailable artwork.');
   };
   showArtwork(artwork, image.thumbnailUrl, image.url, image);
-} $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(image.community ? `/api/community/detail?id=${image.id}` : `/api/history/image?id=${image.id}`, { signal: detailSignal }); if (token !== detailRequestToken || !dialog.open) return; if (detail.type === "video") { if (!detail.tags?.some(tag => tag.hidden)) { window.CivitaiUI.showVideoPoster(artwork, detail); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl, detail.id, { muted: !detailVideoSound }); } } else showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.url, detail); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
+} $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; if (!dialog.open) dialog.showModal(); try { const detail = await api(image.community ? `/api/community/detail?id=${image.id}` : `/api/history/image?id=${image.id}`, { signal: detailSignal }); if (token !== detailRequestToken || !dialog.open) return; if (detail.type === "video") { if (!tagsHideImage(detail)) { window.CivitaiUI.showVideoPoster(artwork, detail); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl, detail.id, { muted: !detailVideoSound }); } } else showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.url, detail); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
     $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url;
     imageTagState.set(String(image.id), { known: detail.known, tags: detail.tags || [] });
-    if (detail.tags?.some(tag => tag.hidden)) {
+    if (tagsHideImage(detail)) {
       // Preserve the explanation in the open dialog, but remove only this image behind
       // it. Rebuilding the entire feed loses scroll position and every loaded page.
       toast("This image matches a tag you hide on Civitai. Removing it from the gallery…");
@@ -1211,7 +1267,7 @@ async function showDetails(image, artist, artistCard) { detailRequestAbort?.abor
     }
   } catch (error) { if (token === detailRequestToken && dialog.open && error.name !== "AbortError") { dialog.classList.remove("detail-loading"); $("detailPrompt").textContent = error.message; } } }
 $('detailImage').addEventListener('artwork-unavailable', () => $('detailImage').onUnavailable?.());
-$("details").addEventListener("close", () => { detailRequestToken++; detailRequestAbort?.abort(); $("detailImage").cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(false); }); $("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
+$("details").addEventListener("close", () => { detailMoveGeneration++; detailMoving = false; detailCard = null; detailRequestToken++; detailRequestAbort?.abort(); $("detailImage").cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(false); }); $("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
   const outage = error.kind === "service_unavailable";
   const historyWindow = error.kind === "history_window";
   // A rejected search service is not something retrying fixes, so it offers "Try again"
@@ -1267,11 +1323,12 @@ $("startLoading").onclick = async () => {
 $("rebuildDay").onclick = () => { if (!dayBuilt || !confirm(`Rebuild ${displayDate(selectedDate)}? Your current gallery will remain safe if you stop.`)) return; (selectedSegment === "all" ? beginFullDay(true) : beginSelectedDay(true)).catch(showLoadError); };
 async function closeApplication() { loadCancelled = true; document.body.innerHTML = '<main id="loading"><div class="history-loading"><h2>App closed</h2><p>You can close this browser tab. Launch the executable again whenever you want to continue.</p></div></main>'; try { await api("/api/app/close", { method: "POST", body: "{}" }); } catch (_) {} }
 $("closeApp").onclick = closeApplication; $("closeLoading").onclick = closeApplication;
-async function connectCivitai() { await api("/api/oauth/login", { method: "POST", body: "{}" }); let auth; do { await new Promise(resolve => setTimeout(resolve, 1000)); auth = await refreshAuth(); if (auth.oauthJob?.state === "error") throw new Error(auth.oauthJob.error); } while (!auth.connected); if (dayBuilt) await loadDay(selectedDate); else await refreshVisibleCreatorMetadata(); toast(`Signed in as @${auth.username}`); return auth; }
+async function connectCivitai() { authSession.invalidate(); await api("/api/oauth/login", { method: "POST", body: "{}" }); let auth; do { await new Promise(resolve => setTimeout(resolve, 1000)); auth = await refreshAuth(); if (auth.oauthJob?.state === "error") throw new Error(auth.oauthJob.error); } while (!auth.connected); if (dayBuilt) await loadDay(selectedDate); else await refreshVisibleCreatorMetadata(); toast(`Signed in as @${auth.username}`); return auth; }
 $("connect").onclick = () => connectCivitai(); $("disconnect").onclick = async () => {
+  authSession.invalidate();
   try {
     await api("/api/oauth/disconnect", { method: "POST", body: "{}" });
-    applyAuth({ connected: false });
+    authSession.reset({ connected: false });
     // There is no signed-out view of this app, so signing out returns to the front door
     // rather than leaving a gallery on screen that can no longer do anything.
     try { sessionStorage.removeItem(FEED_STATE); } catch (_) {}
@@ -1370,11 +1427,26 @@ function showSweepProgress(note, kind, state) {
     note.classList.remove("hidden");
     return;
   }
-  const known = safeCount(state.known), total = safeCount(state.total);
-  const percent = total ? Math.min(100, Math.round(known * 100 / total)) : 0;
+  const known = safeCount(state.known), total = safeCount(state.total), unavailable = safeCount(state.unavailable);
+  const percent = total ? Math.min(100, Math.round((known + unavailable) * 100 / total)) : 0;
   note.classList.add("personalization-note", "preliminary");
   note.classList.remove("ready", "hidden");
-  note.innerHTML = `<span class="sweep-copy"><strong>For You is still learning this gallery</strong><span>Rankings are preliminary while artwork tags are prepared.</span></span><span class="sweep-count">${displayCount(known)} of ${displayCount(total)} creator previews analyzed</span><progress class="sweep-progress" aria-label="Preparing tag-based recommendations" aria-valuenow="${percent}" max="100" value="${percent}"></progress>`;
+  note.innerHTML = `<span class="sweep-copy"><strong>For You is still learning this gallery</strong><span>Rankings are preliminary while artwork tags are prepared.</span></span><span class="sweep-count">${displayCount(known)} of ${displayCount(total)} creator previews analyzed${unavailable ? ` · ${displayCount(unavailable)} unavailable` : ''}</span><progress class="sweep-progress" aria-label="Preparing tag-based recommendations" aria-valuenow="${percent}" max="100" value="${percent}"></progress>`;
+}
+function showSweepCompletion(note, kind, state) {
+  if (kind !== 'tags' || !state.unavailable) { hideSweepNote(); return; }
+  note.classList.add('personalization-note','ready'); note.classList.remove('preliminary','hidden');
+  note.replaceChildren();
+  const message = document.createElement('span');
+  message.textContent = `Tag preparation finished: ${displayCount(state.known)} analyzed, ${displayCount(state.unavailable)} unavailable. For You uses available tags; unavailable previews are rechecked after 24 hours.`;
+  note.append(message);
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'sweep-dismiss';
+  dismiss.textContent = 'Dismiss';
+  dismiss.setAttribute('aria-label', 'Dismiss tag preparation summary');
+  dismiss.onclick = hideSweepNote;
+  note.append(dismiss);
 }
 function showPreliminaryPlaceholder() {
   const note = $("followerSweep");
@@ -1398,6 +1470,10 @@ function showSweepFailure(note, kind, state) {
       : `${sweepLabels[kind]} could not continue. `;
   }
   const retry = document.createElement("button");
+  if (kind === 'tags' && state?.total !== undefined) {
+    message.textContent = `For You is using preliminary rankings: ${displayCount(state.known)} analyzed, ${displayCount(state.unavailable || 0)} unavailable, ${displayCount(state.pending ?? (state.total-state.known))} remaining. Preparation failed. `;
+  }
+  if (state?.job?.error) message.textContent += `${String(state.job.error).slice(0,200)} `;
   retry.type = "button";
   retry.textContent = "Retry";
   retry.title = state.job?.error || `Retry ${sweepLabels[kind].toLowerCase()}`;
@@ -1409,7 +1485,7 @@ async function ensureViewData(kind) {
   const note = $("followerSweep"), url = `/api/history/prepare?date=${selectedDate}&segment=${selectedSegment}&kind=${kind}`;
   try {
     let state = await api(url);
-    if (state.complete) { hideSweepNote(); return; }
+    if (state.complete) { showSweepCompletion(note, kind, state); return; }
     if (!oauthConnected) { note.textContent = "Connect Civitai to prepare this view"; note.classList.remove("hidden"); return; }
     const watch = ++sweepWatch;
     showSweepProgress(note, kind, state);
@@ -1429,13 +1505,13 @@ async function ensureViewData(kind) {
       await new Promise(resolve => setTimeout(resolve, 1200));
     }
     if (watch !== sweepWatch) return;
-    if (kind === "tags") {
+    if (kind === "tags" && !state.unavailable) {
       note.classList.remove("preliminary");
       note.classList.add("ready");
       note.innerHTML = '<span class="sweep-copy"><strong>Tag analysis complete</strong><span>Refreshing For You with the fully personalized ranking…</span></span>';
     }
     await reloadView();
-    hideSweepNote();
+    showSweepCompletion(note, kind, state);
   } catch (error) { showSweepFailure(note, kind, { job: { error: error.message } }); }
 }
 async function reloadView() {
@@ -1545,6 +1621,11 @@ function profileRefreshDue(summary, now = Date.now()) {
   return !Number.isFinite(refreshed) || now - refreshed >= PROFILE_REFRESH_MAX_AGE_MS;
 }
 function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
+  if (summary.automaticRefreshPaused) {
+    clearTimeout(automaticProfileRefreshTimer);
+    automaticProfileRefreshPending = false;
+    return;
+  }
   if (!oauthConnected || !profileRefreshDue(summary)) return;
   automaticProfileRefreshPending = true;
   clearTimeout(automaticProfileRefreshTimer);
@@ -1576,10 +1657,9 @@ function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
 }
 async function startup() {
   const navigationAtStartup = navigationVersion;
-  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; detailVideoSound = settings.detailVideoSound !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 50; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
+  try { const settings = await api("/api/settings"); selectedMedia = settings.mediaType || "all"; applyTagFilters = settings.applyTagFilters !== false; applyAccountFilters = settings.applyAccountFilters !== false; applyImageFilters = settings.applyImageFilters !== false; window.updateGalleryFilters?.(); if(!contentSelection.pending){contentRating = settings.contentRating || "Soft"; visibleBrowsingLevels = new Set(settings.browsingLevels || [1, 2]);} dimSeenCards = settings.dimSeenCards !== false; detailVideoSound = settings.detailVideoSound !== false; hideHighVolumeCreators = settings.hideHighVolumeCreators === true; highVolumeThreshold = Number(settings.highVolumeThreshold) || 50; emergingReactionMode = settings.emergingReactionMode || "balanced"; emergingReactionLimit = [0, 100, 250, 500].includes(Number(settings.emergingReactionLimit)) ? Number(settings.emergingReactionLimit) : 0; updateChecksEnabled = settings.checkForUpdates !== false; $("updateChecks").checked = updateChecksEnabled; allowLanAccess = settings.allowLanAccess === true; $("allowLanAccess").checked = allowLanAccess; showLanAddress(settings.lanAddresses); showContentRating(); showGalleryPreferences(); refreshUpdateStatus().catch(error => console.warn("Update check unavailable", error)); refreshCaptureState(); } catch (_) { showContentRating(); showGalleryPreferences(); refreshCaptureState(); }
   let auth = {};
-  try { auth = await api("/api/auth-status"); } catch (_) { auth = { connected: false }; }
-  applyAuth(auth);
+  try { auth = await refreshAuth(); } catch (_) { auth = { connected: false }; }
   // Only a genuine first launch is onboarded. Someone with archives already made this
   // choice, and re-asking every launch would be nagging rather than helping.
   // The gallery is ordered by the user's own reactions and its actions are follows and
@@ -1685,9 +1765,48 @@ function modelQuery() {
   return window.CivitaiUI.modelParameters(galleryFilterState());
 }
 function galleryFilterState() {
-  return window.CivitaiUI.browsingState({ date: selectedDate, segment: selectedSegment,
-    view: selectedView, models: selectedModels, media: selectedMedia, levels: visibleBrowsingLevels });
+  return {...window.CivitaiUI.browsingState({ date: selectedDate, segment: selectedSegment,
+    view: selectedView, models: selectedModels, media: selectedMedia, levels: visibleBrowsingLevels }),
+    surface: currentView, applyTagFilters, applyAccountFilters, applyImageFilters, controlFiltersSaving};
 }
+async function saveGalleryControl(key, value, reload = true) {
+  if (controlFiltersSaving) return;
+  const previous = {applyTagFilters, applyAccountFilters, applyImageFilters};
+  if (key === 'applyTagFilters') applyTagFilters = value;
+  if (key === 'applyAccountFilters') applyAccountFilters = value;
+  if (key === 'applyImageFilters') applyImageFilters = value;
+  controlFiltersSaving = true;
+  window.updateGalleryFilters?.();
+  ++activeLoadToken; ++tagEpoch; imageTagState.clear();
+  clearGallery();
+  let settings = null;
+  try {
+    settings = await api('/api/settings', {method: 'POST', controlBatch: true,
+      body: JSON.stringify({[key]: value})});
+  } catch (error) {
+    toast(error.message);
+    // A failed response may follow a successful save. Read back, never replay.
+    try { settings = await api('/api/settings'); } catch (_) {}
+  } finally {
+    if (settings) {
+      applyTagFilters = settings.applyTagFilters !== false;
+      applyAccountFilters = settings.applyAccountFilters !== false; applyImageFilters = settings.applyImageFilters !== false;
+    } else ({applyTagFilters, applyAccountFilters, applyImageFilters} = previous);
+    controlFiltersSaving = false;
+    window.updateGalleryFilters?.();
+    window.CivitaiUI.finishControlChange(settings);
+  }
+  loadHiddenPreferencesNote();
+  if (reload && selectedDate && currentView === 'gallery') {
+    try { await loadDay(selectedDate, false, true); } catch (error) { toast(error.message); }
+  }
+}
+const setGalleryTagFilters = (value, reload = true) => saveGalleryControl('applyTagFilters', value, reload);
+const setGalleryAccountFilters = (value, reload = true) => saveGalleryControl('applyAccountFilters', value, reload);
+window.setGalleryTagFilters = setGalleryTagFilters;
+window.setGalleryAccountFilters = setGalleryAccountFilters;
+const setGalleryImageFilters = (value, reload = true) => saveGalleryControl('applyImageFilters', value, reload);
+window.setGalleryImageFilters = setGalleryImageFilters;
 async function setGalleryMedia(value, reload = true) {
   try {
     const settings = await api('/api/settings', { method: 'POST', body: JSON.stringify({mediaType: value}) });
@@ -1707,6 +1826,10 @@ async function removeGalleryModel(model) {
   if (dayBuilt || currentView==='community') await reloadView();
 }
 async function resetGalleryFilters() {
+  if (!applyTagFilters) await setGalleryTagFilters(true, false);
+  if (!applyAccountFilters) await setGalleryAccountFilters(true, false);
+  if (!applyImageFilters) await setGalleryImageFilters(true, false);
+  if (currentView === 'timemachine') { await chooseContentRating([1, 2]); return; }
   await setGalleryMedia("all", false);
   selectedModels.clear();
   $("modelFilter").textContent = modelButtonLabel();
@@ -1758,7 +1881,7 @@ async function followFromDashboard(row) {
   return window.CivitaiUI.toggleCreatorFollow(button, {
     userId: Number(row.dataset.userId), username: row.dataset.username,
     following: button.classList.contains("is-following"),
-  }, { api, canWrite: () => socialWrite, toast, onChange: async () => {
+  }, { api, canWrite: () => socialWrite, accountEpoch: () => tagEpoch, toast, onChange: async () => {
     const data = await api("/api/discovery/summary");
     const values = $("summaryRow").querySelectorAll(".metric-card .value");
     if (values.length >= 4) {
@@ -1775,12 +1898,12 @@ function renderDiscovery(data) {
 // That filtering is otherwise invisible unless the user notices fewer creators than
 // expected, so this states it plainly and links straight to where it is managed.
 function renderHiddenPreferencesNote(data) {
-  window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:{hiddenCreators:safeCount(data.creators),hiddenTags:safeCount(data.tags),hiddenArtworks:safeCount(data.images)}}));
+  window.dispatchEvent(new CustomEvent('shared-controls-summary', {detail:{hiddenCreators:applyAccountFilters ? safeCount(data.creators) : 0,hiddenTags:applyTagFilters ? safeCount(data.tags) : 0,hiddenArtworks:applyImageFilters ? safeCount(data.images) : 0}}));
   const note = $("hiddenPreferencesNote"), total = safeCount(data.creators) + safeCount(data.tags) + safeCount(data.images);
   $("hiddenPreferencesText").textContent = !data.importedAt
     ? "Civitai Content Controls will be applied to the daily gallery once your account is read."
     : total
-      ? `Your Civitai Content Controls are applied to the daily gallery: ${displayCount(data.creators)} hidden creator${safeCount(data.creators) === 1 ? "" : "s"}, ${displayCount(data.tags)} hidden tag${safeCount(data.tags) === 1 ? "" : "s"}, ${displayCount(data.images)} hidden image${safeCount(data.images) === 1 ? "" : "s"}.`
+      ? `Your Civitai Content Controls are applied to the daily gallery: ${displayCount(data.creators)} hidden creator${safeCount(data.creators) === 1 ? "" : "s"}${applyAccountFilters ? "" : " (paused)"}, ${displayCount(data.tags)} hidden tag${safeCount(data.tags) === 1 ? "" : "s"}${applyTagFilters ? "" : " (paused)"}, ${displayCount(data.images)} hidden image${safeCount(data.images) === 1 ? "" : "s"}${applyImageFilters ? "" : " (paused)"}.`
       : "Your Civitai Content Controls are applied to the daily gallery. Nothing is hidden there yet.";
   note.classList.remove("hidden");
 }
@@ -1851,6 +1974,10 @@ async function pollDiscovery() {
 let dailyControlsStale = false;
 window.addEventListener('community-controls-changed', () => {
   if (dayBuilt && currentView !== 'gallery') { dailyControlsStale = true; clearGallery(); }
+  if (currentView === 'timemachine') {
+    const refresh = tmCreator ? openTimeMachineCreator(tmCreator) : refreshTimeMachine();
+    refresh.catch(error => toast(error.message));
+  }
 });
 window.addEventListener('shared-artist-hidden', () => {
   if (!dayBuilt) return;
@@ -1882,6 +2009,7 @@ function showView(name) {
   const timeMachine = name === "timemachine";
   const community = name === "community";
   document.body.classList.toggle('community-view', community);
+  document.body.classList.toggle('timemachine-view', timeMachine);
   const gallery = !discovery && !timeMachine && !community;
   document.getElementById('community')?.classList.toggle('hidden', !community);
   const communityTab = document.getElementById('tabCommunity');
@@ -1890,7 +2018,9 @@ function showView(name) {
   $("tabGallery").classList.toggle("active", gallery); $("tabGallery").setAttribute("aria-pressed", String(gallery));
   $("tabDiscovery").classList.toggle("active", discovery); $("tabDiscovery").setAttribute("aria-pressed", String(discovery));
   $("tabTimeMachine").classList.toggle("active", timeMachine); $("tabTimeMachine").setAttribute("aria-pressed", String(timeMachine));
-  segmentToolbar.classList.toggle("hidden", !gallery && !community);
+  segmentToolbar.classList.toggle("hidden", !gallery && !community && !timeMachine);
+  window.updateGalleryFilters?.();
+  window.dispatchEvent(new Event('gallery-surface-changed'));
   ["olderDay", "newerDay", "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", !gallery));
   $("discovery").classList.toggle("hidden", !discovery);
   $("timeMachine").classList.toggle("hidden", !timeMachine);
@@ -1910,8 +2040,9 @@ function showView(name) {
     }
   }
   if (timeMachine) {
-    refreshTimeMachine().catch(error => window.CivitaiUI.showPageError(
-      $("timeMachineMessage"), error.message, refreshTimeMachine));
+    const refresh = () => tmCreator ? openTimeMachineCreator(tmCreator) : refreshTimeMachine();
+    refresh().catch(error => window.CivitaiUI.showPageError(
+      $("timeMachineMessage"), error.message, refresh));
     return;
   }
   if (!discovery) {
@@ -2002,8 +2133,11 @@ function syncTimeMachineCards(entries) {
     element.loadArtworkAlternatives = () => api(`/api/timemachine/creator?username=${encodeURIComponent(entry.username)}&limit=40&savedOnly=1`);
     element.onUnavailableCardRemoved = () => { timeMachineSeenObserver.unobserve(element); element.tmEnteredAt = 0; };
     const basePrepareArtwork = element.prepareArtwork;
+    const preparationEpoch = timeMachineFilterEpoch;
     element.prepareArtwork = async () => {
-      if (tagsHideImage(await checkImageTags(entry.representative.id))) {
+      const tags = await checkImageTags(entry.representative.id);
+      if (!element.isConnected || preparationEpoch !== timeMachineFilterEpoch) return;
+      if (tagsHideImage(tags)) {
         // Only reachable when this image's tags had not been swept when the card was
         // built. A card holds one image, so there is nothing to fall back to: step the
         // creator past it and take the card off screen rather than leave it empty.
@@ -2096,13 +2230,30 @@ async function flushTimeMachineSeen() {
     { method: "POST", body: JSON.stringify({ usernames }) });
   return advanced;
 }
+let timeMachineReadEpoch = 0, timeMachineFilterEpoch = 0;
+window.addEventListener('content-controls-changing', () => {
+  ++timeMachineReadEpoch;
+  ++timeMachineFilterEpoch;
+  ++tmCreatorToken;
+  tmCreatorLoading = null;
+  [...$("timeMachineGrid").children].forEach(node => {
+    timeMachineSeenObserver.unobserve(node); node.tmEnteredAt = 0;
+    node.releaseVideo?.(); node.querySelector('.image-button img')?.cancelArtwork?.();
+  });
+  $("timeMachineGrid").replaceChildren();
+  clearTimeMachineCreatorGrid();
+  tmCreatorSentinelObserver.unobserve($("tmCreatorSentinel"));
+});
 async function refreshTimeMachine() {
+  const epoch = ++timeMachineReadEpoch;
   const grid = $("timeMachineGrid");
   const clearSkeleton = !grid.children.length ? window.CivitaiUI.showGallerySkeleton(grid) : () => {};
   grid.setAttribute("aria-busy", "true");
   try {
     await flushTimeMachineSeen();
+    if (epoch !== timeMachineReadEpoch) return;
     const data = await api("/api/timemachine");
+    if (epoch !== timeMachineReadEpoch) return;
     clearSkeleton();
     renderTimeMachineStatus(data.status);
     renderTimeMachineCards(data.cards);
@@ -2110,7 +2261,7 @@ async function refreshTimeMachine() {
     // showing what is already there rather than only after it is clicked.
     hydrateReactionStates(data.cards.map(entry => entry.representative))
       .catch(error => console.warn("Reaction history could not be loaded", error));
-  } finally { clearSkeleton(); grid.removeAttribute("aria-busy"); }
+  } finally { clearSkeleton(); if (epoch === timeMachineReadEpoch) grid.removeAttribute("aria-busy"); }
 }
 // Searching one followed creator. Suggestions come from creators the Time Machine already
 // tracks, so typing never calls Civitai. Picking one shows only their work, starting at
@@ -2243,8 +2394,11 @@ function timeMachineCreatorCard(entry, image) {
   element.dataset.position = String(image.position);
   element.onUnavailableCardRemoved = () => { tmCreatorSeenObserver.unobserve(element); element.tmEnteredAt = 0; };
   const basePrepareArtwork = element.prepareArtwork;
+  const preparationToken = tmCreatorToken;
   element.prepareArtwork = async () => {
-    if (tagsHideImage(await checkImageTags(entry.representative.id))) {
+    const tags = await checkImageTags(entry.representative.id);
+    if (!element.isConnected || preparationToken !== tmCreatorToken) return;
+    if (tagsHideImage(tags)) {
       tmCreatorSeenObserver.unobserve(element);
       window.reportClientEvent?.('card_removed', { reason: 'image-hidden-by-civitai-tags',
         username: entry.username, imageId: entry.representative.id, surface: 'time-machine-creator' });
@@ -2347,7 +2501,9 @@ $("timeMachinePrime").onclick = async () => {
     timeMachinePoll = setInterval(async () => {
       // A full card fetch measured 0.04s for 285 creators, so there is no reason to poll
       // the status alone and make the reader wait for a tab switch to see new cards.
+      const epoch = timeMachineReadEpoch;
       const data = await api("/api/timemachine");
+      if (epoch !== timeMachineReadEpoch) return;
       renderTimeMachineStatus(data.status);
       renderTimeMachineCards(data.cards);
       if (!data.status.priming) clearInterval(timeMachinePoll);

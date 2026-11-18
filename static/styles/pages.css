@@ -30,7 +30,7 @@
 #discovery .summary-row .metric-card { min-height: 132px; padding: 17px 18px; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: transparent; }
 #discovery .summary-row .metric-card:last-child { border-right: 0; }
 #discovery .metric-card .value { font-size: clamp(30px, 3.2vw, 40px); }
-#discovery .metric-card .hint { display: none; }
+#discovery .metric-card .hint { display: block; line-height: 1.45; margin-top: 5px; }
 #discovery .reaction-card { align-content: center; }
 #discovery .donut-wrap, #discovery .donut { width: 88px; height: 88px; }
 #discovery .panel-grid { gap: 12px; }

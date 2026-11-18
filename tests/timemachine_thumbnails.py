@@ -88,6 +88,16 @@ class ThumbnailRoutes(unittest.TestCase):
    self.assertEqual(status,503);self.assertEqual(json.loads(body)['code'],'UNAVAILABLE')
   self.failure=None;self.assertEqual(self.get('/api/timemachine/thumbnail/2')[0],200)
 
+ def test_only_explicit_tag_pause_bypasses_tags(self):
+  self.tags={'known':True,'tags':[{'hidden':True}]};self.hidden_tags={'hidden'}
+  for flag,expected in ((False,200),(True,403),(None,403),(0,403)):
+   with patch.object(server.SETTINGS,'load',return_value={'browsingLevels':[1],'applyTagFilters':flag}):
+    self.assertEqual(self.get('/api/timemachine/thumbnail/2')[0],expected)
+  with patch.object(server.SETTINGS,'load',return_value={'browsingLevels':[1],'applyTagFilters':False}):
+   self.hidden=(set(),{2});self.assertEqual(self.get('/api/timemachine/thumbnail/2')[0],403)
+   self.hidden=(set(),set());self.assertEqual(self.get('/api/timemachine/thumbnail/3')[0],403)
+   self.account=None;self.assertEqual(self.get('/api/timemachine/thumbnail/2')[0],401)
+
  def test_decoration_keeps_store_and_video_poster_semantics(self):
   art={'id':2,'type':'image','url':self.url}
   self.assertEqual(server.attach_preview_tags([{'representative':art}],source='timemachine')[0]['representative']['url'],'/api/timemachine/thumbnail/2')

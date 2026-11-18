@@ -77,6 +77,12 @@ with tempfile.TemporaryDirectory(prefix="civitai-profile-auto-refresh-", ignore_
                 lastSyncAt: new Date().toISOString()}, 0)""")
             page.wait_for_timeout(100)
             assert calls["sync"] == 1, calls
+            # Session policy suppresses scheduled work, without changing the normal
+            # stale/recent policy or denying a later explicit manual analysis.
+            page.evaluate("""() => scheduleAutomaticProfileRefresh({hasData: true,
+                automaticRefreshPaused: true, lastSyncAt: null}, 0)""")
+            page.wait_for_timeout(100)
+            assert calls["sync"] == 1, calls
             browser.close()
     finally:
         try:

@@ -18,15 +18,23 @@ export function mountFilters(actions) {
   chips.className = 'active-filters';
   chips.setAttribute('aria-label', 'Active filters');
   toolbar.append(chips);
+  let sharedControls = {};
+  const paintRestrictions = () => {
+    const detail = {...sharedControls, hiddenTags: actions.state().applyTagFilters === false ? 0 : sharedControls.hiddenTags};
+    if (actions.state().applyAccountFilters === false) { detail.hiddenCreators = 0; detail.blockedUsers = 0; }
+    if (actions.state().applyImageFilters === false) detail.hiddenArtworks = 0;
+    const parts = [[detail.hiddenCreators,'hidden creators'],[detail.blockedUsers,'blocked users'],
+      [detail.hiddenTags,'hidden tags'],[detail.hiddenArtworks,'hidden artworks']].filter(([n]) => n > 0);
+    restrictions.textContent = parts.map(([n,label]) => `${n} ${label}`).join(' · ');
+    restrictions.hidden = !parts.length;
+    restrictions.title = 'Active Civitai content controls apply alongside the rating selection.';
+  };
   const restrictions = document.createElement('span');
   restrictions.id = 'sharedControlsStatus'; restrictions.className = 'filter-button';
   restrictions.setAttribute('role', 'status'); restrictions.hidden = true; chips.append(restrictions);
   window.addEventListener('shared-controls-summary', ({detail}) => {
-    const parts = [[detail.hiddenCreators,'hidden creators'],[detail.blockedUsers,'blocked users'],
-      [detail.hiddenTags,'hidden tags'],[detail.hiddenArtworks,'hidden artworks']].filter(([n]) => n > 0);
-    restrictions.textContent = parts.map(([n,label]) => `${n} ${label}`).join(' ? ');
-    restrictions.hidden = !parts.length;
-    restrictions.title = 'Shared Civitai content controls apply alongside the rating selection.';
+    sharedControls = detail;
+    paintRestrictions();
   });
   const panel = document.createElement('section');
   panel.id = 'filterPanel';
@@ -34,11 +42,34 @@ export function mountFilters(actions) {
   panel.setAttribute('aria-label', 'Gallery filters');
   panel.innerHTML = '<div class="filter-head"><h2>Filters</h2><button type="button" class="quiet-button" aria-label="Close filters">×</button></div><div class="filter-sections"></div><button type="button" class="filter-reset">Reset filters</button>';
   panel.querySelector('.filter-sections').append(document.getElementById('contentMenu'), modelMenu);
+  const tagFilter = document.createElement('label');
+  tagFilter.className = 'filter-row tag-filter-toggle';
+  tagFilter.innerHTML = '<input id="applyTagFilters" type="checkbox" checked><span>Apply my tag filters</span>';
+  content.append(tagFilter);
+  const tagCheckbox = tagFilter.querySelector('input');
+  tagCheckbox.onchange = () => actions.setTagFilters(tagCheckbox.checked);
+  const accountFilter = document.createElement('label');
+  accountFilter.className = 'filter-row account-filter-toggle';
+  accountFilter.innerHTML = '<input id="applyAccountFilters" type="checkbox" checked><span>Exclude hidden and blocked accounts</span>';
+  content.append(accountFilter);
+  const accountCheckbox = accountFilter.querySelector('input');
+  accountCheckbox.onchange = () => actions.setAccountFilters(accountCheckbox.checked);
+  const imageFilter = document.createElement('label');
+  imageFilter.className = 'filter-row image-filter-toggle';
+  imageFilter.innerHTML = '<input id="applyImageFilters" type="checkbox" checked><span>Exclude hidden artworks<small>Includes images hidden after reporting them.</small></span>';
+  content.append(imageFilter);
+  const imageCheckbox = imageFilter.querySelector('input');
+  imageCheckbox.onchange = () => actions.setImageFilters(imageCheckbox.checked);
   const media = document.createElement('label');
   media.className = 'preference-field media-filter';
   media.innerHTML = '<span>Media type</span><select id="mediaType" aria-label="Media type"><option value="all">All</option><option value="image">Images only</option><option value="video">Videos only</option></select>';
   panel.querySelector('.filter-sections').prepend(media);
   const mediaSelect = media.querySelector('select');
+  const scopeNote = document.createElement('p');
+  scopeNote.className = 'filter-scope-note';
+  scopeNote.textContent = 'Browsing levels and Civitai content controls apply to Time Machine. Media and generation-model selections apply to Daily Gallery and Community.';
+  scopeNote.hidden = true;
+  panel.querySelector('.filter-sections').prepend(scopeNote);
   mediaSelect.onchange = () => actions.setMedia(mediaSelect.value);
   // Keep the legacy label as a state notification point until page state is extracted.
   model.classList.add('hidden');
@@ -51,6 +82,7 @@ export function mountFilters(actions) {
   let showAllModels = false;
   modelMenu.before(search); modelMenu.after(more);
   const applyModelSearch = () => {
+    if (actions.state().surface === 'timemachine') { more.hidden = true; return; }
     const rows = [...modelMenu.querySelectorAll('.filter-row')];
     const query = search.value.trim().toLocaleLowerCase();
     rows.forEach((row, index) => {
@@ -78,7 +110,7 @@ export function mountFilters(actions) {
     position();
     button.setAttribute('aria-expanded', 'true');
     search.disabled = true;
-    await actions.refreshModels();
+    if (actions.state().surface !== 'timemachine') await actions.refreshModels();
     search.disabled = false;
     applyModelSearch();
   };
@@ -106,23 +138,37 @@ export function mountFilters(actions) {
 
   const paint = () => {
     applyModelSearch();
-    const { models, levels, media = 'all' } = actions.state();
-    mediaSelect.value = media;
+    const { models, levels, surface, media: selectedMedia = 'all', applyTagFilters = true, applyAccountFilters = true, applyImageFilters = true, controlFiltersSaving = false } = actions.state();
+    const timeMachine = surface === 'timemachine';
+    const mediaValue = timeMachine ? 'all' : selectedMedia;
+    const activeModels = timeMachine ? [] : models;
+    panel.classList.toggle('content-only', timeMachine);
+    panel.setAttribute('aria-label', timeMachine ? 'Time Machine content filters' : 'Gallery filters');
+    media.hidden = search.hidden = modelMenu.hidden = timeMachine;
+    scopeNote.hidden = !timeMachine;
+    tagCheckbox.checked = applyTagFilters;
+    if (tagCheckbox.disabled !== controlFiltersSaving) tagCheckbox.disabled = controlFiltersSaving;
+    accountCheckbox.checked = applyAccountFilters;
+    if (accountCheckbox.disabled !== controlFiltersSaving) accountCheckbox.disabled = controlFiltersSaving;
+    imageCheckbox.checked = applyImageFilters;
+    if (imageCheckbox.disabled !== controlFiltersSaving) imageCheckbox.disabled = controlFiltersSaving;
+    paintRestrictions();
+    mediaSelect.value = selectedMedia;
     const ratingChanged = levels.length !== 2 || !levels.includes(1) || !levels.includes(2);
-    const count = models.length + Number(ratingChanged) + Number(media !== 'all');
+    const count = activeModels.length + Number(ratingChanged) + Number(mediaValue !== 'all') + Number(!applyTagFilters) + Number(!applyAccountFilters) + Number(!applyImageFilters);
     button.textContent = count ? `Filters · ${count}` : 'Filters';
     button.dataset.activeCount = String(count);
     panel.querySelector('.filter-reset').disabled = !count;
     chips.querySelectorAll('.model-chip').forEach(chip => chip.remove());
-    if (media !== 'all') {
+    if (mediaValue !== 'all') {
       const chip = document.createElement('button');
       chip.className = 'filter-button model-chip';
-      chip.textContent = `${media === 'image' ? 'Images only' : 'Videos only'} ×`;
+      chip.textContent = `${mediaValue === 'image' ? 'Images only' : 'Videos only'} ×`;
       chip.setAttribute('aria-label', 'Remove media filter');
       chip.onclick = () => actions.setMedia('all');
       chips.append(chip);
     }
-    for (const name of models) {
+    for (const name of activeModels) {
       const chip = document.createElement('button');
       chip.className = 'filter-button model-chip';
       chip.type = 'button';
@@ -139,5 +185,6 @@ export function mountFilters(actions) {
     childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'],
   });
   paint();
+  window.addEventListener('gallery-surface-changed', () => { close(); paint(); });
   return { update: paint };
 }
