@@ -53,6 +53,23 @@ try:
     page.locator('#filterToggle').click();assert page.locator('#mediaType').is_visible()
     assert page.locator('#mediaType').input_value()=='video','Time Machine must preserve Daily media selection'
     page.locator('#tabTimeMachine').click()
+    # A creator view invalidated while on another tab must refill when returning.
+    creator_reads=[]
+    def history(route):
+        creator_reads.append(route.request.url)
+        entry=payload(2)['cards'][0]
+        route.fulfill(json={'username':'Studio_002','images':[{**entry['representative'],'position':1}],
+                           'cards':[entry],'knownCount':1,'seenCount':0,'complete':True,'hasMore':False})
+    page.route('**/api/timemachine/creator?**',history)
+    page.evaluate("() => openTimeMachineCreator('Studio_002')")
+    page.locator('#timeMachineCreatorGrid .creator-card').wait_for()
+    page.locator('#tabGallery').click()
+    page.evaluate("() => {window.dispatchEvent(new Event('content-controls-changing'));window.dispatchEvent(new Event('community-controls-changed'))}")
+    assert page.locator('#timeMachineCreatorGrid .creator-card').count()==0
+    reads=len(creator_reads)
+    page.locator('#tabTimeMachine').click()
+    page.locator('#timeMachineCreatorGrid .creator-card').wait_for()
+    assert len(creator_reads)>reads
     page.set_viewport_size({'width':390,'height':844});page.locator('#filterToggle').click()
     assert page.locator('#applyTagFilters').is_visible()
     assert not page.evaluate('() => document.documentElement.scrollWidth > innerWidth + 1')

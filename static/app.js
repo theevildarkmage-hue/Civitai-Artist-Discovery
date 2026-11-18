@@ -2040,8 +2040,9 @@ function showView(name) {
     }
   }
   if (timeMachine) {
-    refreshTimeMachine().catch(error => window.CivitaiUI.showPageError(
-      $("timeMachineMessage"), error.message, refreshTimeMachine));
+    const refresh = () => tmCreator ? openTimeMachineCreator(tmCreator) : refreshTimeMachine();
+    refresh().catch(error => window.CivitaiUI.showPageError(
+      $("timeMachineMessage"), error.message, refresh));
     return;
   }
   if (!discovery) {
