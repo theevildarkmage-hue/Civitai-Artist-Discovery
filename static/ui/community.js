@@ -12,7 +12,7 @@ const reportingUiEnabled = false;
 
 export function mountCommunity() {
   const tab = document.createElement('button');
-  tab.id = 'tabCommunity'; tab.innerHTML = icon('community')+'<span>Community Gallery</span>'; tab.setAttribute('aria-pressed', 'false');
+  tab.id = 'tabCommunity'; tab.innerHTML = icon('community')+'<span>Community</span>'; tab.setAttribute('aria-pressed', 'false');
   tab.hidden = true;tab.classList.add('hidden');
   document.querySelector('.view-tabs').prepend(tab);
   const section = document.createElement('section'); section.id = 'community'; section.className = 'discovery hidden';
@@ -77,14 +77,14 @@ export function mountCommunity() {
     el('communityRecommend').disabled=!submissions;
     updateRecommendationButtons();
     if(!submissions&&dialog.open)dialog.close();
-    if(!submissions)message(status?.beta?.available ? 'Community Beta is read-only. Your personal galleries still work.' : disabledNotice);
+    if(!submissions)message(status?.beta?.available ? 'Community is read-only. Your personal galleries still work.' : disabledNotice);
   }
   async function configureBeta() {
     const beta=await api('/api/community/beta');productionBeta=beta.production===true;
     policyControlled=productionBeta||beta.serverPolicy===true;
     tab.hidden=false;tab.classList.remove('hidden');
     if(!policyControlled){submissions=true;el('communityRecommend').disabled=false;updateRecommendationButtons();}
-    if(productionBeta)tab.querySelector('span').textContent='Community Beta';
+    tab.querySelector('span').textContent='Community';
   }
   configureBeta().catch(()=>{tab.hidden=false;tab.classList.remove('hidden');});
   const message = value => { el('communityMessage').setAttribute('role','status'); el('communityMessage').textContent = value; };
@@ -110,7 +110,7 @@ export function mountCommunity() {
       INVITE_ONLY:"Community Beta is Invite Only\nWe're currently testing Community with a small group of invited Civitai members. Your account isn't on the invitation list yet. You can continue using the Daily Gallery normally.",
       INVITE_REVOKED:'Your Community Beta invitation was revoked. Your Daily Gallery still works.',
       INVITE_EXPIRED:'Your Community Beta invitation expired. Your Daily Gallery still works.',
-      SUBMITTER_BLOCKED:'This account is blocked from Community participation. Contact the beta owner for review.',
+      SUBMITTER_BLOCKED:'This account is blocked from Community participation. Contact the Community maintainer for review.',
       BETA_DISABLED:disabledNotice,
       UNAVAILABLE:'Community is temporarily unavailable. Please retry later. Your Daily Gallery still works.',
       AUTH_REQUIRED:'Sign in to Civitai to use Community.',AUTH_EXPIRED:'Please sign in to Civitai again.',

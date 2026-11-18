@@ -18,7 +18,7 @@ try:
    page.route('**/api/community/status*',lambda r:reply(r,{'member':{'id':17},'quota':{'remaining':3},'beta':{'available':True,'submissions':True}}))
    page.route('**/api/community/gallery*',lambda r:reply(r,{'items':[],'nextCursor':None}))
    page.goto(h.base,wait_until='networkidle')
-   page.get_by_role('button',name='Community Beta',exact=True).wait_for()
+   page.get_by_role('button',name='Community',exact=True).wait_for()
    page.wait_for_function('()=>document.querySelector(".app-logo").complete&&document.querySelector(".app-logo").naturalWidth>0')
    assert page.locator('h1').inner_text()=='Civitai Discovery 3.0 Beta'
    assert page.locator('#appVersion').inner_text().startswith('v3.')
