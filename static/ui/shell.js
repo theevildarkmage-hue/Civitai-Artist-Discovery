@@ -19,8 +19,8 @@ export function mountShell() {
   }
   brand.classList.add('app-brand');
   const logo=document.createElement('img');
-  logo.className='app-logo';logo.src='/discovery-logo.svg';logo.alt='Civitai Discovery';
-  logo.width=250;logo.height=33;
+  logo.className='app-logo';logo.src='/discovery-header.png';logo.alt='Civitai Discovery';
+  logo.width=216;logo.height=72;
   const heading=brand.querySelector('h1');
   heading.replaceChildren(logo);
   header.classList.add('app-header');

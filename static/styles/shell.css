@@ -96,5 +96,9 @@ main { padding: 18px 20px 60px; }
   *, *::before, *::after { scroll-behavior: auto !important; }
 }
 
-/* Approved permanent wordmark; version/environment remain independent. */
-.app-brand h1{display:flex;align-items:center;min-width:0}.app-brand .app-logo{width:250px;height:auto;max-width:100%;display:block}.app-brand .app-title-row{column-gap:10px}@media(max-width:700px){.app-brand .app-logo{width:220px}}
+/* Owner-approved transparent B artwork in the upper-left header. */
+body > .app-header{min-height:96px;padding:12px 20px 11px}
+.app-brand h1{display:flex;align-items:center;min-width:0}
+.app-brand .app-logo{width:216px;height:auto;max-width:100%;display:block}
+.app-brand .app-title-row{column-gap:10px;align-items:center}
+@media(max-width:700px){body > .app-header{min-height:64px;padding:10px 12px}.app-brand .app-logo{width:156px}}

@@ -138,6 +138,8 @@ dev/community-test-lab/*
 !scripts/verify-public-artwork.mjs
 
 # Git identity privacy enforcement.
+# Explicitly approved transparent raster header; other generated PNGs stay ignored.
+!static/discovery-header.png
 !.githooks/*
 !.github/
 !.github/workflows/

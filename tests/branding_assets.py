@@ -13,6 +13,20 @@ NS='{http://www.w3.org/2000/svg}'
 
 
 class BrandingAssets(unittest.TestCase):
+    def test_owner_approved_transparent_header_is_exact_asset(self):
+        import hashlib
+        path=ROOT/'static/discovery-header.png'
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),
+            '987d15db1efa6d3bf37a0150d0f57a35cb782134672c2fea0c9115ffd9eee0ec')
+        with Image.open(path) as image:
+            self.assertEqual(image.mode,'RGBA')
+            self.assertEqual(image.size,(2172,724))
+            alpha=image.getchannel('A')
+            self.assertEqual(alpha.getextrema(),(0,255))
+            for point in ((0,0),(2171,0),(0,723),(2171,723)):
+                self.assertEqual(alpha.getpixel(point),0)
+            self.assertGreaterEqual(alpha.getpixel((580,275)),250)
+
     def test_vectors_are_self_contained_and_editable(self):
         files=sorted((ROOT/'static').glob('discovery-*.svg'))
         self.assertEqual(len(files),6)

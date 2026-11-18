@@ -6,7 +6,7 @@ import subprocess
 from git_identity import forbidden_text
 
 ROOT=Path(__file__).resolve().parents[1]
-APPROVED_BINARY={'tests/fixtures/recovery.mp4'}
+APPROVED_BINARY={'tests/fixtures/recovery.mp4', 'static/discovery-header.png'}
 PERSONAL_PATH_PATTERN=r'(?i)\b[A-Z]:[\\/]+Users[\\/]+[A-Za-z0-9_.-]+[\\/]'
 PATTERNS=[r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
           r'\b(?:ghp_|github_pat_|sb_secret_|sbp_|sk-proj-)[A-Za-z0-9_-]{20,}',
