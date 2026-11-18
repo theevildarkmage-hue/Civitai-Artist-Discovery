@@ -317,6 +317,7 @@ class HistoryArchive:
     def _initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
+            had_block_table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='block_images'").fetchone() is not None
             db.executescript("""
                 PRAGMA journal_mode=WAL;
                 PRAGMA synchronous=NORMAL;
@@ -400,7 +401,7 @@ class HistoryArchive:
                 db.execute("ALTER TABLE images ADD COLUMN stats_fetched_at TEXT")
             db.execute("CREATE INDEX IF NOT EXISTS images_visual_hash "
                        "ON images(visual_hash,width,height) WHERE visual_hash IS NOT NULL")
-            db.execute("INSERT OR IGNORE INTO block_images(block_key,image_id) SELECT local_date,id FROM images")
+            self._ensure_block_membership_migration(db, had_block_table)
             # Popular v2 ranks by total daily reactions and uses the most-reacted image.
             # Cached indexes are derived data, so invalidate the old hash-ranked version
             # once and rebuild each saved day locally when it is next opened.
@@ -413,6 +414,30 @@ class HistoryArchive:
                 db.execute(f"PRAGMA user_version={POPULAR_INDEX_VERSION}")
         self._ensure_capture_recovery_schema()
         self._audit_legacy_block_coverage()
+
+    @staticmethod
+    def _ensure_block_membership_migration(db, had_block_table: bool) -> None:
+        """Backfill legacy memberships once, atomically with its durable marker.
+
+        Popular index v2 historically committed only *after* this backfill. Existing
+        populated v2 archives can adopt that completion evidence without reading
+        millions of images. Empty/missing tables still recover interrupted DDL.
+        All normal archive import/capture writers maintain memberships themselves.
+        """
+        if not db.in_transaction:
+            db.execute('BEGIN IMMEDIATE')
+        db.execute('''CREATE TABLE IF NOT EXISTS archive_migrations (
+            name TEXT PRIMARY KEY, completed_at TEXT NOT NULL)''')
+        name = 'local-date-block-memberships-v1'
+        if had_block_table and db.execute('SELECT 1 FROM archive_migrations WHERE name=?', (name,)).fetchone():
+            return
+        previous_version = db.execute('PRAGMA user_version').fetchone()[0]
+        established = had_block_table and previous_version >= 2 and db.execute(
+            'SELECT 1 FROM block_images LIMIT 1').fetchone() is not None
+        if not established:
+            db.execute('''INSERT OR IGNORE INTO block_images(block_key,image_id)
+                SELECT local_date,id FROM images''')
+        db.execute('INSERT OR REPLACE INTO archive_migrations(name,completed_at) VALUES(?,?)', (name, utcnow()))
 
     def _ensure_capture_recovery_schema(self) -> None:
         """Add the retry ledger atomically; never repair or replace archive records.
