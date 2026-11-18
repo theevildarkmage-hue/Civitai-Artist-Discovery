@@ -83,6 +83,7 @@ ACCOUNT_SCOPED_TABLES = (
     "baseline_sample", "followed_creators", "creator_followers",
     "recent_posts", "recent_post_tags", "recent_post_models", "recent_model_names",
 )
+TAG_UNAVAILABLE_RECHECK_SECONDS = 24 * 60 * 60
 
 
 def _image_url(value: str, name: str | None, width: int = 768) -> str:
@@ -194,6 +195,11 @@ class TasteStore:
                     ON archive_image_tags(tag_name, image_id);
                 CREATE TABLE IF NOT EXISTS archive_image_seen (
                     image_id INTEGER PRIMARY KEY, fetched_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS archive_tag_unavailable (
+                    account_id INTEGER NOT NULL, image_id INTEGER NOT NULL,
+                    reason TEXT NOT NULL, observed_at TEXT NOT NULL, retry_after REAL NOT NULL,
+                    PRIMARY KEY(account_id,image_id)
                 );
                 -- The account's own Content Controls, mirrored from Civitai. Stored rather
                 -- than queried per request so the gallery can filter without a round trip,
@@ -1057,20 +1063,46 @@ class TasteStore:
         return self._tag_stats()[0]
 
     def tag_coverage(self, image_ids: list[int]) -> tuple[int, int]:
+        coverage = self.tag_preparation_coverage(image_ids)
+        return coverage['known'], coverage['total']
+
+    @staticmethod
+    def _tag_account() -> int:
+        try:
+            identity = auth_status()
+            return int(identity.get('id') or 0) if identity.get('connected') else 0
+        except Exception:
+            return 0
+
+    def _tag_preparation_sets(self, image_ids, account):
         wanted = {int(value) for value in image_ids if value}
-        if not wanted:
-            return 0, 0
+        seen, unavailable = set(), set()
+        ids = list(wanted)
         with self.connect() as db:
-            seen = {row["image_id"] for row in db.execute("SELECT image_id FROM archive_image_seen")}
-        return len(wanted & seen), len(wanted)
+            # Point lookups avoid scanning the entire personal archive on each poll.
+            for start in range(0, len(ids), 400):
+                chunk = ids[start:start+400]; holes = ','.join('?' for _ in chunk)
+                seen.update(row[0] for row in db.execute(f'SELECT image_id FROM archive_image_seen WHERE image_id IN ({holes})',chunk))
+                if account:
+                    unavailable.update(row[0] for row in db.execute(
+                        f'SELECT image_id FROM archive_tag_unavailable WHERE account_id=? AND retry_after>? AND image_id IN ({holes})',
+                        [account,time.time(),*chunk]))
+        return wanted, seen, unavailable-seen
+
+    def tag_preparation_coverage(self, image_ids) -> dict:
+        wanted, seen, unavailable = self._tag_preparation_sets(image_ids,self._tag_account())
+        processed = len(seen) + len(unavailable)
+        return {'known':len(seen),'total':len(wanted),'unavailable':len(unavailable),
+                'processed':processed,'pending':len(wanted)-processed,'complete':processed>=len(wanted),
+                'unavailableRecheckSeconds':TAG_UNAVAILABLE_RECHECK_SECONDS}
 
     def sweep_image_tags(self, client: SocialClient, image_ids: list[int],
                          cancel: threading.Event, progress=None) -> int:
         """Read tags for archived images. The daily archive endpoint does not carry them."""
         wanted = [int(value) for value in dict.fromkeys(image_ids) if value]
-        with self.connect() as db:
-            seen = {row["image_id"] for row in db.execute("SELECT image_id FROM archive_image_seen")}
-        missing = [value for value in wanted if value not in seen]
+        account = self._tag_account()
+        _, seen, unavailable = self._tag_preparation_sets(wanted,account)
+        missing = [value for value in wanted if value not in seen and value not in unavailable]
         done = 0
         for start in range(0, len(missing), 100):
             if cancel.is_set():
@@ -1094,9 +1126,13 @@ class TasteStore:
             else:
                 raise RuntimeError("Civitai tag lookup exhausted its retries")
             stamp = _now()
-            tag_rows, seen_rows = [], []
+            if len(results) != len(chunk) or any(tags is not None and not isinstance(tags,list) for tags in results):
+                raise RuntimeError('Civitai returned an incomplete or invalid tag batch')
+            tag_rows, seen_rows, unavailable_rows = [], [], []
             for image_id, tags in zip(chunk, results):
-                if not isinstance(tags, list):
+                if tags is None:
+                    if account:
+                        unavailable_rows.append((account,image_id,'not_found',stamp,time.time()+TAG_UNAVAILABLE_RECHECK_SECONDS))
                     continue
                 seen_rows.append((image_id, stamp))
                 for tag in tags if isinstance(tags, list) else []:
@@ -1108,6 +1144,9 @@ class TasteStore:
                                tag_rows)
                 db.executemany("INSERT OR REPLACE INTO archive_image_seen(image_id,fetched_at) VALUES(?,?)",
                                seen_rows)
+                db.executemany('INSERT OR REPLACE INTO archive_tag_unavailable(account_id,image_id,reason,observed_at,retry_after) VALUES(?,?,?,?,?)',unavailable_rows)
+                db.executemany('DELETE FROM archive_tag_unavailable WHERE account_id=? AND image_id=?',
+                               [(account,image_id) for image_id,_ in seen_rows])
             done += len(chunk)
             if progress:
                 progress(done, len(missing))

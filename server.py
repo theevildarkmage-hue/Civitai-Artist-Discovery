@@ -413,10 +413,16 @@ def sweep_targets(kind: str, key: str):
         names = [row["username"] for row in rows]
         return names, TASTE.follower_coverage(names)
     ids = [row["representativeId"] for row in rows if row["representativeId"]]
-    return ids, TASTE.tag_coverage(ids)
+    coverage = TASTE.tag_preparation_coverage(ids)
+    return ids, (coverage['processed'],coverage['total'])
 
 
 def sweep_status(kind: str, key: str) -> dict:
+    if kind == 'tags':
+        ids = [row['representativeId'] for row in HISTORY.day_artist_keys(key) if row['representativeId']]
+        with SWEEP_LOCK:
+            job = dict(SWEEP_JOBS[kind])
+        return {'kind':kind, **TASTE.tag_preparation_coverage(ids), 'job':job}
     _, (known, total) = sweep_targets(kind, key)
     with SWEEP_LOCK:
         job = dict(SWEEP_JOBS[kind])
@@ -460,6 +466,8 @@ def run_sweep(kind: str, key: str, targets, known: int, total: int) -> None:
             processed = TASTE.sweep_image_tags(client, targets, SWEEP_CANCEL[kind], progress)
         _, (fresh, _total) = sweep_targets(kind, key)
         attempted_all = processed >= max(0, total - known)
+        if kind == 'tags':
+            attempted_all = fresh >= total
         with SWEEP_LOCK:
             SWEEP_JOBS[kind].update({"running": False, "done": fresh,
                                      "attemptedAll": attempted_all,

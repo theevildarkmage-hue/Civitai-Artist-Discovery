@@ -136,24 +136,28 @@ class SocialClient:
             with urllib.request.urlopen(request, timeout=20) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
-            if error.code == 404 and getattr(request, '_optional_image_batch', False):
-                # tRPC returns HTTP 404 for an all-missing read batch. Admit only
-                # explicit per-image NOT_FOUND envelopes, never a proxy/plain 404.
+            procedure = getattr(request, '_optional_missing_batch', None)
+            if error.code == 404 and procedure:
+                # tRPC may return HTTP 404 for optional batches containing missing
+                # rows. Keep valid successes, but accept only endpoint-specific
+                # NOT_FOUND errors, never a proxy/plain 404.
                 raw = error.read(1024 * 1024 + 1)
+                error.close()
                 try:
                     value = json.loads(raw) if len(raw) <= 1024 * 1024 else None
-                    if isinstance(value, list) and value and all(
-                        isinstance(item, dict) and
-                        item.get('error', {}).get('json', {}).get('data', {}).get('httpStatus') == 404 and
-                        item['error']['json']['data'].get('code') == 'NOT_FOUND' and
-                        item['error']['json']['data'].get('path', 'image.get') == 'image.get'
-                        for item in value
-                    ):
+                    def missing(item):
+                        data = item.get('error', {}).get('json', {}).get('data', {})
+                        return (data.get('httpStatus') == 404 and data.get('code') == 'NOT_FOUND'
+                                and data.get('path', 'image.get' if procedure == 'image.get' else None) == procedure)
+                    if (isinstance(value, list) and value and any(missing(item) for item in value)
+                        and all(isinstance(item, dict) and
+                                (missing(item) or ('result' in item and 'error' not in item)) for item in value)):
                         return value
                 except (ValueError, AttributeError, TypeError):
                     pass
-                raise CivitaiHTTPError(404, 'Civitai returned an invalid missing-image batch') from error
+                raise CivitaiHTTPError(404, 'Civitai returned an invalid missing-artwork batch') from error
             detail = redact_sensitive(error.read(4096).decode("utf-8", "replace"))[:600]
+            error.close()
             raise CivitaiHTTPError(
                 error.code, f"Civitai returned HTTP {error.code}: {detail}",
                 (error.headers or {}).get("Retry-After")) from error
@@ -177,7 +181,7 @@ class SocialClient:
         inputs = {str(index): {"json": payload} for index, payload in enumerate(payloads)}
         encoded = urllib.parse.quote(json.dumps(inputs, separators=(",", ":")))
         request = urllib.request.Request(f"{BASE_URL}/api/trpc/{procedures}?batch=1&input={encoded}")
-        request._optional_image_batch = optional and procedure == 'image.get'
+        request._optional_missing_batch = procedure if optional and procedure in ('image.get', 'tag.getVotableTags') else None
         response = self._request(request)
         if not isinstance(response, list) or len(response) != len(payloads):
             raise RuntimeError("Civitai returned an incomplete query batch")
@@ -188,12 +192,19 @@ class SocialClient:
                 detail = item['error'].get('json', {})
                 data = detail.get('data') or {}
                 code = data.get('httpStatus')
-                if code == 404 or data.get('code') == 'NOT_FOUND':
+                missing = code == 404 or data.get('code') == 'NOT_FOUND'
+                if procedure == 'tag.getVotableTags':
+                    missing = (code == 404 and data.get('code') in (None,'NOT_FOUND')
+                               and data.get('path') in (None,procedure))
+                if missing:
                     continue
                 raise CivitaiHTTPError(int(code or 502), detail.get('message') or 'Civitai query failed')
         if optional:
-            return [None if not isinstance(item, dict) or "error" in item
-                    else unwrap_result(item["result"]) for item in response]
+            values = [None if "error" in item else unwrap_result(item["result"]) for item in response]
+            if procedure == 'tag.getVotableTags' and any('error' not in item and not isinstance(value,list)
+                                                       for item,value in zip(response,values)):
+                raise RuntimeError('Civitai returned an invalid tag result')
+            return values
         results = []
         for item in response:
             if not isinstance(item, dict) or "error" in item:

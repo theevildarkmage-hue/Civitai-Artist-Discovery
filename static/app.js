@@ -1384,11 +1384,19 @@ function showSweepProgress(note, kind, state) {
     note.classList.remove("hidden");
     return;
   }
-  const known = safeCount(state.known), total = safeCount(state.total);
-  const percent = total ? Math.min(100, Math.round(known * 100 / total)) : 0;
+  const known = safeCount(state.known), total = safeCount(state.total), unavailable = safeCount(state.unavailable);
+  const percent = total ? Math.min(100, Math.round((known + unavailable) * 100 / total)) : 0;
   note.classList.add("personalization-note", "preliminary");
   note.classList.remove("ready", "hidden");
-  note.innerHTML = `<span class="sweep-copy"><strong>For You is still learning this gallery</strong><span>Rankings are preliminary while artwork tags are prepared.</span></span><span class="sweep-count">${displayCount(known)} of ${displayCount(total)} creator previews analyzed</span><progress class="sweep-progress" aria-label="Preparing tag-based recommendations" aria-valuenow="${percent}" max="100" value="${percent}"></progress>`;
+  note.innerHTML = `<span class="sweep-copy"><strong>For You is still learning this gallery</strong><span>Rankings are preliminary while artwork tags are prepared.</span></span><span class="sweep-count">${displayCount(known)} of ${displayCount(total)} creator previews analyzed${unavailable ? ` · ${displayCount(unavailable)} unavailable` : ''}</span><progress class="sweep-progress" aria-label="Preparing tag-based recommendations" aria-valuenow="${percent}" max="100" value="${percent}"></progress>`;
+}
+function showSweepCompletion(note, kind, state) {
+  if (kind !== 'tags' || !state.unavailable) { hideSweepNote(); return; }
+  note.classList.add('personalization-note','ready'); note.classList.remove('preliminary','hidden');
+  note.replaceChildren();
+  const message = document.createElement('span');
+  message.textContent = `Tag preparation finished: ${displayCount(state.known)} analyzed, ${displayCount(state.unavailable)} unavailable. For You uses available tags; unavailable previews are rechecked after 24 hours.`;
+  note.append(message);
 }
 function showPreliminaryPlaceholder() {
   const note = $("followerSweep");
@@ -1412,6 +1420,10 @@ function showSweepFailure(note, kind, state) {
       : `${sweepLabels[kind]} could not continue. `;
   }
   const retry = document.createElement("button");
+  if (kind === 'tags' && state?.total !== undefined) {
+    message.textContent = `For You is using preliminary rankings: ${displayCount(state.known)} analyzed, ${displayCount(state.unavailable || 0)} unavailable, ${displayCount(state.pending ?? (state.total-state.known))} remaining. Preparation failed. `;
+  }
+  if (state?.job?.error) message.textContent += `${String(state.job.error).slice(0,200)} `;
   retry.type = "button";
   retry.textContent = "Retry";
   retry.title = state.job?.error || `Retry ${sweepLabels[kind].toLowerCase()}`;
@@ -1423,7 +1435,7 @@ async function ensureViewData(kind) {
   const note = $("followerSweep"), url = `/api/history/prepare?date=${selectedDate}&segment=${selectedSegment}&kind=${kind}`;
   try {
     let state = await api(url);
-    if (state.complete) { hideSweepNote(); return; }
+    if (state.complete) { showSweepCompletion(note, kind, state); return; }
     if (!oauthConnected) { note.textContent = "Connect Civitai to prepare this view"; note.classList.remove("hidden"); return; }
     const watch = ++sweepWatch;
     showSweepProgress(note, kind, state);
@@ -1443,13 +1455,13 @@ async function ensureViewData(kind) {
       await new Promise(resolve => setTimeout(resolve, 1200));
     }
     if (watch !== sweepWatch) return;
-    if (kind === "tags") {
+    if (kind === "tags" && !state.unavailable) {
       note.classList.remove("preliminary");
       note.classList.add("ready");
       note.innerHTML = '<span class="sweep-copy"><strong>Tag analysis complete</strong><span>Refreshing For You with the fully personalized ranking…</span></span>';
     }
     await reloadView();
-    hideSweepNote();
+    showSweepCompletion(note, kind, state);
   } catch (error) { showSweepFailure(note, kind, { job: { error: error.message } }); }
 }
 async function reloadView() {
