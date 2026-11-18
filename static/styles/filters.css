@@ -7,6 +7,10 @@
 .filter-panel h2 { margin: 0; font-size: 18px; }
 .filter-panel .quiet-button { min-width: 32px; min-height: 32px; border: 0; background: transparent; color: var(--text); cursor: pointer; font-size: 18px; }
 .filter-sections { display: grid; gap: 20px; padding: 12px 0 18px; }
+#filterPanel.content-only #modelMenu { display: none !important; }
+#filterPanel [hidden] { display: none !important; }
+.filter-scope-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.timemachine-view .segment-toolbar > :not(#filterToggle):not(.active-filters) { display: none !important; }
 #filterPanel .filter-menu { display: block !important; position: static; width: auto; max-width: none; max-height: none; overflow: visible; padding: 0; border: 0; box-shadow: none; background: transparent; }
 #filterPanel .content-menu-title { font-size: 14px; font-weight: 700; }
 #filterPanel .content-menu > small { display: none; }

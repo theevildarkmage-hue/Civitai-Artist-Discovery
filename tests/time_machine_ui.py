@@ -105,10 +105,11 @@ with tempfile.TemporaryDirectory(prefix="civitai-tm-ui-", ignore_cleanup_errors=
 
             # A late day load must not reveal the gallery's chrome over this view.
             page.evaluate("() => { setChrome(true); }")
-            assert page.locator(".segment-toolbar").is_hidden(), "chrome leaked after setChrome"
+            assert page.locator("#filterToggle").is_visible(), "Time Machine content filters disappeared"
+            assert page.locator("#calendarToggle").is_hidden(), "Daily calendar leaked after setChrome"
 
             # The other tabs still work; gallery chrome is hidden here.
-            assert page.locator(".segment-toolbar").is_hidden()
+            assert page.locator("#dayView").is_hidden()
             page.locator("#tabDiscovery").click()
             page.wait_for_selector("#discovery:not(.hidden)")
             assert page.locator("#timeMachine").is_hidden()

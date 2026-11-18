@@ -1767,7 +1767,7 @@ function modelQuery() {
 function galleryFilterState() {
   return {...window.CivitaiUI.browsingState({ date: selectedDate, segment: selectedSegment,
     view: selectedView, models: selectedModels, media: selectedMedia, levels: visibleBrowsingLevels }),
-    applyTagFilters, applyAccountFilters, applyImageFilters, controlFiltersSaving};
+    surface: currentView, applyTagFilters, applyAccountFilters, applyImageFilters, controlFiltersSaving};
 }
 async function saveGalleryControl(key, value, reload = true) {
   if (controlFiltersSaving) return;
@@ -1829,6 +1829,7 @@ async function resetGalleryFilters() {
   if (!applyTagFilters) await setGalleryTagFilters(true, false);
   if (!applyAccountFilters) await setGalleryAccountFilters(true, false);
   if (!applyImageFilters) await setGalleryImageFilters(true, false);
+  if (currentView === 'timemachine') { await chooseContentRating([1, 2]); return; }
   await setGalleryMedia("all", false);
   selectedModels.clear();
   $("modelFilter").textContent = modelButtonLabel();
@@ -2008,6 +2009,7 @@ function showView(name) {
   const timeMachine = name === "timemachine";
   const community = name === "community";
   document.body.classList.toggle('community-view', community);
+  document.body.classList.toggle('timemachine-view', timeMachine);
   const gallery = !discovery && !timeMachine && !community;
   document.getElementById('community')?.classList.toggle('hidden', !community);
   const communityTab = document.getElementById('tabCommunity');
@@ -2016,7 +2018,9 @@ function showView(name) {
   $("tabGallery").classList.toggle("active", gallery); $("tabGallery").setAttribute("aria-pressed", String(gallery));
   $("tabDiscovery").classList.toggle("active", discovery); $("tabDiscovery").setAttribute("aria-pressed", String(discovery));
   $("tabTimeMachine").classList.toggle("active", timeMachine); $("tabTimeMachine").setAttribute("aria-pressed", String(timeMachine));
-  segmentToolbar.classList.toggle("hidden", !gallery && !community);
+  segmentToolbar.classList.toggle("hidden", !gallery && !community && !timeMachine);
+  window.updateGalleryFilters?.();
+  window.dispatchEvent(new Event('gallery-surface-changed'));
   ["olderDay", "newerDay", "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", !gallery));
   $("discovery").classList.toggle("hidden", !discovery);
   $("timeMachine").classList.toggle("hidden", !timeMachine);
@@ -2128,8 +2132,11 @@ function syncTimeMachineCards(entries) {
     element.loadArtworkAlternatives = () => api(`/api/timemachine/creator?username=${encodeURIComponent(entry.username)}&limit=40&savedOnly=1`);
     element.onUnavailableCardRemoved = () => { timeMachineSeenObserver.unobserve(element); element.tmEnteredAt = 0; };
     const basePrepareArtwork = element.prepareArtwork;
+    const preparationEpoch = timeMachineFilterEpoch;
     element.prepareArtwork = async () => {
-      if (tagsHideImage(await checkImageTags(entry.representative.id))) {
+      const tags = await checkImageTags(entry.representative.id);
+      if (!element.isConnected || preparationEpoch !== timeMachineFilterEpoch) return;
+      if (tagsHideImage(tags)) {
         // Only reachable when this image's tags had not been swept when the card was
         // built. A card holds one image, so there is nothing to fall back to: step the
         // creator past it and take the card off screen rather than leave it empty.
@@ -2222,13 +2229,30 @@ async function flushTimeMachineSeen() {
     { method: "POST", body: JSON.stringify({ usernames }) });
   return advanced;
 }
+let timeMachineReadEpoch = 0, timeMachineFilterEpoch = 0;
+window.addEventListener('content-controls-changing', () => {
+  ++timeMachineReadEpoch;
+  ++timeMachineFilterEpoch;
+  ++tmCreatorToken;
+  tmCreatorLoading = null;
+  [...$("timeMachineGrid").children].forEach(node => {
+    timeMachineSeenObserver.unobserve(node); node.tmEnteredAt = 0;
+    node.releaseVideo?.(); node.querySelector('.image-button img')?.cancelArtwork?.();
+  });
+  $("timeMachineGrid").replaceChildren();
+  clearTimeMachineCreatorGrid();
+  tmCreatorSentinelObserver.unobserve($("tmCreatorSentinel"));
+});
 async function refreshTimeMachine() {
+  const epoch = ++timeMachineReadEpoch;
   const grid = $("timeMachineGrid");
   const clearSkeleton = !grid.children.length ? window.CivitaiUI.showGallerySkeleton(grid) : () => {};
   grid.setAttribute("aria-busy", "true");
   try {
     await flushTimeMachineSeen();
+    if (epoch !== timeMachineReadEpoch) return;
     const data = await api("/api/timemachine");
+    if (epoch !== timeMachineReadEpoch) return;
     clearSkeleton();
     renderTimeMachineStatus(data.status);
     renderTimeMachineCards(data.cards);
@@ -2236,7 +2260,7 @@ async function refreshTimeMachine() {
     // showing what is already there rather than only after it is clicked.
     hydrateReactionStates(data.cards.map(entry => entry.representative))
       .catch(error => console.warn("Reaction history could not be loaded", error));
-  } finally { clearSkeleton(); grid.removeAttribute("aria-busy"); }
+  } finally { clearSkeleton(); if (epoch === timeMachineReadEpoch) grid.removeAttribute("aria-busy"); }
 }
 // Searching one followed creator. Suggestions come from creators the Time Machine already
 // tracks, so typing never calls Civitai. Picking one shows only their work, starting at
@@ -2369,8 +2393,11 @@ function timeMachineCreatorCard(entry, image) {
   element.dataset.position = String(image.position);
   element.onUnavailableCardRemoved = () => { tmCreatorSeenObserver.unobserve(element); element.tmEnteredAt = 0; };
   const basePrepareArtwork = element.prepareArtwork;
+  const preparationToken = tmCreatorToken;
   element.prepareArtwork = async () => {
-    if (tagsHideImage(await checkImageTags(entry.representative.id))) {
+    const tags = await checkImageTags(entry.representative.id);
+    if (!element.isConnected || preparationToken !== tmCreatorToken) return;
+    if (tagsHideImage(tags)) {
       tmCreatorSeenObserver.unobserve(element);
       window.reportClientEvent?.('card_removed', { reason: 'image-hidden-by-civitai-tags',
         username: entry.username, imageId: entry.representative.id, surface: 'time-machine-creator' });
@@ -2473,7 +2500,9 @@ $("timeMachinePrime").onclick = async () => {
     timeMachinePoll = setInterval(async () => {
       // A full card fetch measured 0.04s for 285 creators, so there is no reason to poll
       // the status alone and make the reader wait for a tab switch to see new cards.
+      const epoch = timeMachineReadEpoch;
       const data = await api("/api/timemachine");
+      if (epoch !== timeMachineReadEpoch) return;
       renderTimeMachineStatus(data.status);
       renderTimeMachineCards(data.cards);
       if (!data.status.priming) clearInterval(timeMachinePoll);

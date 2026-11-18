@@ -65,6 +65,11 @@ export function mountFilters(actions) {
   media.innerHTML = '<span>Media type</span><select id="mediaType" aria-label="Media type"><option value="all">All</option><option value="image">Images only</option><option value="video">Videos only</option></select>';
   panel.querySelector('.filter-sections').prepend(media);
   const mediaSelect = media.querySelector('select');
+  const scopeNote = document.createElement('p');
+  scopeNote.className = 'filter-scope-note';
+  scopeNote.textContent = 'Browsing levels and Civitai content controls apply to Time Machine. Media and generation-model selections apply to Daily Gallery and Community.';
+  scopeNote.hidden = true;
+  panel.querySelector('.filter-sections').prepend(scopeNote);
   mediaSelect.onchange = () => actions.setMedia(mediaSelect.value);
   // Keep the legacy label as a state notification point until page state is extracted.
   model.classList.add('hidden');
@@ -77,6 +82,7 @@ export function mountFilters(actions) {
   let showAllModels = false;
   modelMenu.before(search); modelMenu.after(more);
   const applyModelSearch = () => {
+    if (actions.state().surface === 'timemachine') { more.hidden = true; return; }
     const rows = [...modelMenu.querySelectorAll('.filter-row')];
     const query = search.value.trim().toLocaleLowerCase();
     rows.forEach((row, index) => {
@@ -104,7 +110,7 @@ export function mountFilters(actions) {
     position();
     button.setAttribute('aria-expanded', 'true');
     search.disabled = true;
-    await actions.refreshModels();
+    if (actions.state().surface !== 'timemachine') await actions.refreshModels();
     search.disabled = false;
     applyModelSearch();
   };
@@ -132,7 +138,14 @@ export function mountFilters(actions) {
 
   const paint = () => {
     applyModelSearch();
-    const { models, levels, media = 'all', applyTagFilters = true, applyAccountFilters = true, applyImageFilters = true, controlFiltersSaving = false } = actions.state();
+    const { models, levels, surface, media: selectedMedia = 'all', applyTagFilters = true, applyAccountFilters = true, applyImageFilters = true, controlFiltersSaving = false } = actions.state();
+    const timeMachine = surface === 'timemachine';
+    const mediaValue = timeMachine ? 'all' : selectedMedia;
+    const activeModels = timeMachine ? [] : models;
+    panel.classList.toggle('content-only', timeMachine);
+    panel.setAttribute('aria-label', timeMachine ? 'Time Machine content filters' : 'Gallery filters');
+    media.hidden = search.hidden = modelMenu.hidden = timeMachine;
+    scopeNote.hidden = !timeMachine;
     tagCheckbox.checked = applyTagFilters;
     if (tagCheckbox.disabled !== controlFiltersSaving) tagCheckbox.disabled = controlFiltersSaving;
     accountCheckbox.checked = applyAccountFilters;
@@ -140,22 +153,22 @@ export function mountFilters(actions) {
     imageCheckbox.checked = applyImageFilters;
     if (imageCheckbox.disabled !== controlFiltersSaving) imageCheckbox.disabled = controlFiltersSaving;
     paintRestrictions();
-    mediaSelect.value = media;
+    mediaSelect.value = selectedMedia;
     const ratingChanged = levels.length !== 2 || !levels.includes(1) || !levels.includes(2);
-    const count = models.length + Number(ratingChanged) + Number(media !== 'all') + Number(!applyTagFilters) + Number(!applyAccountFilters) + Number(!applyImageFilters);
+    const count = activeModels.length + Number(ratingChanged) + Number(mediaValue !== 'all') + Number(!applyTagFilters) + Number(!applyAccountFilters) + Number(!applyImageFilters);
     button.textContent = count ? `Filters · ${count}` : 'Filters';
     button.dataset.activeCount = String(count);
     panel.querySelector('.filter-reset').disabled = !count;
     chips.querySelectorAll('.model-chip').forEach(chip => chip.remove());
-    if (media !== 'all') {
+    if (mediaValue !== 'all') {
       const chip = document.createElement('button');
       chip.className = 'filter-button model-chip';
-      chip.textContent = `${media === 'image' ? 'Images only' : 'Videos only'} ×`;
+      chip.textContent = `${mediaValue === 'image' ? 'Images only' : 'Videos only'} ×`;
       chip.setAttribute('aria-label', 'Remove media filter');
       chip.onclick = () => actions.setMedia('all');
       chips.append(chip);
     }
-    for (const name of models) {
+    for (const name of activeModels) {
       const chip = document.createElement('button');
       chip.className = 'filter-button model-chip';
       chip.type = 'button';
@@ -172,5 +185,6 @@ export function mountFilters(actions) {
     childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'],
   });
   paint();
+  window.addEventListener('gallery-surface-changed', () => { close(); paint(); });
   return { update: paint };
 }
