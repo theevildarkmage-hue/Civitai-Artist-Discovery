@@ -40,6 +40,8 @@ try:
         card=page.locator('#communityGrid .creator-card');card.wait_for()
         page.wait_for_function("()=>document.querySelector('#communityGrid .creator-card').getAttribute('aria-busy')==='false'")
         card.locator('.info-button').click()
+        assert page.locator('#detailPrevious').inner_text()=='\u2190 Previous'
+        assert page.locator('#detailNext').inner_text()=='Next \u2192'
         page.wait_for_function("()=>document.querySelector('#detailPosition').textContent==='1 of 3'")
         initial=card.get_attribute('data-id'); handle=card.element_handle()
         page.locator('#detailNext').click()

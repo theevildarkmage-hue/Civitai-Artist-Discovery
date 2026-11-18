@@ -1230,7 +1230,7 @@ async function moveDetailArtwork(delta) {
   const card = detailCard, generation = ++detailMoveGeneration, focused = document.activeElement;
   const isCurrent = () => generation === detailMoveGeneration && $('details').open && detailCard === card;
   detailMoving = true; updateDetailNavigation();
-  $('detailPosition').textContent = 'Checking artwork?';
+  $('detailPosition').textContent = 'Checking artwork...';
   try {
     const state = await card.moveDetailArtwork(delta, isCurrent);
     if (!isCurrent()) return;
