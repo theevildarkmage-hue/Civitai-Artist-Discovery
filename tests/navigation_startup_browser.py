@@ -37,9 +37,17 @@ try:
    page.keyboard.press('Escape')
    for tab,view in [('tabDiscovery','discovery'),('tabTimeMachine','timemachine'),('tabGallery','gallery'),('tabCommunity','community')]:
     page.locator('#'+tab).click()
-    page.wait_for_function('(id)=>document.getElementById(id)?.getAttribute("aria-pressed")==="true"',arg=tab)
+    try:
+     page.wait_for_function('(id)=>document.getElementById(id)?.getAttribute("aria-pressed")==="true"',arg=tab)
+    except Exception:
+     print({'width':width,'expected':tab,'errors':errors,'state':page.evaluate('()=>({saved:sessionStorage.getItem("civitai-active-view"),tabs:[...document.querySelectorAll(".view-tabs>button")].map(b=>({id:b.id,pressed:b.getAttribute("aria-pressed"),disabled:b.disabled})),welcome:!document.querySelector("#welcome").classList.contains("hidden")})')},flush=True)
+     raise
     page.reload(wait_until='domcontentloaded')
-    page.wait_for_function('(id)=>document.getElementById(id)?.getAttribute("aria-pressed")==="true"',arg=tab)
+    try:
+     page.wait_for_function('(id)=>document.getElementById(id)?.getAttribute("aria-pressed")==="true"',arg=tab)
+    except Exception:
+     print({'width':width,'expected':tab,'errors':errors,'state':page.evaluate('()=>({saved:sessionStorage.getItem("civitai-active-view"),tabs:[...document.querySelectorAll(".view-tabs>button")].map(b=>({id:b.id,pressed:b.getAttribute("aria-pressed"),disabled:b.disabled})),welcome:!document.querySelector("#welcome").classList.contains("hidden")})')},flush=True)
+     raise
     assert page.evaluate('sessionStorage.getItem("civitai-active-view")')==view
    page.evaluate('sessionStorage.setItem("civitai-active-view","invalid-view")')
    page.reload(wait_until='domcontentloaded')
