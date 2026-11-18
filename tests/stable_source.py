@@ -23,6 +23,10 @@ class StableSource(unittest.TestCase):
         stable=render(frozen=False,environment='production')
         self.assertIn('Public Community is selected',stable)
         self.assertNotIn('needs the stable launch',stable)
+        for notice in (development,stable):self.assertIn('data-source-notice-dismiss',notice)
+        from discovery.source_notice import pill
+        self.assertIn('>Public Community<',pill(environment='production'));self.assertIn('app-channel-public',pill(environment='production'))
+        self.assertIn('>Development Community<',pill(environment='development'));self.assertIn('app-channel-development',pill(environment='development'))
 
     def test_production_clients_share_fixed_endpoint_despite_environment(self):
         result=probe('''import json
@@ -116,6 +120,17 @@ with tempfile.TemporaryDirectory() as folder:
                             self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'),width)
                         self.assertEqual(page.locator('#appVersion').inner_text(),'v3.0.1')
                         self.assertNotIn('Beta',page.locator('h1').inner_text())
+                        # The environment shares one indicator with the version and outlives the notice.
+                        self.assertEqual(page.locator('#appVersion + #appChannel').inner_text(),'Public Community')
+                        self.assertEqual(page.locator('.app-build-info').count(),1)
+                        page.locator('#sourceLaunchNotice [data-source-notice-dismiss]').click()
+                        self.assertEqual(page.locator('#sourceLaunchNotice').count(),0)
+                        page.reload(wait_until='domcontentloaded')
+                        page.locator('#appVersion').filter(has_text='v3.').wait_for()
+                        self.assertEqual(page.locator('#sourceLaunchNotice').count(),0)
+                        self.assertTrue(page.locator('#appChannel').is_visible())
+                        # A Development dismissal is separate and must not be implied.
+                        self.assertIsNone(page.evaluate("localStorage.getItem('cad.sourceNoticeDismissed.development')"))
                         self.assertEqual(errors,[])
                     finally:browser.close()
             finally:
@@ -143,14 +158,33 @@ with tempfile.TemporaryDirectory() as folder:
                     browser=playwright.chromium.launch(headless=True)
                     try:
                         page=browser.new_page(viewport={'width':1440,'height':1000})
+                        page.add_init_script("localStorage.setItem('cad.sourceNoticeDismissed.production','1')")
                         page.goto(base,wait_until='domcontentloaded')
                         page.locator('#welcomeConnect').wait_for(state='visible')
                         self.assertEqual(page.locator('#sourceLaunchTitle').inner_text(),'Public Community needs the stable launch')
                         self.assertIn('server.py --stable',page.locator('#sourceLaunchNotice').inner_text())
+                        self.assertEqual(page.locator('#appVersion + #appChannel').inner_text(),'Development Community')
                         page.locator('#sourceLaunchNotice').screenshot(path=str(test_safety.REPORTS/'source-development-message.png'))
                         page.screenshot(path=str(test_safety.REPORTS/'source-development-screen.png'),full_page=True)
                         page.set_viewport_size({'width':390,'height':844})
                         self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'),390)
+                        page.locator('#sourceLaunchNotice [data-source-notice-dismiss]').click()
+                        self.assertEqual(page.locator('#sourceLaunchNotice').count(),0)
+                        self.assertEqual(page.evaluate('document.activeElement.id'),'appVersion')
+                        page.reload(wait_until='domcontentloaded')
+                        page.locator('#welcomeConnect').wait_for(state='visible')
+                        self.assertEqual(page.locator('#sourceLaunchNotice').count(),0)
+                        self.assertEqual(page.locator('.app-build-info').count(),1)
+                        self.assertTrue(page.locator('#appChannel').is_visible())
+                        # Saving dismissal is optional when browser storage is unavailable.
+                        limited=browser.new_page(viewport={'width':390,'height':844})
+                        failures=[];limited.on('pageerror',lambda error:failures.append(str(error)))
+                        limited.add_init_script("Storage.prototype.setItem=function(){throw new Error('Synthetic storage denial')}")
+                        limited.goto(base,wait_until='domcontentloaded')
+                        limited.locator('#sourceLaunchNotice [data-source-notice-dismiss]').click()
+                        self.assertEqual(limited.locator('#sourceLaunchNotice').count(),0)
+                        self.assertTrue(limited.locator('#appChannel').is_visible())
+                        self.assertEqual(failures,[])
                     finally:browser.close()
             finally:process.terminate();process.wait(timeout=10)
 
