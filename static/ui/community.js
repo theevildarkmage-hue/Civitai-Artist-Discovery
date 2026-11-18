@@ -13,6 +13,8 @@ const reportingUiEnabled = false;
 export function mountCommunity() {
   const tab = document.createElement('button');
   tab.id = 'tabCommunity'; tab.innerHTML = icon('community')+'<span>Community</span>'; tab.setAttribute('aria-pressed', 'false');
+  // Do not advertise a clickable tab before its auth listener knows the account.
+  tab.disabled = true;
   tab.hidden = true;tab.classList.add('hidden');
   document.querySelector('.view-tabs').prepend(tab);
   const section = document.createElement('section'); section.id = 'community'; section.className = 'discovery hidden';
