@@ -95,3 +95,6 @@ main { padding: 18px 20px 60px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
 }
+
+/* Approved permanent wordmark; version/environment remain independent. */
+.app-brand h1{display:flex;align-items:center;min-width:0}.app-brand .app-logo{width:250px;height:auto;max-width:100%;display:block}.app-brand .app-title-row{column-gap:10px}@media(max-width:700px){.app-brand .app-logo{width:220px}}

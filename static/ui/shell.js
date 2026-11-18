@@ -19,9 +19,10 @@ export function mountShell() {
   }
   brand.classList.add('app-brand');
   const logo=document.createElement('img');
-  logo.className='app-logo';logo.src='/discovery-beta.ico';logo.alt='';
-  logo.width=32;logo.height=32;logo.setAttribute('aria-hidden','true');
-  brand.querySelector('.app-title-row').prepend(logo);
+  logo.className='app-logo';logo.src='/discovery-logo.svg';logo.alt='Civitai Discovery';
+  logo.width=250;logo.height=33;
+  const heading=brand.querySelector('h1');
+  heading.replaceChildren(logo);
   header.classList.add('app-header');
   header.replaceChildren(brand, account);
   const tabs = document.querySelector('.view-tabs');

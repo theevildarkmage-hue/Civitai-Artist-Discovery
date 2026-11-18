@@ -31,6 +31,7 @@ static/*
 !static/*.html
 !static/*.js
 !static/*.css
+!static/discovery-*.svg
 
 # Reproducible launch/build utilities
 !scripts/

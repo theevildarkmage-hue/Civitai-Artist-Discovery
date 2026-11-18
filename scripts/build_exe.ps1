@@ -42,7 +42,7 @@ try {
   if (Test-Path -LiteralPath $staticRoot) { throw 'Generated static inputs already exist. Use a fresh OutputRoot for reproducible builds.' }
   Copy-Item -LiteralPath (Join-Path $root 'static') -Destination $staticRoot -Recurse
   $icon = Join-Path $staticRoot 'app.ico'
-  $mark = if ($Channel -eq 'beta') { 'beta' } else { 'spark' }
+  $mark = 'discovery'
   python -B scripts/make_icon.py $mark $icon
   if ($LASTEXITCODE -ne 0) { throw "Icon generation exited with code $LASTEXITCODE" }
   Copy-Item -LiteralPath $icon -Destination (Join-Path $staticRoot 'discovery-beta.ico') -Force

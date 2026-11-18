@@ -20,9 +20,11 @@ try:
    page.goto(h.base,wait_until='networkidle')
    page.get_by_role('button',name='Community',exact=True).wait_for()
    page.wait_for_function('()=>document.querySelector(".app-logo").complete&&document.querySelector(".app-logo").naturalWidth>0')
-   assert page.locator('h1').inner_text()=='Civitai Discovery 3.0 Beta'
+   assert page.get_by_role('heading',name='Civitai Discovery',exact=True).count()==1
    assert page.locator('#appVersion').inner_text().startswith('v3.')
-   assert page.locator('.app-logo').get_attribute('alt')==''
+   assert page.locator('.app-logo').get_attribute('alt')=='Civitai Discovery'
+   assert page.locator('.app-logo').get_attribute('src')=='/discovery-logo.svg'
+   assert page.locator('link[rel=icon]').get_attribute('href')=='/discovery-icon.svg'
    for tab in ('tabCommunity','tabGallery','tabTimeMachine','tabDiscovery'):
     assert page.locator('#'+tab+' svg.ui-icon[aria-hidden="true"]').count()==1
    sizes=page.locator('.view-tabs > button > svg').evaluate_all('(xs)=>xs.map(x=>[getComputedStyle(x).width,getComputedStyle(x).height])')
