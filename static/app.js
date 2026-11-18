@@ -1440,6 +1440,13 @@ function showSweepCompletion(note, kind, state) {
   const message = document.createElement('span');
   message.textContent = `Tag preparation finished: ${displayCount(state.known)} analyzed, ${displayCount(state.unavailable)} unavailable. For You uses available tags; unavailable previews are rechecked after 24 hours.`;
   note.append(message);
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'sweep-dismiss';
+  dismiss.textContent = 'Dismiss';
+  dismiss.setAttribute('aria-label', 'Dismiss tag preparation summary');
+  dismiss.onclick = hideSweepNote;
+  note.append(dismiss);
 }
 function showPreliminaryPlaceholder() {
   const note = $("followerSweep");

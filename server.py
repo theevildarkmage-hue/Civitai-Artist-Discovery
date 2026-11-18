@@ -1340,6 +1340,11 @@ class Handler(BaseHTTPRequestHandler):
                     fixture=db.execute("SELECT 1 FROM images WHERE id=? AND url LIKE '%/community-fixture.svg%'",(requested_id,)).fetchone()
                 else:fixture=None
             if fixture:
+                if requested_day:
+                    # Remember legacy synthetic archives only when explicitly visited;
+                    # never scan millions of artwork rows just to open the calendar.
+                    with HISTORY.connect() as db:
+                        db.execute("INSERT OR IGNORE INTO fixture_archive_images SELECT i.id FROM block_images b JOIN images i ON i.id=b.image_id WHERE b.block_key=? AND i.url LIKE '%/community-fixture.svg%'", (requested_day,))
                 if parsed.path=='/api/history/status':
                     self.json_response({'complete':False,'date':requested_day,'fixtureArchiveExcluded':True});return
                 self.json_response({'error':'This archive contains isolated test artwork, not personal Civitai metadata.','code':'TEST_ARCHIVE'},409);return
@@ -1619,11 +1624,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/history/calendar":
             try:
-                days=HISTORY.calendar_days()
-                if os.environ.get('CAD_COMMUNITY_TESTING')!='1':
-                    with HISTORY.connect() as db:
-                        excluded={row[0].split('#')[0] for row in db.execute("SELECT DISTINCT b.block_key FROM block_images b JOIN images i ON i.id=b.image_id WHERE i.url LIKE '%/community-fixture.svg%'")}
-                    days=[day for day in days if day['date'] not in excluded]
+                days=HISTORY.calendar_days(exclude_fixtures=os.environ.get('CAD_COMMUNITY_TESTING')!='1')
                 self.json_response({"days": days})
             except Exception as error:
                 self.internal_error("History calendar", error)

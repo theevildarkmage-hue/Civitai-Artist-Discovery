@@ -363,6 +363,9 @@ class HistoryArchive:
                     PRIMARY KEY(block_key,image_id), FOREIGN KEY(image_id) REFERENCES images(id)
                 );
                 CREATE INDEX IF NOT EXISTS block_images_image ON block_images(image_id);
+                CREATE TABLE IF NOT EXISTS fixture_archive_images (
+                    image_id INTEGER PRIMARY KEY
+                );
                 CREATE TABLE IF NOT EXISTS block_feeds (
                     block_key TEXT NOT NULL, browsing_mask INTEGER NOT NULL,
                     complete INTEGER NOT NULL DEFAULT 0, scan_cursor TEXT,
@@ -566,6 +569,14 @@ class HistoryArchive:
             if archive:
                 db.executemany("INSERT OR IGNORE INTO block_images(block_key,image_id) VALUES(?,?)",
                     [(row[1], row[0]) for row in rows])
+            # Track synthetic artwork while these bounded rows are already in hand.
+            # Calendar requests must never rediscover fixtures by scanning the archive.
+            for row in rows:
+                url = row[6] if archive else db.execute('SELECT url FROM images WHERE id=?', (row[0],)).fetchone()[0]
+                if '/community-fixture.svg' in url:
+                    db.execute('INSERT OR IGNORE INTO fixture_archive_images VALUES(?)', (row[0],))
+                elif archive:
+                    db.execute('DELETE FROM fixture_archive_images WHERE image_id=?', (row[0],))
         return [row[0] for row in rows]
 
     def gallery_images(self,image_ids,client=None):
@@ -2117,15 +2128,23 @@ class HistoryArchive:
             images, artists = counts[0], counts[1]
         return {"date": value, "complete": bool(day and day["complete"]), "imageCount": images, "artistCount": artists, "updatedAt": day["updated_at"] if day else None}
 
-    def calendar_days(self) -> list[dict]:
+    def calendar_days(self, *, exclude_fixtures=False) -> list[dict]:
         """Return compact archive coverage for the calendar without hydrating artwork."""
         with self.connect() as db:
             rows = db.execute(
                 "SELECT day,complete FROM days WHERE day GLOB '????-??-??*' ORDER BY day"
             ).fetchall()
+            excluded = set()
+            if exclude_fixtures:
+                excluded = {row[0].split('#')[0] for row in db.execute(
+                    'SELECT b.block_key FROM fixture_archive_images f '
+                    'CROSS JOIN block_images b INDEXED BY block_images_image '
+                    'WHERE b.image_id=f.image_id')}
         dates: dict[str, dict] = {}
         for row in rows:
             base, _, block = row["day"].partition("#")
+            if base in excluded:
+                continue
             entry = dates.setdefault(base, {"date": base, "all": False,
                                              "morning": False, "evening": False})
             if row["complete"]:

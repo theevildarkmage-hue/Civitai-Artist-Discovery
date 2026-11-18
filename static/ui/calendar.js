@@ -28,6 +28,7 @@ export function mountCalendar({ api, state, select, rebuild }) {
     <button type="button" data-month="1" aria-label="Next month">›</button>
     <button type="button" class="quiet-button" aria-label="Close calendar">×</button></span></div>
     <div class="calendar-week" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
+    <p class="calendar-status hidden" role="status"></p>
     <div class="calendar-grid"></div>
     <div class="calendar-legend"><span><i class="saved"></i> Saved</span><span><i class="partial"></i> Partial</span></div>
     <div class="calendar-window" role="group" aria-label="Gallery window">
@@ -85,15 +86,22 @@ export function mountCalendar({ api, state, select, rebuild }) {
     position();
   };
   let coverageRequest = null;
+  const coverageStatus = panel.querySelector('.calendar-status');
   const refreshCoverage = () => {
     if (coverageRequest) return coverageRequest;
+    panel.setAttribute('aria-busy', 'true');
+    coverageStatus.textContent = 'Checking saved days...';
+    coverageStatus.classList.remove('hidden');
     coverageRequest = (async () => {
       try {
         const data = await api('/api/history/calendar');
         coverage = new Map((data.days || []).map(day => [day.date, day]));
+        coverageStatus.classList.add('hidden');
         if (!panel.classList.contains('hidden')) render();
-      } catch (_) { /* Keep existing coverage and date selection usable while offline. */ }
-      finally { coverageRequest = null; }
+      } catch (_) {
+        coverageStatus.textContent = 'Saved-day status could not refresh. Existing markers are retained; reopen to retry.';
+      }
+      finally { panel.setAttribute('aria-busy', 'false'); coverageRequest = null; }
     })();
     return coverageRequest;
   };
