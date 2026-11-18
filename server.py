@@ -74,6 +74,7 @@ TASTE = TasteStore(DATA_ROOT / "discovery")
 UPDATES = UpdateManager(DATA_ROOT, application_root(), APP_VERSION)
 # The listing sweep is the only step that expires, so it is the only one run unattended.
 CAPTURE = AutoCapture(HISTORY, SETTINGS)
+SESSION_BACKGROUND_PAUSED = False
 # Shares HISTORY's paced request lane, so priming queues behind a day build rather
 # than racing it for the same API budget.
 TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
@@ -1797,7 +1798,8 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/discovery/summary":
             try:
                 self.json_response({**TASTE.summary(), "sync": TASTE.status(),
-                    "connected": connected_or_false()})
+                    "connected": connected_or_false(),
+                    **({"automaticRefreshPaused": True} if SESSION_BACKGROUND_PAUSED else {})})
             except Exception as error:
                 self.internal_error("Discovery summary", error)
             return
@@ -2146,7 +2148,9 @@ class Handler(BaseHTTPRequestHandler):
                 # this settings page) reconnects on its own once the new process is up,
                 # instead of being stranded on a port that no longer answers.
                 restart_args = ["--port", str(RUNNING_PORT), "--no-browser", "--replacing"]
-                if CAPTURE.session_paused:
+                if SESSION_BACKGROUND_PAUSED:
+                    restart_args.append('--pause-background-work')
+                elif CAPTURE.session_paused:
                     restart_args.append('--pause-auto-capture')
                 if not UPDATES.supported and ENVIRONMENT == 'production':
                     # Source configuration is selected before imports. The child
@@ -2496,10 +2500,14 @@ def main() -> None:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--pause-auto-capture", action="store_true",
                         help="Pause automatic capture for this launch without changing saved preferences")
+    parser.add_argument("--pause-background-work", action="store_true",
+                        help="Pause automatic capture and profile refresh for this launch; manual analysis remains available")
     parser.add_argument("--updated-from", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--replacing", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    CAPTURE.session_paused = args.pause_auto_capture
+    global SESSION_BACKGROUND_PAUSED
+    SESSION_BACKGROUND_PAUSED = args.pause_background_work
+    CAPTURE.session_paused = args.pause_auto_capture or args.pause_background_work
     from discovery.community_security import disable_test_outbound
     disable_test_outbound(DATA_ROOT)
     bind_host = args.host or ("0.0.0.0" if SETTINGS.load()['allowLanAccess'] else "127.0.0.1")

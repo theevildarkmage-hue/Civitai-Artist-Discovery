@@ -1614,6 +1614,11 @@ function profileRefreshDue(summary, now = Date.now()) {
   return !Number.isFinite(refreshed) || now - refreshed >= PROFILE_REFRESH_MAX_AGE_MS;
 }
 function scheduleAutomaticProfileRefresh(summary, delay = 10000) {
+  if (summary.automaticRefreshPaused) {
+    clearTimeout(automaticProfileRefreshTimer);
+    automaticProfileRefreshPending = false;
+    return;
+  }
   if (!oauthConnected || !profileRefreshDue(summary)) return;
   automaticProfileRefreshPending = true;
   clearTimeout(automaticProfileRefreshTimer);
