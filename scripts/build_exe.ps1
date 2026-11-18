@@ -96,6 +96,9 @@ try {
   foreach ($guide in @('3.0-stable-release-notes.md','3.0-changelog.md','3.0-privacy.md','3.0-public-launch.md','3.0-community-rating-policy.md','3.0-linux-stable-source.md','release-notes.md','3.0-identity-only-authentication.md','3.0-audit-reconciliation-2026-11-07.md','3.0-beta11-verification.md','3.0-beta11-review-corrections.md','3.0-beta11-reliability.md','3.0-beta11-accepted-gallery.md')) {
     Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
+  foreach ($guide in @('3.0-session-recovery-3.0.2.md','3.0-tag-preparation-recovery.md','3.0-follower-cache-freshness.md','3.0-source-environment-indicator.md','3.0-content-toggle-integration.md','3.0-community-label.md','3.0-details-navigation.md','3.0-discovery-branding.md','3.0-archive-startup-io.md')) {
+    Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
+  }
   Copy-Item -LiteralPath $configuration -Destination (Join-Path $package 'build-configuration.json')
   $recoveryTools = Join-Path $package 'tools'
   New-Item -ItemType Directory -Force $recoveryTools | Out-Null
