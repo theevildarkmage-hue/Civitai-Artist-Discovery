@@ -1215,7 +1215,38 @@ function renderDetailTags(detail) {
 }
 let detailRequestToken = 0;
 let detailRequestAbort = null;
-async function showDetails(image, artist, artistCard) { detailRequestAbort?.abort(); detailRequestAbort = new AbortController(); const detailSignal = detailRequestAbort.signal; const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); artwork.cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); if (image.type === "video") window.CivitaiUI.showVideoPoster(artwork, image); else {
+let detailCard = null, detailMoveGeneration = 0, detailMoving = false;
+function updateDetailNavigation() {
+  const state = detailCard?.isConnected && detailCard.detailArtwork?.();
+  $('detailNavigation').hidden = !state || state.total < 2;
+  $('detailPosition').textContent = state ? `${state.index + 1} of ${state.total}` : '';
+  $('detailPrevious').disabled = $('detailNext').disabled = detailMoving;
+  $('detailAttribution').textContent = detailCard?.querySelector('.community-credit')?.textContent || '';
+}
+async function moveDetailArtwork(delta) {
+  if (detailMoving || !$('details').open || !detailCard?.isConnected) return;
+  const card = detailCard, generation = ++detailMoveGeneration, focused = document.activeElement;
+  const isCurrent = () => generation === detailMoveGeneration && $('details').open && detailCard === card;
+  detailMoving = true; updateDetailNavigation();
+  $('detailPosition').textContent = 'Checking artwork?';
+  try {
+    const state = await card.moveDetailArtwork(delta, isCurrent);
+    if (!isCurrent()) return;
+    if (state) await showDetails(state.image, state.artist, card);
+    else if (!card.isConnected) $('details').close();
+  } catch (error) { if (isCurrent()) { toast(error.message); $('detailPrompt').textContent = error.message; } }
+  finally { if (isCurrent()) { detailMoving = false; updateDetailNavigation(); if (focused?.isConnected && [document.body, $("details")].includes(document.activeElement)) focused.focus({ preventScroll: true }); } }
+}
+$('detailPrevious').onclick = () => moveDetailArtwork(-1);
+$('detailNext').onclick = () => moveDetailArtwork(1);
+$('details').addEventListener('keydown', event => {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+      event.target.isContentEditable || event.target.closest('input,textarea,select,video,[contenteditable]:not([contenteditable="false"]),[role="slider"],[role="spinbutton"],[role="combobox"],[role="listbox"],[role="menu"],[role="tablist"],[role="tree"],[role="grid"]')) return;
+  if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !$('detailNavigation').hidden) {
+    event.preventDefault(); moveDetailArtwork(event.key === 'ArrowLeft' ? -1 : 1);
+  }
+});
+async function showDetails(image, artist, artistCard) { detailCard = artistCard; updateDetailNavigation(); $("civitaiLink").href = image.civitaiUrl || `https://civitai.com/images/${image.id}`; $("fullLink").href = image.url || image.civitaiUrl || `https://civitai.com/images/${image.id}`; $("detailImage").onUnavailable = null; $("details").querySelector(".detail-copy").scrollTop = 0; detailRequestAbort?.abort(); detailRequestAbort = new AbortController(); const detailSignal = detailRequestAbort.signal; const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); artwork.cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); if (image.type === "video") window.CivitaiUI.showVideoPoster(artwork, image); else {
   artwork.onUnavailable = () => {
     if (token !== detailRequestToken || !dialog.open) return;
     dialog.close();
@@ -1223,7 +1254,7 @@ async function showDetails(image, artist, artistCard) { detailRequestAbort?.abor
     toast('Skipped unavailable artwork.');
   };
   showArtwork(artwork, image.thumbnailUrl, image.url, image);
-} $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(image.community ? `/api/community/detail?id=${image.id}` : `/api/history/image?id=${image.id}`, { signal: detailSignal }); if (token !== detailRequestToken || !dialog.open) return; if (detail.type === "video") { if (!tagsHideImage(detail)) { window.CivitaiUI.showVideoPoster(artwork, detail); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl, detail.id, { muted: !detailVideoSound }); } } else showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.url, detail); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
+} $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; if (!dialog.open) dialog.showModal(); try { const detail = await api(image.community ? `/api/community/detail?id=${image.id}` : `/api/history/image?id=${image.id}`, { signal: detailSignal }); if (token !== detailRequestToken || !dialog.open) return; if (detail.type === "video") { if (!tagsHideImage(detail)) { window.CivitaiUI.showVideoPoster(artwork, detail); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl, detail.id, { muted: !detailVideoSound }); } } else showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.url, detail); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
     $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url;
     imageTagState.set(String(image.id), { known: detail.known, tags: detail.tags || [] });
     if (tagsHideImage(detail)) {
@@ -1234,7 +1265,7 @@ async function showDetails(image, artist, artistCard) { detailRequestAbort?.abor
     }
   } catch (error) { if (token === detailRequestToken && dialog.open && error.name !== "AbortError") { dialog.classList.remove("detail-loading"); $("detailPrompt").textContent = error.message; } } }
 $('detailImage').addEventListener('artwork-unavailable', () => $('detailImage').onUnavailable?.());
-$("details").addEventListener("close", () => { detailRequestToken++; detailRequestAbort?.abort(); $("detailImage").cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(false); }); $("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
+$("details").addEventListener("close", () => { detailMoveGeneration++; detailMoving = false; detailCard = null; detailRequestToken++; detailRequestAbort?.abort(); $("detailImage").cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(false); }); $("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
   const outage = error.kind === "service_unavailable";
   const historyWindow = error.kind === "history_window";
   // A rejected search service is not something retrying fixes, so it offers "Try again"

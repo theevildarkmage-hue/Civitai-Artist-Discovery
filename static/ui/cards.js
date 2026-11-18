@@ -176,7 +176,7 @@ export function createCreatorCard(a, context) {
     // For media failures the existing sentinel supplies more artists when it enters
     // view. Never start an eager replacement loop for a whole missing page.
   }
-  async function selectAllowed(candidate, delta = 1) {
+  async function selectAllowed(candidate, delta = 1, { waitForPreview = true, isCurrent = () => true } = {}) {
     let skippedUnavailable = false;
     while (images.length) {
       candidate = (candidate + images.length) % images.length;
@@ -187,8 +187,8 @@ export function createCreatorCard(a, context) {
         continue;
       }
       const result = await checkImageTags(images[candidate].id);
-      if (!el.isConnected) return false;
-      if (!tagsHideImage(result)) { index = candidate; paint(); if (navigating) await waitForArtwork(); return true; }
+      if (!el.isConnected || !isCurrent()) return false;
+      if (!tagsHideImage(result)) { index = candidate; paint(); if (navigating && waitForPreview) await waitForArtwork(); return true; }
       if (navigating) setCardNavigationBusy(true, 'Skipping a filtered image…');
       images.splice(candidate, 1); a.imageCount = images.length;
       if (delta < 0) candidate--;
@@ -257,6 +257,20 @@ export function createCreatorCard(a, context) {
     finally { if (document.body.contains(el)) setCardNavigationBusy(false); }
   }
   async function move(delta) { await navigateTo(index + delta, delta); }
+  // Details uses the same lazy list and content gates as the card, without waiting
+  // for a preview that may be behind the modal. Closing invalidates pending moves.
+  el.detailArtwork = () => ({ image: current, artist: a,
+    index: imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0), total: a.imageCount });
+  el.moveDetailArtwork = async (delta, isCurrent) => {
+    if (navigating || !isCurrent()) return null;
+    setCardNavigationBusy(true);
+    try {
+      await ensureImages();
+      if (!isCurrent() || !el.isConnected) return null;
+      if (await selectAllowed(index + delta, delta, { waitForPreview: false, isCurrent })) return el.detailArtwork();
+      return null;
+    } finally { if (el.isConnected) setCardNavigationBusy(false); }
+  };
   function closeActionMenu() { actionMenu.classList.add('hidden'); el.querySelector('.more-menu').setAttribute('aria-expanded', 'false'); }
   async function showCollections() {
     if (context.canManageCollections && !context.canManageCollections()) {

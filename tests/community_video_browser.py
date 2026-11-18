@@ -26,7 +26,8 @@ try:
    # Keep PR #17's hanging-poster regression alongside the sound preference.
    page.route('**/hanging-poster.jpg*',lambda r:None)
    art={**art,'thumbnailUrl':f'{base}/hanging-poster.jpg'}
-   page.route('**/api/community/detail*',lambda r:reply(r,{**art,'detailImageUrl':f'{base}/hanging-poster.jpg?detail','civitaiUrl':art['imageUrl'],'known':True,'tags':[],'prompt':''}))
+   still={**art,'id':124,'type':'image','videoUrl':None,'detailVideoUrl':None,'thumbnailUrl':f'{base}/community-fixture.svg','url':f'{base}/community-fixture.svg','civitaiUrl':'https://civitai.red/images/124','known':True,'tags':[]}
+   page.route('**/api/community/detail*',lambda r:reply(r,still if r.request.url.endswith('=124') else {**art,'detailImageUrl':f'{base}/hanging-poster.jpg?detail','civitaiUrl':art['imageUrl'],'known':True,'tags':[],'prompt':''}))
    page.goto(base,wait_until='domcontentloaded')
    muted=width==1440
    if muted:
@@ -40,12 +41,21 @@ try:
    page.locator('#tabCommunity').click()
    card=page.locator('#communityGrid .creator-card');card.wait_for()
    page.wait_for_function('()=>[...document.querySelectorAll("#communityGrid video")].some(v=>v.readyState>=2&&v.currentTime>0)',timeout=30000)
+   card.evaluate('(el,art)=>el.appendImages([art])',still)
    card.locator('.info-button').click()
    page.wait_for_function('()=>document.querySelector("#detailVideo")?.currentTime>0',timeout=30000)
    # Details play with sound by default; turning the preference off starts them muted.
    assert page.evaluate('document.querySelector("#detailVideo").muted')==muted,width
    page.wait_for_function('()=>!document.querySelector("#details").classList.contains("detail-loading")',timeout=5000)
    page.locator('#detailMeta dt').filter(has_text='Video').wait_for()
+   old_video=page.locator('#detailVideo').element_handle()
+   page.locator('#detailNext').click()
+   page.wait_for_function('()=>!document.querySelector("#detailVideo")&&!document.querySelector("#detailNext").disabled')
+   assert old_video.evaluate('v=>!v.isConnected&&v.paused')
+   assert card.get_attribute('data-id')=='124'
+   page.locator('#detailPrevious').click()
+   page.wait_for_function('()=>document.querySelector("#detailVideo")?.currentTime>0&&!document.querySelector("#detailPrevious").disabled')
+   assert page.evaluate('document.querySelector("#detailVideo").muted')==muted
    page.locator('#close').click()
    page.wait_for_function('()=>!document.querySelector("#detailVideo")')
    page.locator('#filterToggle').click();page.locator('#mediaType').select_option('image')
