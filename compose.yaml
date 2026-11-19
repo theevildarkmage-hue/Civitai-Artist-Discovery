@@ -1,0 +1,34 @@
+services:
+  discovery:
+    build: .
+    environment:
+      WANTED_UID: "${WANTED_UID:-1000}"
+      WANTED_GID: "${WANTED_GID:-1000}"
+      UMASK: "0027"
+      FIX_DATA_OWNERSHIP: "${FIX_DATA_OWNERSHIP:-false}"
+      CAD_CREDENTIAL_KEY_FILE: /run/secrets/credential_key
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - type: bind
+        source: ${DISCOVERY_DATA_DIR:?./discovery-container/discovery-data}
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DISCOVERY_KEY_FILE:?./discovery-container/discovery-secrets/credential_key}
+        target: /run/secrets/credential_key
+        read_only: true
+        bind:
+          create_host_path: false
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
+    healthcheck:
+      test: [CMD, gosu, discovery, python, -c, "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8765/api/history/config', headers={'Host':'localhost:8765'}), timeout=5)" ]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3

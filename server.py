@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import signal
+from discovery import container_runtime
 from collections import defaultdict, deque, OrderedDict
 from datetime import datetime, timezone
 import hashlib
@@ -1251,6 +1253,8 @@ class Handler(BaseHTTPRequestHandler):
             hostname = urllib.parse.urlsplit(f"//{self.headers.get('Host') or ''}").hostname
         except ValueError:
             return False
+        if container_runtime.enabled():
+            return self.headers.get("Host", "").lower() == "localhost:8765"
         return is_own_address(hostname)
 
     def internal_error(self, context: str, error: BaseException) -> None:
@@ -1282,6 +1286,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         from discovery.local_security import browser_request_allowed, static_relative_path
+        # OAuth returns from a different site; only this state-validated route may bypass Fetch Metadata.
+        if container_runtime.enabled() and urllib.parse.urlparse(self.path).path == '/oauth/callback':
+            if not self.host_allowed():
+                self.send_error(403); return
+            status = container_runtime.callback(urllib.parse.urlparse(self.path).query)
+            body = b"Connected. You may close this tab." if status == 200 else b"Invalid or expired authorization callback."
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body); return
         if not self.host_allowed() or not browser_request_allowed(self.headers):
             self.send_error(403); return
         if not self.path.startswith('/') or self.path.startswith('//'):
@@ -1428,6 +1444,7 @@ class Handler(BaseHTTPRequestHandler):
                 # while someone is reading rather than dying underneath them.
                 from discovery.oauth import session_status, get_community_session
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
+                if container_runtime.enabled(): job["authorizationUrl"] = container_runtime.authorization_url()
                 identity=session_status()
                 if identity.get('connected') and not identity.get('needsReauthentication'):
                     REGISTRY.authenticated(identity,get_community_session)
@@ -1435,6 +1452,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 community_failure(DATA_ROOT,'auth_status',error)
                 with OAUTH_LOCK: job = dict(OAUTH_JOB)
+                if container_runtime.enabled(): job["authorizationUrl"] = container_runtime.authorization_url()
                 self.json_response({"connected": False, "socialWrite": False,
                                     "userWrite": False,
                                     "collectionsRead": False, "collectionsWrite": False,
@@ -2145,6 +2163,8 @@ class Handler(BaseHTTPRequestHandler):
                 request_app_shutdown(self.server)
                 return
             if parsed.path == "/api/app/restart":
+                if container_runtime.enabled():
+                    self.json_response({"error": "Restart using docker compose restart discovery"}, 409); return
                 # Reuse the same port so any tab already pointed at this app (including
                 # this settings page) reconnects on its own once the new process is up,
                 # instead of being stranded on a port that no longer answers.
@@ -2488,6 +2508,8 @@ class Handler(BaseHTTPRequestHandler):
         self.json_response({"userId": user_id, "following": desired, "changed": changed})
 
     def log_message(self, format: str, *args: object) -> None:
+        if container_runtime.enabled() and urllib.parse.urlparse(self.path).path == "/oauth/callback":
+            return  # Authorization codes and state must never reach access logs.
         print(f"[discovery] {format % args}")
 
 
@@ -2511,8 +2533,12 @@ def main() -> None:
     CAPTURE.session_paused = args.pause_auto_capture or args.pause_background_work
     from discovery.community_security import disable_test_outbound
     disable_test_outbound(DATA_ROOT)
+    if container_runtime.enabled():
+        container_runtime.cipher()  # Fail before serving if protected storage is unavailable.
+        if args.port != 8765 or args.host != '0.0.0.0' or not args.no_browser or ENVIRONMENT != 'production':
+            raise ValueError("Container mode requires --stable --host 0.0.0.0 --port 8765 --no-browser")
     bind_host = args.host or ("0.0.0.0" if SETTINGS.load()['allowLanAccess'] else "127.0.0.1")
-    if bind_host not in ('127.0.0.1','0.0.0.0') or (bind_host=='0.0.0.0' and not SETTINGS.load()['allowLanAccess']) or args.port in (8906,33101,33201):
+    if bind_host not in ('127.0.0.1','0.0.0.0') or (bind_host=='0.0.0.0' and not container_runtime.enabled() and not SETTINGS.load()['allowLanAccess']) or args.port in (8906,33101,33201):
         raise ValueError("Network binding requires explicit LAN sharing; use a separate Discovery 3.0 port")
     if not claim_single_instance(args.no_browser, args.replacing):
         return
@@ -2521,7 +2547,7 @@ def main() -> None:
     # occupy it: doing so leaves the callback listener unable to bind and Civitai's
     # redirect lands on this server, which answers 404 and strands the sign-in.
     server = bind_http_server(bind_host, args.port, args.replacing)
-    if server.server_address[1] == CALLBACK_PORT:
+    if not container_runtime.enabled() and server.server_address[1] == CALLBACK_PORT:
         server.server_close()
         server = bind_http_server(bind_host, 0, False)
         if server.server_address[1] == CALLBACK_PORT:
@@ -2531,6 +2557,7 @@ def main() -> None:
     RUNNING_PORT = actual_port
     addresses = lan_addresses() if bind_host == "0.0.0.0" else []
     url = f"http://{addresses[0]}:{actual_port}" if addresses else f"http://127.0.0.1:{actual_port}"
+    if container_runtime.enabled(): url = "http://localhost:8765"
     save_instance_url(url)
     UPDATES.schedule_success_cleanup()
     # Only starts a worker when the preference is on; otherwise nothing runs.
@@ -2538,7 +2565,7 @@ def main() -> None:
         CAPTURE.start()
     print(f"Civitai artist discovery running at {url}")
     print("OAuth-backed follow and reaction controls are enabled when SocialWrite is approved.")
-    if bind_host == "0.0.0.0":
+    if bind_host == "0.0.0.0" and not container_runtime.enabled():
         print(f"LAN access is ON: other devices on your network can reach this app at {url}. "
               "Anyone who can reach that address can use the app, including follow/react "
               "actions. Turn this off in Settings if you do not want that.")
@@ -2551,6 +2578,8 @@ def main() -> None:
             log_internal_error("Windows tray startup", error)
     if not args.no_browser:
         webbrowser.open(url, new=1)
+    if container_runtime.enabled():
+        signal.signal(signal.SIGTERM, lambda *_: request_app_shutdown(server))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -200,8 +200,7 @@ Windows-only.
 - Internet access to Civitai's public REST API, authenticated site API, and image CDN.
 - Internet access to GitHub's public release API and release downloads when update
   checking or installation is enabled; no GitHub account or token is required.
-- Port `8765` available during OAuth sign-in. The application itself uses an available
-  random loopback port.
+- Port `8765` available during OAuth sign-in. The source server defaults to loopback port `8907` (configurable with `--port`).
 - On Linux, a desktop Secret Service provider such as GNOME Keyring, running in the same
   D-Bus session and unlocked.
 
@@ -231,6 +230,12 @@ No configuration file is required. Packaged builds create `data/` beside the exe
 Stable source runs create `data-production-3.0/`; ordinary Development source runs
 use `data-dev-3.0/` or an explicitly selected development profile. Existing data is
 not automatically moved. Extract packaged builds to a user-writable folder.
+
+## Docker
+
+For a single-port container with an external host data directory, configurable
+UID/GID mapping through gosu, and encrypted headless credentials, see
+[Docker setup](docs/docker.md). Open `http://localhost:8765` on the Docker host.
 
 ## Launching
 
