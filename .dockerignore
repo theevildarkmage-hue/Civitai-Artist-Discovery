@@ -1,0 +1,10 @@
+**
+!requirements.txt
+!server.py
+!docker_init.bash
+!discovery/
+!discovery/*.py
+!static/
+!static/**
+**/__pycache__/
+**/*.pyc

@@ -20,6 +20,7 @@ import urllib.request
 import webbrowser
 
 from .paths import data_root
+from . import container_runtime
 
 
 # The OAuth application this build ships with. Civitai's own documentation describes
@@ -232,6 +233,9 @@ def _load() -> dict:
         return _load_stored()
 
 def _load_stored() -> dict:
+    if container_runtime.enabled():
+        try: return container_runtime.load()
+        except RuntimeError as error: raise OAuthSetupError(str(error)) from None
     if _uses_secret_service():
         return _load_linux()
     if not _uses_dpapi():
@@ -260,6 +264,10 @@ def _save_rotated(tokens):
         raise OAuthTemporarilyUnavailable('Secure credential storage is temporarily unavailable. Keep the app open while it retries.') from None
 
 def _save_stored(tokens: dict) -> None:
+    if container_runtime.enabled():
+        try: container_runtime.save(tokens)
+        except RuntimeError as error: raise OAuthSetupError(str(error)) from None
+        return
     if _uses_secret_service():
         _save_linux(tokens)
         return
@@ -327,24 +335,28 @@ def _authorize_tokens(requested_scope: int, timeout: int = 300, *, nonce: str | 
         if not isinstance(nonce,str) or len(nonce)!=43:
             raise OAuthSetupError("Invalid cloud identity challenge.")
         params["nonce"] = nonce
-    try:
-        server = http.server.ThreadingHTTPServer(("localhost", CALLBACK_PORT), Callback)
-    except OSError as error:
-        # The redirect URI is registered against this exact port, so it cannot simply move.
-        # Retrying is futile, and the generic failure message sends people in circles.
-        raise OAuthSetupError(f"Port {CALLBACK_PORT} is already in use on this computer, so "
-                              "Civitai cannot send the authorization back. Close whatever "
-                              "is using it and try again.") from error
-    server.expected_state = state
-    server.result_lock = threading.Lock()
-    server.result = None  # type: ignore[attr-defined]
-    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-    try:
-        webbrowser.open(f"{AUTH_BASE}/authorize?{urllib.parse.urlencode(params)}", new=1)
-        deadline = time.monotonic() + timeout
-        while server.result is None and time.monotonic() < deadline: time.sleep(.2)  # type: ignore[attr-defined]
-        result = server.result  # type: ignore[attr-defined]
-    finally: server.shutdown(); server.server_close()
+    authorization_url = f"{AUTH_BASE}/authorize?{urllib.parse.urlencode(params)}"
+    if container_runtime.enabled():
+        result = container_runtime.authorize(authorization_url, state, timeout)
+    else:
+        try:
+            server = http.server.ThreadingHTTPServer(("localhost", CALLBACK_PORT), Callback)
+        except OSError as error:
+            # The redirect URI is registered against this exact port, so it cannot simply move.
+            # Retrying is futile, and the generic failure message sends people in circles.
+            raise OAuthSetupError(f"Port {CALLBACK_PORT} is already in use on this computer, so "
+                                  "Civitai cannot send the authorization back. Close whatever "
+                                  "is using it and try again.") from error
+        server.expected_state = state
+        server.result_lock = threading.Lock()
+        server.result = None  # type: ignore[attr-defined]
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            webbrowser.open(f"{AUTH_BASE}/authorize?{urllib.parse.urlencode(params)}", new=1)
+            deadline = time.monotonic() + timeout
+            while server.result is None and time.monotonic() < deadline: time.sleep(.2)  # type: ignore[attr-defined]
+            result = server.result  # type: ignore[attr-defined]
+        finally: server.shutdown(); server.server_close()
     if not result: raise RuntimeError("Civitai authorization timed out")
     if result.get("state") != state: raise RuntimeError("OAuth state validation failed")
     if result.get("error"): raise RuntimeError(f"Authorization failed: {result['error']}")
@@ -727,7 +739,8 @@ def _disconnect_locked() -> None:
     with _FILE_LOCK:
         global _ROTATED_PENDING
         if _pending_for_profile():_ROTATED_PENDING=None
-        if _uses_dpapi():
+        if container_runtime.enabled():container_runtime.credential_path().unlink(missing_ok=True)
+        elif _uses_dpapi():
             for path in {TOKEN_PATH, LEGACY_TOKEN_PATH}:path.unlink(missing_ok=True)
         elif _uses_secret_service():_delete_linux()
         else:raise _unsupported_storage()

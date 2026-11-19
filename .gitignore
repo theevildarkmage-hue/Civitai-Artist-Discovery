@@ -145,3 +145,10 @@ dev/community-test-lab/*
 !.github/workflows/
 !.github/workflows/git-identity.yml
 !.gitattributes
+
+# Container source and deployment documentation; runtime bind mounts remain ignored.
+!Dockerfile
+!docker_init.bash
+!compose.yaml
+!.dockerignore
+!docs/docker.md

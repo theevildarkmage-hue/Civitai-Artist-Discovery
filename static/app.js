@@ -909,6 +909,19 @@ function applyAuth(auth) {
   $("accountStatus").title = socialWrite ? "Follows and reactions are sent only when you click them." : authWriteReason;
   $("connect").classList.toggle("hidden", oauthConnected); $("connect").disabled = waiting;
   $("connect").textContent = waiting ? "Waiting for Civitai…" : "Sign in";
+  let authorizationLink = document.getElementById('containerAuthorization');
+  if (!authorizationLink) {
+    authorizationLink = document.createElement('a');
+    authorizationLink.id = 'containerAuthorization';
+    authorizationLink.textContent = 'Continue to Civitai sign-in';
+    authorizationLink.target = '_blank'; authorizationLink.rel = 'noopener noreferrer';
+    $("connect").after(authorizationLink);
+  }
+  const authorizationUrl = auth.oauthJob?.authorizationUrl;
+  authorizationLink.hidden = !waiting || !authorizationUrl;
+  if (authorizationUrl) authorizationLink.href = authorizationUrl;
+  else authorizationLink.removeAttribute('href');
+
   $("disconnect").classList.toggle("hidden", !oauthConnected);
   document.querySelectorAll("[data-reaction],.follow-button").forEach(button => {
     button.disabled = !socialWrite || !!button.dataset.followPending || !!button.dataset.reactionPending ||
